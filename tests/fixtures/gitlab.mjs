@@ -2,7 +2,8 @@ import { createServer } from 'node:http';
 
 /**
  * Заглушка GitLab REST API на локальном HTTP-сервере: отвечает тем, что дали
- * тесты, запись отвечает созданной сущностью, каждый запрос остаётся в `requests`.
+ * тесты, запись отвечает созданной сущностью, каждый запрос остаётся в `requests`,
+ * а опубликованная заметка — в обсуждениях MR.
  * Привязанный к строкам тред возвращается DiffNote — так делает GitLab.
  */
 export async function startGitlab({
@@ -42,7 +43,12 @@ export async function startGitlab({
           notes: [{ id: created, type: body.position ? 'DiffNote' : 'DiscussionNote', position: body.position ?? null }],
         });
       }
-      if (req.method === 'POST' && sub === '/notes') return reply(201, { id: 1000 + requests.length });
+      if (req.method === 'POST' && sub === '/notes') {
+        // Заметка остаётся в MR: следующий прогон по той же заглушке её прочитает.
+        const id = 1000 + requests.length;
+        discussions.push({ id: `note-${id}`, individual_note: true, notes: [{ id, body: body.body, author: { username: 'bot' } }] });
+        return reply(201, { id });
+      }
       if (req.method === 'PUT' && sub.startsWith('/discussions/')) return reply(200, { resolved: true });
       if (req.method === 'DELETE' && sub.startsWith('/notes/')) return reply(204);
       return reply(404, { message: '404 Not Found' });

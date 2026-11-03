@@ -54,7 +54,10 @@ export class Journal {
   }
 
   append(event) {
-    appendFileSync(this.#file, `${encodeEvent({ at: Date.now(), ...event })}\n`, 'utf-8');
+    // Часы шагают и назад (синхронизация времени), а свёртка упорядочивает по `at`:
+    // без этого `dupe` и `verdict` встали бы раньше своих находок и пропали.
+    const at = Math.max(Date.now(), latestAt(this.#dir) + 1);
+    appendFileSync(this.#file, `${encodeEvent({ ...event, at })}\n`, 'utf-8');
   }
 
   read() {
@@ -197,7 +200,7 @@ export class JournalState {
 
   #recordResolve(event) {
     if (this.#resolved.some((thread) => thread.id === event.id)) return;
-    this.#resolved.push({ id: event.id, reason: event.reason, at: event.at ?? null });
+    this.#resolved.push({ id: event.id, reason: event.reason, place: event.place ?? null });
   }
 
   #recordSummary(event) {
@@ -232,10 +235,17 @@ export function foldJournals(journals) {
   return foldEvents(journals.flatMap((journal) => journal.read()));
 }
 
-export function readRunState(dir) {
-  if (!existsSync(dir)) return new JournalState();
-  const events = readdirSync(dir)
+function readDirEvents(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
     .filter((name) => name.endsWith('.jsonl'))
     .flatMap((name) => readEvents(join(dir, name)));
-  return foldEvents(events);
+}
+
+function latestAt(dir) {
+  return readDirEvents(dir).reduce((latest, event) => (event.at > latest ? event.at : latest), 0);
+}
+
+export function readRunState(dir) {
+  return foldEvents(readDirEvents(dir));
 }

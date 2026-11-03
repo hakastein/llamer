@@ -31,7 +31,7 @@ export class ResolveCommand extends Command {
     }
     return {
       events: [{
-        type: 'resolve', id: thread.id, at: thread.at, reason: values.reason,
+        type: 'resolve', id: thread.id, place: thread.at, reason: values.reason,
       }],
       confirmation: ` ${thread.at}`,
     };

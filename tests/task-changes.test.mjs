@@ -39,7 +39,9 @@ const merge = (dir, branch) => git(dir, 'merge', '-q', '--no-ff', '--no-edit', b
 const sorted = (files) => [...files].sort();
 
 /** Клон, как в CI: ветки — в origin, дерево — на голове задачи. */
-function scope(dir, { head, target, shallow = false }) {
+function scope(dir, {
+  head, target, shallow = false, sinceMarks = null,
+}) {
   const path = tempDir('llamer-scope-ws-');
   execFileSync('git', shallow
     ? ['clone', '-q', '--depth', '1', '--no-single-branch', `file://${dir}`, path]
@@ -54,6 +56,7 @@ function scope(dir, { head, target, shallow = false }) {
     requestDiff: Diff.overRange({ baseRef: requestBase, revs: [requestBase, head], cwd: dir }),
     requestBase,
     fetch: true,
+    sinceMarks,
   });
 }
 
@@ -149,4 +152,51 @@ test('неглубокий клон, как в CI: история общих в�
 
   assert.deepEqual(task.diff.files, ['task.php']);
   assert.deepEqual(task.excluded, ['release-only.php']);
+});
+
+test('--since-last в неглубоком клоне: от метки, а влитое после неё из общей ветки отсеяно', () => {
+  const dir = upstream();
+  branchFrom(dir, 'PROJ-10', 'release');
+  const mark = commit(dir, { 'task.php': 'задача\n' }, 'задача');
+  git(dir, 'checkout', '-q', 'release');
+  commit(dir, { 'release-late.php': 'поздний релиз\n' }, 'релиз ушёл вперёд');
+  git(dir, 'checkout', '-q', 'PROJ-10');
+  merge(dir, 'release');
+  const head = commit(dir, { 'task-2.php': 'правка после прогона\n' }, 'после прогона');
+
+  const task = scope(dir, {
+    head, target: 'develop', shallow: true, sinceMarks: [mark],
+  });
+
+  assert.deepEqual(task.diff.files, ['task-2.php']);
+  assert.equal(task.since, mark);
+  assert.deepEqual(task.bases.map(({ branch }) => branch), ['develop', 'release', 'main', 'прошлый прогон']);
+});
+
+test('--since-last: две метки в истории — счёт от поздней, в каком бы порядке они ни пришли', () => {
+  const dir = upstream();
+  branchFrom(dir, 'PROJ-10', 'release');
+  const early = commit(dir, { 'task.php': 'задача\n' }, 'первый прогон');
+  const late = commit(dir, { 'task-2.php': 'правка\n' }, 'второй прогон');
+  const head = commit(dir, { 'task-3.php': 'после прогонов\n' }, 'после прогонов');
+
+  for (const sinceMarks of [[late, early], [early, late]]) {
+    const task = scope(dir, { head, target: 'develop', sinceMarks });
+
+    assert.equal(task.since, late);
+    assert.deepEqual(task.diff.files, ['task-3.php']);
+  }
+});
+
+test('--since-last: метка совпала с базой реквеста — разбирается весь реквест', () => {
+  const dir = upstream();
+  branchFrom(dir, 'PROJ-10', 'release');
+  const head = commit(dir, { 'task.php': 'задача\n' }, 'задача');
+  const requestBase = git(dir, 'merge-base', 'develop', head);
+
+  const task = scope(dir, { head, target: 'develop', sinceMarks: [requestBase] });
+
+  assert.equal(task.since, null);
+  assert.deepEqual(task.diff.files, ['task.php']);
+  assert.deepEqual(task.bases.map(({ branch }) => branch), ['develop', 'release', 'main']);
 });

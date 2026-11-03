@@ -43,7 +43,9 @@ const PLAN = {
 // Разбирающий этап: находка на первой изменённой строке первого файла и сводка.
 // В тексте находки — токен GitLab, как если бы модель вычитала его из дерева:
 // наружу он должен уйти вымаранным.
+// STUB_STOP_STAGE задаётся конфигом теста через drivers.<имя>.env: этап прекращает работу командой stop.
 function analysis({ brief }) {
+  if (process.env.STUB_STOP_STAGE === brief.stage) return [['stop', '--reason', 'заглушка: часть кода не разобрана']];
   const diff = Diff.fromText(readFileSync(brief.diffPath, 'utf-8'));
   const file = diff.files.find((candidate) => diff.linesOf(candidate).length > 0);
   const commands = [];

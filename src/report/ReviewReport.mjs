@@ -8,6 +8,13 @@ import { formatRunStats } from '../agent/cost.mjs';
 
 export const STATUS_MARKER = '<!-- llamer-status -->';
 
+/** Почему ревью пропущено: с `--since-last` пусто может быть и в дельте после прошлого прогона. */
+export function nothingOwnText(task) {
+  return task.since
+    ? 'Новых своих изменений после прошлого прогона нет. Ревью пропущено.'
+    : 'Своих изменений нет: всё уже есть в целевой и общих ветках. Ревью пропущено.';
+}
+
 /**
  * Изменения без своего кода — синк общих веток или задача, уже влитая в
  * целевую. Этапы не поднимаются, но молчание ревьюера читалось бы как сбой.
@@ -103,6 +110,10 @@ export class ReviewReport {
       ? `_Ревью выполнено, ${unpublished.length} ${label} опубликовать не удалось — см. сводку._`
       : '_Ревью выполнено._';
     const stats = formatRunStats(this.#stages, { elapsedMs: this.#elapsedMs });
-    return withRevisionMark(`${STATUS_MARKER}\n${status}\n\n${stats}`, this.#markSha);
+    // Метка статуса — точка отсчёта `--since-last`: с сорванным или прекращённым этапом
+    // или неопубликованными находками она дала бы следующему прогону пропустить неразобранное.
+    const complete = unpublished.length === 0 && this.#journal.failures.length === 0
+      && this.#journal.stopped.length === 0;
+    return withRevisionMark(`${STATUS_MARKER}\n${status}\n\n${stats}`, complete ? this.#markSha : null);
   }
 }

@@ -19,19 +19,20 @@ const DIFF = [
   '',
 ].join('\n');
 
-function stage(commands) {
+// Несколько этапов одного прогона — общий `journalDir`, у каждого свой файл журнала.
+function stage(commands, { name = 'logic', journalDir = null, threads = [] } = {}) {
   const dir = tempDir('llamer-harness-');
-  const journalDir = join(dir, 'journal');
-  mkdirSync(journalDir);
+  const journal = journalDir ?? join(dir, 'journal');
+  mkdirSync(journal, { recursive: true });
   write(dir, 'src/A.php', 'one\nnew\nnewer\n');
   writeFileSync(join(dir, 'task.diff'), DIFF);
   writeFileSync(join(dir, 'brief.json'), JSON.stringify({
-    stage: 'logic', name: 'logic', journalDir, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands,
+    stage: name, name, journalDir: journal, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands, threads,
   }));
   const call = (...args) => spawnSync(process.execPath, [HARNESS, ...args], {
     cwd: dir, encoding: 'utf-8', env: { ...process.env, LLAMER_BRIEF: join(dir, 'brief.json') },
   });
-  return { call, state: () => readRunState(journalDir) };
+  return { call, journalDir: journal, state: () => readRunState(journal) };
 }
 
 const finding = (line) => ['finding', '--file', 'src/A.php', '--line', line, '--line-end', line,
@@ -99,4 +100,35 @@ test('батч приводит JSON-значения к виду флагов: 
 
   assert.equal(done.status, 0, done.stderr);
   assert.equal(state().findings[0].deleted, false);
+});
+
+test('часы шагнули назад между этапами — dupe всё равно ложится после своих находок', () => {
+  // Находки записаны, пока часы спешили на минуту: их `at` — в будущем.
+  const { call, journalDir, state } = stage(['dupe'], { name: 'dedupe' });
+  const found = JSON.stringify({
+    type: 'finding', file: 'src/A.php', line: 2, lineEnd: 2, text: 't', severity: 'major', at: Date.now() + 60_000, stage: 'logic',
+  });
+  writeFileSync(join(journalDir, 'logic.jsonl'), `${found}\n${found}\n`);
+
+  const done = call('dupe', '--id', '2', '--of', '1', '--reason', 'то же место');
+
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(state().findings[1].duplicateOf, 1);
+});
+
+test('закрытый тред не ломает порядок свёртки: dupe этапа, чей файл раньше threads, не теряется', () => {
+  // Файлы журнала читаются по имени: service.dedupe, service.threads, tests.
+  const tests = stage(['finding'], { name: 'tests' });
+  assert.equal(tests.call(...finding('2')).status, 0);
+  assert.equal(tests.call(...finding('3')).status, 0);
+  const threads = stage(['resolve'], {
+    name: 'service.threads', journalDir: tests.journalDir, threads: [{ id: 't1', at: 'src/Order.php:4', text: 'замечание' }],
+  });
+  assert.equal(threads.call('resolve', '--id', 't1', '--reason', 'снято').status, 0);
+  const dedupe = stage(['dupe'], { name: 'service.dedupe', journalDir: tests.journalDir });
+  assert.equal(dedupe.call('dupe', '--id', '2', '--of', '1', '--reason', 'то же').status, 0);
+
+  const state = tests.state();
+  assert.equal(state.findings[1].duplicateOf, 1);
+  assert.deepEqual(state.resolved, [{ id: 't1', reason: 'снято', place: 'src/Order.php:4' }]);
 });

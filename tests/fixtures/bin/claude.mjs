@@ -31,6 +31,12 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
 })}\n`);
 
 emit({ type: 'system', subtype: 'init', model: 'stub' });
+
+// STUB_FAIL_STAGE задаётся конфигом теста через drivers.<имя>.env: этап срывается, ничего не записав.
+if (process.env.STUB_FAIL_STAGE === brief.stage) {
+  emit({ type: 'result', is_error: true, result: 'заглушка: этап сорвался' });
+  process.exit(1);
+}
 emit({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: `заглушка этапа ${brief.stage}` }] } });
 
 let failed = 0;

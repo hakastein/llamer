@@ -103,10 +103,10 @@ export class GitlabDelivery {
     }
 
     for (const thread of report.resolve) {
-      const at = thread.at ?? thread.id;
-      await this.attempt(`тред ${at} закрыть не удалось`, async () => {
+      const place = thread.place ?? thread.id;
+      await this.attempt(`тред ${place} закрыть не удалось`, async () => {
         await this.#mr.resolveDiscussion(thread.id);
-        log(`закрыт тред ${at} — ${thread.reason}`);
+        log(`закрыт тред ${place} — ${thread.reason}`);
       });
     }
 
@@ -127,6 +127,11 @@ export class GitlabDelivery {
   }
 
   async deliverNothingOwn(nothingOwn) {
+    // Пустая дельта после прошлого прогона: его статус в MR остаётся в силе, новая заметка — шум.
+    if (nothingOwn.task.since) {
+      log(`после прошлого прогона ${nothingOwn.task.since.slice(0, 8)} новых своих изменений нет — в MR ничего не публикуется`);
+      return { failures: this.#failed };
+    }
     await this.attempt('заметку о пропуске ревью опубликовать не удалось', () => this.#mr.postNote(nothingOwnNote(nothingOwn)));
     return { failures: this.#failed };
   }

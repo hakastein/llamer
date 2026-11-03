@@ -18,7 +18,7 @@ test('--local: конвейер на заглушке claude доходит до
 
   assert.equal(result.status, 0, result.stderr);
   const answer = JSON.parse(result.stdout);
-  assert.equal(answer.version, 1);
+  assert.equal(answer.version, 2);
   assert.equal(answer.ok, true);
   assert.equal(answer.input, 'local');
   assert.equal(answer.assessment.level, 2);

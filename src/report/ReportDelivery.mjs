@@ -1,9 +1,10 @@
 import { formatCostTable, costSummary } from '../agent/cost.mjs';
 import { formatFailureComment } from './failure.mjs';
 import { buildScopeBlock } from './scope.mjs';
+import { nothingOwnText } from './ReviewReport.mjs';
 import { redactSecrets } from '../redact.mjs';
 
-export const REPORT_VERSION = 1;
+export const REPORT_VERSION = 2;
 
 export const REPORT_FILE = 'report.md';
 
@@ -58,7 +59,7 @@ export class ReportDelivery {
       ? `## Находки: ${findings.length}\n\n${findings.map(findingBlock).join('\n\n')}`
       : '## Находок нет');
     if (report.resolve.length > 0) {
-      parts.push(`## Снятые треды\n\n${report.resolve.map((thread) => `- ${thread.at ?? thread.id} — ${thread.reason}`).join('\n')}`);
+      parts.push(`## Снятые треды\n\n${report.resolve.map((thread) => `- ${thread.place ?? thread.id} — ${thread.reason}`).join('\n')}`);
     }
     const summary = report.summary([]);
     if (summary) parts.push(`## Сводка\n\n${summary}`);
@@ -84,7 +85,7 @@ export class ReportDelivery {
   async deliverNothingOwn({ task }) {
     this.#emit([
       this.#title(),
-      'Своих изменений нет: всё уже есть в целевой и общих ветках. Ревью пропущено.',
+      nothingOwnText(task),
       buildScopeBlock({ task }),
     ].join('\n\n'), {
       ok: true, base: task.baseSha, assessment: null, findings: [], summaries: [], resolvedThreads: [], gaps: [],

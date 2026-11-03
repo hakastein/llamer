@@ -40,7 +40,9 @@ async function review({
   try {
     let scope;
     try {
-      scope = await planReviewScope({ request, tree, config });
+      scope = await planReviewScope({
+        request, tree, config, sinceLast: options.sinceLast,
+      });
     } catch (error) {
       if (!(error instanceof TaskChangesError)) throw error;
       // Дифф реквеста вместо изменений задачи — разбор чужого кода, ради отказа

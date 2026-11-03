@@ -41,7 +41,7 @@ export function buildScopeBlock({ task }) {
   if (task.excluded.length > 0) {
     parts.push(
       '',
-      `Отсеяно как чужие изменения: ${files(task.excluded.length)} диффа реквеста.`,
+      `Отсеяно как ${task.since ? 'чужие или уже разобранные прошлым прогоном' : 'чужие'} изменения: ${files(task.excluded.length)} диффа реквеста.`,
       '',
       '<details><summary>Отсеянные файлы</summary>',
       '',

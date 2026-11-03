@@ -127,6 +127,30 @@ function virtualBase(bases, requestBase, cwd) {
   return { sha: head, conflicted: [...conflicted].sort() };
 }
 
+/**
+ * Метка прошлого прогона, от которой считать: последняя из тех, чья ревизия есть
+ * в истории головы. Метка вне истории — голова переписана (force-push, rebase).
+ * Совпавшая с базой реквеста ничего не сужает.
+ */
+function lastReviewed(marks, head, requestBase, cwd) {
+  const inHistory = marks.filter((sha) => isAncestor(sha, head, cwd));
+  const dropped = marks.filter((sha) => !inHistory.includes(sha));
+  if (dropped.length > 0) {
+    log(`--since-last: метки вне истории головы пропущены (force-push или rebase): ${dropped.map((sha) => sha.slice(0, 8)).join(', ')}`);
+  }
+  if (inHistory.length === 0) {
+    log('--since-last: годной метки прошлого прогона нет — разбирается весь реквест');
+    return null;
+  }
+  const sha = inHistory.reduce((a, b) => (isAncestor(a, b, cwd) ? b : a));
+  if (sha === requestBase) {
+    log(`--since-last: метка ${sha.slice(0, 8)} совпадает с базой реквеста — разбирается весь реквест`);
+    return null;
+  }
+  log(`--since-last: только изменения после прошлого прогона ${sha.slice(0, 8)}`);
+  return sha;
+}
+
 function describe(changes) {
   const bases = changes.bases.map(({ branch, sha }) => `${branch}@${sha.slice(0, 8)}`).join(', ');
   log(`изменения задачи от ${bases}: ${changes.diff.files.length} файлов,`
@@ -147,6 +171,10 @@ function describe(changes) {
  *
  * `explicitBase` (`--base`) заменяет вычисление: сравнение идёт от неё одной.
  *
+ * `sinceMarks` (`--since-last`) — метки прошлых прогонов: годная становится ещё
+ * одной базой, и уже разобранное отсеивается так же, как общие ветки. Метки
+ * проверяются после догрузки истории: в неглубоком клоне их ещё не видно.
+ *
  * @returns {{
  *   kind: 'task' | 'mixed' | 'explicit',
  *   bases: {branch: string, sha: string}[],
@@ -154,6 +182,7 @@ function describe(changes) {
  *   diff: Diff,
  *   conflicted: string[],
  *   excluded: string[],
+ *   since: string | null,
  * }}
  */
 export function taskChanges(args) {
@@ -167,10 +196,11 @@ export function taskChanges(args) {
 
 function computeTaskChanges({
   cwd, head, targetBranch, sharedBranches = [], requestDiff, requestBase,
-  explicitBase = null, fetch = false,
+  explicitBase = null, fetch = false, sinceMarks = null,
 }) {
   let bases;
   let base;
+  let since = null;
   if (explicitBase) {
     bases = [{ branch: '--base', sha: explicitBase }];
     base = { sha: explicitBase, conflicted: [] };
@@ -179,6 +209,8 @@ function computeTaskChanges({
     const branches = [...new Set([targetBranch, ...sharedBranches])];
     if (fetch) fetchBranches(branches, cwd);
     bases = branches.map((branch) => ({ branch, sha: mergeBaseWith(head, branch, cwd) }));
+    since = sinceMarks ? lastReviewed(sinceMarks, head, requestBase, cwd) : null;
+    if (since) bases.push({ branch: 'прошлый прогон', sha: since });
     base = virtualBase(bases, requestBase, cwd);
   }
 
@@ -191,6 +223,7 @@ function computeTaskChanges({
     diff,
     conflicted: base.conflicted.filter((path) => own.has(path)),
     excluded: requestDiff.files.filter((file) => !own.has(file)),
+    since,
   };
   describe(changes);
   return changes;

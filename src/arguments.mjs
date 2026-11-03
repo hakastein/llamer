@@ -11,6 +11,7 @@ export const HELP = `llamer — агентное ревью изменений: 
   по умолчанию                отчёт: report.md в .llamer/<прогон>/ и JSON находок в stdout
   --publish gitlab            треды, заметка о рисках, сводка и статус в MR (только с --mr)
   --dry-run                   ничего не публиковать: отчёт вместо --publish
+  --since-last                только изменения после прошлого прогона LLaMer в MR (только с --mr)
 
 Прочее:
   --config <файл>             конфиг вместо .llamer.json в корне репозитория
@@ -26,6 +27,7 @@ const OPTIONS = {
   head: { type: 'string' },
   publish: { type: 'string' },
   'dry-run': { type: 'boolean' },
+  'since-last': { type: 'boolean' },
   config: { type: 'string' },
   preflight: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
@@ -57,6 +59,9 @@ export function parseArguments(argv) {
   if (values.publish !== undefined && values.mr === undefined) {
     throw new UsageError('--publish gitlab публикует в merge request — нужен --mr');
   }
+  if (values['since-last'] && values.mr === undefined) {
+    throw new UsageError('--since-last ищет прошлый прогон в заметках merge request — нужен --mr');
+  }
 
   let input = 'range';
   if (values.mr !== undefined) input = 'gitlab';
@@ -70,6 +75,7 @@ export function parseArguments(argv) {
     base: values.base ?? null,
     head: values.head ?? null,
     publish: values.publish !== undefined && !values['dry-run'],
+    sinceLast: Boolean(values['since-last']),
     config: values.config ?? null,
     preflight: Boolean(values.preflight),
   };

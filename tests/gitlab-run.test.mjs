@@ -1,6 +1,9 @@
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { git, makeRepo, run, SECRETS } from './fixtures/repo.mjs';
+import {
+  git, makeRepo, run, CONFIG, SECRETS,
+} from './fixtures/repo.mjs';
 import { startGitlab } from './fixtures/gitlab.mjs';
 
 const PROJECT = 'group/demo';
@@ -23,12 +26,19 @@ function changesOf(root, base, head) {
 
 // Реквест из настоящего репозитория: дерево стоит на голове ветки, как клон CI.
 // Наш открытый тред прошлого прогона висит на src/Order.php — его снимет этап тредов.
-async function pipeline() {
-  const root = makeRepo();
+// `markOf` даёт ревизию прошлого прогона: она встаёт меткой в заметку-статус.
+async function pipeline({ markOf = null, config = CONFIG } = {}) {
+  const root = makeRepo({ config });
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'finish');
   const base = git(root, 'merge-base', 'main', 'HEAD');
   const head = git(root, 'rev-parse', 'HEAD');
+  const mark = markOf ? markOf(root) : null;
+  const statusNotes = mark ? [{
+    id: 'last-status',
+    individual_note: true,
+    notes: [{ body: `<!-- llamer-status -->\nСтатус.\n\n<sub>ревизия</sub><!-- llamer-rev:${mark} -->`, author: { username: 'bot' } }],
+  }] : [];
   const gitlab = await startGitlab({
     project: PROJECT,
     iid: IID,
@@ -48,10 +58,10 @@ async function pipeline() {
         author: { username: 'bot' },
         position: { position_type: 'text', new_path: 'src/Order.php', new_line: 4 },
       }],
-    }],
+    }, ...statusNotes],
   });
   return {
-    root, base, head, gitlab, mr: `${gitlab.url}/${PROJECT}/-/merge_requests/${IID}`,
+    root, base, head, mark, gitlab, mr: `${gitlab.url}/${PROJECT}/-/merge_requests/${IID}`,
   };
 }
 
@@ -64,7 +74,8 @@ test('--mr без публикации: отчёт по MR, в GitLab тольк
     const answer = JSON.parse(result.stdout);
     assert.equal(answer.input, 'gitlab');
     assert.equal(answer.findings.length, 1);
-    assert.deepEqual(answer.resolvedThreads.map((thread) => thread.id), ['old-thread']);
+    assert.deepEqual(answer.resolvedThreads.map((thread) => [thread.id, thread.place]), [['old-thread', 'src/Order.php:4']]);
+    assert.match(readFileSync(answer.report, 'utf-8'), /## Снятые треды\n\n- src\/Order\.php:4 — /);
     assert.ok(result.launches.some((launch) => launch.stage === 'threads'), 'этап тредов поднят');
     assert.deepEqual([...new Set(gitlab.requests.map((request) => request.method))], ['GET']);
     assert.ok(gitlab.requests.every((request) => request.token === SECRETS.GITLAB_TOKEN));
@@ -104,7 +115,7 @@ test('--mr --publish gitlab: заметка о рисках, закрытый т
     assert.match(threads[0].body.body, /токен \*\*\*REDACTED\*\*\*/);
     assert.ok(writes.every((request) => !JSON.stringify(request.body).includes(SECRETS.GITLAB_TOKEN)), 'токен ушёл в GitLab');
     // И в причине закрытия треда, которая идёт в лог.
-    assert.match(result.stderr, /закрыт тред .* токен \*\*\*REDACTED\*\*\*/);
+    assert.match(result.stderr, /закрыт тред src\/Order\.php:4 — .* токен \*\*\*REDACTED\*\*\*/);
     assert.ok(!result.stderr.includes(SECRETS.GITLAB_TOKEN), 'токен в stderr');
   } finally {
     await gitlab.close();
@@ -135,4 +146,109 @@ test('--mr без токена GitLab — пробел preflight, а не сет
   } finally {
     await gitlab.close();
   }
+});
+
+test('--since-last: метка в истории головы — разбирается только дельта после неё', async () => {
+  const { root, mark, gitlab, mr } = await pipeline({ markOf: (repo) => git(repo, 'rev-parse', 'HEAD~1') });
+  try {
+    const result = await run(root, ['--mr', mr, '--since-last']);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).base, mark, 'изменения задачи считаются от метки');
+    assert.match(result.stderr, new RegExp(`только изменения после прошлого прогона ${mark.slice(0, 8)}`));
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last: метка вне истории головы пропущена с записью в логе — весь реквест', async () => {
+  const { root, base, mark, gitlab, mr } = await pipeline({ markOf: (repo) => git(repo, 'rev-parse', 'main') });
+  try {
+    const result = await run(root, ['--mr', mr, '--since-last']);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).base, base);
+    assert.match(result.stderr, new RegExp(`вне истории головы пропущены.*${mark.slice(0, 8)}`));
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last: метки в заметке-статусе нет — весь реквест', async () => {
+  // Метка на нашем треде — не метка прогона: в счёт идёт только заметка-статус.
+  const { root, base, gitlab, mr } = await pipeline();
+  try {
+    const result = await run(root, ['--mr', mr, '--since-last']);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).base, base);
+    assert.match(result.stderr, /годной метки прошлого прогона нет/);
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last: после прошлого прогона нового нет — этапы не поднимаются, в MR ничего не пишется', async () => {
+  const { root, head, gitlab, mr } = await pipeline({ markOf: (repo) => git(repo, 'rev-parse', 'HEAD') });
+  try {
+    const result = await run(root, ['--mr', mr, '--since-last']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const answer = JSON.parse(result.stdout);
+    assert.equal(answer.base, head);
+    assert.deepEqual(answer.findings, []);
+    assert.equal(result.launches.length, 0);
+
+    // С публикацией — только строка в логе: статус прошлого прогона остаётся в силе.
+    const published = await run(root, ['--mr', mr, '--since-last', '--publish', 'gitlab']);
+    assert.equal(published.status, 0, published.stderr);
+    assert.match(published.stderr, /новых своих изменений нет — в MR ничего не публикуется/);
+    assert.ok(gitlab.requests.every((request) => request.method === 'GET'), 'в MR ничего не записано');
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last: этап сорвался — статус без метки, следующий прогон разбирает весь реквест', async () => {
+  const config = { ...CONFIG, drivers: { claude: { env: { STUB_FAIL_STAGE: 'logic' } } } };
+  const { root, base, gitlab, mr } = await pipeline({ config });
+  try {
+    const failed = await run(root, ['--mr', mr, '--since-last', '--publish', 'gitlab']);
+    assert.match(failed.stderr, /этап «logic» сорвался/);
+    const status = gitlab.requests.find((request) => request.method === 'POST' && request.body.body?.startsWith('<!-- llamer-status -->'));
+    assert.ok(status, 'статус опубликован');
+    assert.doesNotMatch(status.body.body, /llamer-rev/);
+
+    const next = await run(root, ['--mr', mr, '--since-last']);
+    assert.equal(JSON.parse(next.stdout).base, base, 'неразобранное после срыва не пропущено');
+    assert.match(next.stderr, /годной метки прошлого прогона нет/);
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last: этап прекратил работу — статус без метки, следующий прогон разбирает весь реквест', async () => {
+  const config = { ...CONFIG, drivers: { claude: { env: { STUB_STOP_STAGE: 'logic' } } } };
+  const { root, base, gitlab, mr } = await pipeline({ config });
+  try {
+    const stopped = await run(root, ['--mr', mr, '--since-last', '--publish', 'gitlab']);
+    assert.equal(stopped.status, 0, stopped.stderr);
+    const status = gitlab.requests.find((request) => request.method === 'POST' && request.body.body?.startsWith('<!-- llamer-status -->'));
+    assert.ok(status, 'статус опубликован');
+    assert.doesNotMatch(status.body.body, /llamer-rev/);
+
+    const next = await run(root, ['--mr', mr, '--since-last']);
+    assert.equal(JSON.parse(next.stdout).base, base, 'неразобранное после stop не пропущено');
+    assert.match(next.stderr, /годной метки прошлого прогона нет/);
+  } finally {
+    await gitlab.close();
+  }
+});
+
+test('--since-last без --mr — ошибка аргументов до прогона', async () => {
+  const result = await run(makeRepo(), ['--local', '--since-last']);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /--since-last .* нужен --mr/);
 });

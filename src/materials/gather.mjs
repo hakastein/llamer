@@ -1,4 +1,6 @@
 import { summariseThreads } from './threads.mjs';
+import { collectRevisionMarks } from '../gitlab/markdown.mjs';
+import { STATUS_MARKER } from '../report/ReviewReport.mjs';
 import { collectRiskSignals } from './signals.mjs';
 import { ContextPack, PACK_LIMIT } from './ContextPack.mjs';
 import { numberDiffLines } from './numberedDiff.mjs';
@@ -52,6 +54,22 @@ async function collectThreads(request) {
 }
 
 /**
+ * Метки ревизии со сводок прошлых прогонов. Только из заметок, начинающихся
+ * маркером статуса: цитата сводки в ответе человека несёт ту же метку.
+ */
+async function previousRunMarks(request) {
+  try {
+    const notes = (await request.discussions()).flatMap((discussion) => discussion.notes ?? []);
+    return collectRevisionMarks(notes
+      .filter((note) => !note.system && String(note.body ?? '').startsWith(STATUS_MARKER))
+      .map((note) => note.body));
+  } catch (error) {
+    log(`заметки MR для --since-last прочитать не удалось (${error.message}) — разбирается весь реквест`);
+    return [];
+  }
+}
+
+/**
  * Дешёвая часть: дифф реквеста и изменения задачи. Решение «есть ли что
  * разбирать» принимается по ней — до сбора пакета.
  *
@@ -60,7 +78,9 @@ async function collectThreads(request) {
  *
  * @throws {import('./taskChanges.mjs').TaskChangesError}
  */
-export async function planReviewScope({ request, tree, config }) {
+export async function planReviewScope({
+  request, tree, config, sinceLast = false,
+}) {
   const requestDiff = await request.requestDiff(tree.path);
   const task = taskChanges({
     cwd: tree.path,
@@ -71,6 +91,7 @@ export async function planReviewScope({ request, tree, config }) {
     requestBase: request.baseSha,
     explicitBase: request.kind === 'range' ? request.baseSha : null,
     fetch: request.kind === 'gitlab',
+    sinceMarks: sinceLast ? await previousRunMarks(request) : null,
   });
   return {
     requestDiff, task, diff: task.diff, nothingOwn: task.diff.isEmpty,
