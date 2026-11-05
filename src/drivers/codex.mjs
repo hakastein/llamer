@@ -35,8 +35,10 @@ function assistant(content) {
   return { type: 'assistant', message: { content } };
 }
 
-function toolResult(isError, content) {
-  return { type: 'user', message: { content: [{ type: 'tool_result', is_error: isError, content }] } };
+function toolResult(id, isError, content) {
+  return {
+    type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content }] },
+  };
 }
 
 /**
@@ -52,7 +54,7 @@ export function codexNormalizer(model) {
     switch (event.type) {
       case 'item.started':
         if (item?.type === 'command_execution') {
-          return [assistant([{ type: 'tool_use', name: 'Bash', input: { command: item.command } }])];
+          return [assistant([{ type: 'tool_use', id: item.id, name: 'Bash', input: { command: item.command } }])];
         }
         return [];
       case 'item.completed':
@@ -63,7 +65,7 @@ export function codexNormalizer(model) {
         }
         if (item?.type === 'reasoning') return [assistant([{ type: 'thinking', thinking: item.text ?? '' }])];
         if (item?.type === 'command_execution') {
-          return [toolResult(item.exit_code !== 0, item.aggregated_output ?? '')];
+          return [toolResult(item.id, item.exit_code !== 0, item.aggregated_output ?? '')];
         }
         return [];
       case 'turn.completed': {

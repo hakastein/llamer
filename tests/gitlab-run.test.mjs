@@ -214,6 +214,7 @@ test('--since-last: этап сорвался — статус без метки
   const { root, base, gitlab, mr } = await pipeline({ config });
   try {
     const failed = await run(root, ['--mr', mr, '--since-last', '--publish', 'gitlab']);
+    assert.equal(failed.status, 1, 'сорванный этап — неуспешный прогон');
     assert.match(failed.stderr, /этап «logic» сорвался/);
     const status = gitlab.requests.find((request) => request.method === 'POST' && request.body.body?.startsWith('<!-- llamer-status -->'));
     assert.ok(status, 'статус опубликован');

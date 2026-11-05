@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { filesIn, StageStats } from '../src/agent/stream.mjs';
+import { codexNormalizer } from '../src/drivers/codex.mjs';
 
 function workspace(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'llamer-stream-'));
@@ -52,4 +53,33 @@ test('filesIn не глотает ошибки файловой системы, 
   symlinkSync('loop', join(cwd, 'loop'));
 
   assert.throws(() => filesIn('cat loop', cwd), { code: 'ELOOP' });
+});
+
+const call = (id, command) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+const answer = (id, content) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content }] } });
+
+test('StageStats считает вызовы харнесса, не дошедшие до журнала, — у claude и у codex', () => {
+  const claude = StageStats.from([
+    call('t1', "review batch --json '[\n{}\n]'"),
+    answer('t1', 'Permission to use Bash has been denied because Claude Code is running in don\'t ask mode.'),
+    // Отказ харнесса агент чинит повтором — это не потеря.
+    call('t2', "review finding --file a --line 1 --text 'x'"),
+    answer('t2', 'Exit code 1\nотказ: строка 1 в a не изменена'),
+    call('t3', 'rg missing'),
+    answer('t3', 'Exit code 1'),
+  ]);
+  assert.equal(claude.lostWrites, 1);
+  assert.equal(claude.errors, 3);
+
+  const normalize = codexNormalizer('m');
+  const codex = StageStats.from([
+    { type: 'item.started', item: { id: 'c1', type: 'command_execution', command: "review batch --json '[]'" } },
+    {
+      type: 'item.completed',
+      item: {
+        id: 'c1', type: 'command_execution', exit_code: 2, aggregated_output: 'сбой харнесса: EROFS: read-only file system',
+      },
+    },
+  ].flatMap(normalize));
+  assert.equal(codex.lostWrites, 1);
 });

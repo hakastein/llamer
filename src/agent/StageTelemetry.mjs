@@ -74,6 +74,8 @@ export class StageTelemetry {
       + ` ${Math.round(record.durationMs / 1000)}с, ${formatCost(record)}`);
     if (!record.ok) log(`этап «${this.stage.name}»: ${this.traffic.describe()}`);
 
-    return { ...record, reason, rateLimit: collectRateLimit(this.events) };
+    return {
+      ...record, reason, rateLimit: collectRateLimit(this.events), lostWrites: stats.lostWrites,
+    };
   }
 }

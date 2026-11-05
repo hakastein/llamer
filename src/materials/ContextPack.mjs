@@ -115,7 +115,7 @@ export class ContextPack {
     if (diffText) {
       parts.push('Каждая строка диффа начинается с её номера в дереве, где ты стоишь;'
         + ' у удалённой строки номера нет. Путь файла и этот номер — тот самый `путь:строка`,'
-        + ' который принимают инструменты и `llamer-harness`.\n'
+        + ' который принимают инструменты и `review`.\n'
         + tagged('diff', diffText));
     }
     if (fittedThreads.text) parts.push(tagged('threads', fittedThreads.text));

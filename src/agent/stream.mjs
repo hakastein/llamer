@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { HARNESS } from './stageBin.mjs';
 
 function statSafe(path) {
   try {
@@ -183,6 +184,8 @@ export class StageStats {
     this.calls = new Map();
     this.files = new Set();
     this.errors = 0;
+    this.harnessCalls = new Set();
+    this.lostWrites = 0;
     this.messages = new Set();
     this.looseTurns = 0;
   }
@@ -210,6 +213,7 @@ export class StageStats {
         this.files.add(relativeToCwd(block.input.file_path, this.cwd));
       }
       if (block.name === 'Bash' && block.input?.command) {
+        if (block.input.command.trimStart().startsWith(`${HARNESS} `)) this.harnessCalls.add(block.id);
         for (const file of filesIn(block.input.command, this.cwd)) this.files.add(file);
       }
       if (block.name === 'Skill' && block.input?.skill) {
@@ -217,7 +221,13 @@ export class StageStats {
       }
     }
     for (const block of blocksOf(event, 'user')) {
-      if (block.type === 'tool_result' && block.is_error) this.errors += 1;
+      if (block.type !== 'tool_result' || !block.is_error) continue;
+      this.errors += 1;
+      // Отказ харнесса агент чинит повтором; вызов, не дошедший до харнесса
+      // (права, песочница, сбой), уносит запись с собой.
+      if (this.harnessCalls.has(block.tool_use_id) && !/^отказ:/m.test(String(toolResultText(block)))) {
+        this.lostWrites += 1;
+      }
     }
   }
 
@@ -232,6 +242,7 @@ export class StageStats {
         .map(([name, count]) => `${name}×${count}`)
         .join(', ')}`);
     if (this.errors > 0) lines.push(`отказов: ${this.errors}`);
+    if (this.lostWrites > 0) lines.push(`вызовов ${HARNESS}, не дошедших до журнала: ${this.lostWrites}`);
     lines.push(skills.length > 0 ? `скиллы: ${skills.join(', ')}` : 'скиллов у этапа нет');
     lines.push(`команды: ${this.commands.join(', ')}`);
     lines.push(`ходов: ${this.turns}`);

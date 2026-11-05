@@ -144,7 +144,7 @@ test('--local на драйвере codex: read-only, временные HOME и
     assert.notEqual(launch.home, result.env.HOME, `${launch.stage}: личный HOME`);
     assert.notEqual(launch.codexHome, result.env.CODEX_HOME, `${launch.stage}: личный CODEX_HOME`);
     assert.ok(launch.auth, `${launch.stage}: вход codex не скопирован`);
-    assert.match(launch.rules, /prefix_rule\(pattern=\["llamer-harness"\], decision="allow"\)/);
+    assert.match(launch.rules, /prefix_rule\(pattern=\["review"\], decision="allow"\)/);
     assert.match(launch.rules, /pattern=\["rg"\]/);
     assert.equal(/pattern=\["git","log"\]/.test(launch.rules), launch.stage === 'logic', launch.stage);
     for (const name of Object.keys(SECRETS)) assert.ok(!launch.env.includes(name), `${launch.stage}: ${name}`);
@@ -155,6 +155,25 @@ test('--local на драйвере codex: read-only, временные HOME и
   const onDemand = logic.prompt.match(/- (\S+stage-plugin\/skills\/backend\/SKILL\.md) — Use when the request touches PHP/);
   assert.ok(onDemand, 'onDemand — файлом с описанием');
   assert.ok(existsSync(onDemand[1]), 'скилл onDemand лежит в каталоге прогона');
+});
+
+
+test('этап вышел без сводки или с отклонённым вызовом харнесса — сорван: код 1, причина в отчёте', async () => {
+  for (const [knob, reason] of [
+    ['STUB_NO_SUMMARY', 'сводка не записана'],
+    ['STUB_DENY_STAGE', 'вызовов харнесса не дошло до журнала: 1'],
+  ]) {
+    const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { env: { [knob]: 'quality' } } } } });
+
+    const result = await run(root, ['--local']);
+
+    assert.equal(result.status, 1, knob);
+    const answer = JSON.parse(result.stdout);
+    assert.ok(answer.gaps.includes(`этап «quality» сорвался: ${reason}`), `${knob}: ${answer.gaps}`);
+    const report = readFileSync(answer.report, 'utf-8');
+    assert.match(report, new RegExp(`## Недостача\\n\\n- этап «quality» сорвался: ${reason}`), knob);
+    assert.match(report, new RegExp(`quality \\(${reason}\\)`), `${knob}: этап помечен в таблице цены`);
+  }
 });
 
 test('--base/--head: голова выкладывается отдельным деревом и убирается после прогона', async () => {

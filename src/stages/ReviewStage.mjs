@@ -146,13 +146,30 @@ export class ReviewStage {
       name: this.name, launch, cwd: materials.cwd, telemetry,
     });
 
-    this.#record = telemetry.finish(record);
+    this.#record = this.#judged(telemetry.finish(record));
     if (!this.#record.ok) {
       this.journal.recordFailure({
         stage: this.key, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
       });
     }
     return this.state();
+  }
+
+  /**
+   * Процесс этапа мог выйти чисто, потеряв работу: вызов харнесса не дошёл до
+   * журнала или разбор не закрыт сводкой. Такой этап — сорванный, как упавший.
+   */
+  #judged(record) {
+    if (!record.ok) return record;
+    const state = this.state();
+    let reason = null;
+    if (record.lostWrites > 0) reason = `вызовов харнесса не дошло до журнала: ${record.lostWrites}`;
+    else if (this.commands.includes('summary') && state.summaries.length === 0 && state.stopped.length === 0) {
+      reason = 'сводка не записана';
+    }
+    if (!reason) return record;
+    log(`этап «${this.name}» сорван: ${reason}`);
+    return { ...record, ok: false, reason };
   }
 
   // diffPath — изменения задачи: находка на чужой строке отбивается сразу,

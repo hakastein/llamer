@@ -35,9 +35,9 @@ emit({ type: 'item.completed', item: { id: 'm0', type: 'agent_message', text: `�
 
 let failed = 0;
 for (const [index, args] of stubCommands(brief).entries()) {
-  const command = `llamer-harness ${args[0]} …`;
+  const command = `review ${args[0]} …`;
   emit({ type: 'item.started', item: { id: `c${index}`, type: 'command_execution', command } });
-  const done = spawnSync('llamer-harness', args, { encoding: 'utf-8', env: process.env });
+  const done = spawnSync('review', args, { encoding: 'utf-8', env: process.env });
   if (done.status !== 0) failed += 1;
   emit({
     type: 'item.completed',

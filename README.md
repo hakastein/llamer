@@ -103,7 +103,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 
 ### Как этапы пишут находки
 
-Этап не пишет в GitLab сам: он вызывает `llamer-harness` — команду, которую движок кладёт
+Этап не пишет в GitLab сам: он вызывает `review` — команду, которую движок кладёт
 в `PATH` этапа. Харнесс проверяет каждую запись (находка — только на изменённой строке
 изменений задачи, правка кнопкой — применима) и пишет журнал прогона; публикует движок.
 Команды у каждого этапа свои, чужую харнесс отбивает:
@@ -116,7 +116,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | `dedupe` | `dupe`, `list`, `batch`, `blame`, `stop` |
 | `skeptic` | `verdict`, `list`, `blame`, `batch`, `stop` |
 
-Справка команды — `llamer-harness <команда> --help`; она же едет в задание этапа.
+Справка команды — `review <команда> --help`; она же едет в задание этапа.
 Протокол находок, команды харнесса и встроенные этапы со своими скиллами (`skills/`
 пакета) движок везёт сам; остальные методы этапов приходят скиллами из `skillPaths`.
 
@@ -214,7 +214,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | | `claude` | `codex` |
 |---|---|---|
 | запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin |
-| песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
+| песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
 | изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json`, `--ignore-user-config` |
 | скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | путями до `SKILL.md` в каталоге прогона |
 | общий пакет | `--append-system-prompt-file` | начало stdin |

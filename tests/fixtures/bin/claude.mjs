@@ -39,11 +39,21 @@ if (process.env.STUB_FAIL_STAGE === brief.stage) {
 }
 emit({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: `заглушка этапа ${brief.stage}` }] } });
 
+// STUB_DENY_STAGE: вызов харнесса отклонён правами, как батч длиннее предела разбора claude.
+if (process.env.STUB_DENY_STAGE === brief.stage) {
+  emit({ type: 'assistant', message: { id: 'cdeny', content: [{ type: 'tool_use', id: 'deny', name: 'Bash', input: { command: "review batch --json '[]'" } }] } });
+  emit({ type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'deny' });
+  emit({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'deny', is_error: true, content: 'Permission to use Bash has been denied' }] },
+  });
+}
+
 let failed = 0;
 for (const args of stubCommands(brief)) {
   // По имени из PATH, как настоящий claude: так тест видит, что обёртка харнесса на месте.
-  const done = spawnSync('llamer-harness', args, { encoding: 'utf-8', env: process.env });
-  emit({ type: 'assistant', message: { id: `c${args[0]}`, content: [{ type: 'tool_use', name: 'Bash', input: { command: `llamer-harness ${args[0]}` } }] } });
+  const done = spawnSync('review', args, { encoding: 'utf-8', env: process.env });
+  emit({ type: 'assistant', message: { id: `c${args[0]}`, content: [{ type: 'tool_use', name: 'Bash', input: { command: `review ${args[0]}` } }] } });
   if (done.status !== 0) failed += 1;
   emit({
     type: 'user',

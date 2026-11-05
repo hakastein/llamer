@@ -110,7 +110,8 @@ async function review({
     for (const line of collectDropped(outcome.journal.findings)) log(line);
     for (const gap of report.shortfall(unpublished).gaps) log(`недостача: ${gap}`);
     artifacts.reportCost(outcome.records, Date.now() - STARTED_AT);
-    return failures.length === 0;
+    // Сорванный этап — неполное ревью, даже если отчёт доставлен.
+    return failures.length === 0 && outcome.journal.failures.length === 0;
   } finally {
     tree.close();
   }

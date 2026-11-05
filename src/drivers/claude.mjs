@@ -3,7 +3,8 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { HARNESS } from '../agent/stageBin.mjs';
+import { fileURLToPath } from 'node:url';
+import { HARNESS, quoted } from '../agent/stageBin.mjs';
 import { StageDriver, binaryGap, stageEnvOf } from './common.mjs';
 import { log } from '../log.mjs';
 
@@ -40,6 +41,17 @@ const PROJECT_MEMORY_FILES = ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/AGENTS.m
 // Имя плагина прогона — пространство имён скиллов в Skill: одноимённый скилл
 // из `.claude/skills` дерева иначе перехватил бы голое имя.
 const STAGE_PLUGIN = 'stage';
+
+// Вызов харнесса длиннее предела разбора Claude Code разрешает хук — см. claudeHook.mjs.
+const HARNESS_HOOK = {
+  PreToolUse: [{
+    matcher: 'Bash',
+    hooks: [{
+      type: 'command',
+      command: `${quoted(process.execPath)} ${quoted(fileURLToPath(new URL('./claudeHook.mjs', import.meta.url)))}`,
+    }],
+  }],
+};
 
 const configDirOf = (env) => env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
@@ -144,7 +156,7 @@ export class ClaudeDriver extends StageDriver {
     level, projectMemory, commands, allow, shared, prompt, env,
   }) {
     const { model, effort } = level;
-    const settings = projectMemory ? {} : { claudeMdExcludes: PROJECT_MEMORY_FILES };
+    const settings = { hooks: HARNESS_HOOK, ...(projectMemory ? {} : { claudeMdExcludes: PROJECT_MEMORY_FILES }) };
     return {
       command: this.settings.bin,
       argv: [
