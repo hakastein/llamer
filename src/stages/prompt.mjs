@@ -30,5 +30,5 @@ export function formatFindings(findings) {
 
 /** Разбирающие этапы прогона с их мандатами — служебным этапам, судящим их находки. */
 export function formatStages(stages) {
-  return stages.map((stage) => `- ${stage.id}: ${stage.mandate.replace(/\s+/g, ' ')}`).join('\n');
+  return stages.map((stage) => `- ${stage.key}: ${stage.mandate.replace(/\s+/g, ' ')}`).join('\n');
 }

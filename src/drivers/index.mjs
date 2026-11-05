@@ -4,8 +4,7 @@ import { CODEX_DEFAULTS, CodexDriver, codexGaps } from './codex.mjs';
 /**
  * Встроенные драйверы. Интерфейс один: `prepare` готовит песочницу,
  * `launch` собирает запуск этапа (команда, аргументы, окружение, stdin и разбор
- * потока в события claude), `level` переводит уровень глубины в модель × усилие,
- * `skillsBlock` говорит этапу, как взять скиллы.
+ * потока в события claude), `skillsBlock` говорит этапу, как взять скиллы.
  */
 const DRIVERS = {
   claude: { defaults: CLAUDE_DEFAULTS, Driver: ClaudeDriver, gaps: claudeGaps },

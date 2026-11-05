@@ -2,7 +2,7 @@ import { ReviewStage, FINDING_COMMANDS } from './ReviewStage.mjs';
 import { bullets, formatFindings, formatStages } from './prompt.mjs';
 import { formatSignalsSummary } from '../materials/signals.mjs';
 import { findingContexts } from '../materials/windows.mjs';
-import { ASSESSED } from '../config.mjs';
+import { analysisStages } from '../config.mjs';
 
 /** Оценщик: природа правки, риск и уровень, на котором пойдёт разбор. */
 export class AssessStage extends ReviewStage {
@@ -57,8 +57,8 @@ export class ThreadsStage extends ReviewStage {
 }
 
 /**
- * Разбирающий этап — целиком из конфига: мандат, скиллы, маски путей, драйвер,
- * уровень и расширение `allow`. Пишет находки и сводку по своему мандату.
+ * Разбирающий этап — встроенный или свой из конфига: мандат, скиллы, маски
+ * путей, уровень и расширение `allow`. Пишет находки и сводку по своему мандату.
  */
 export class AnalysisStage extends ReviewStage {
   #settings;
@@ -70,13 +70,9 @@ export class AnalysisStage extends ReviewStage {
 
   get settings() { return this.#settings; }
 
-  get key() { return this.settings.id; }
+  get key() { return this.settings.key; }
 
   get templateKey() { return 'analysis'; }
-
-  get level() { return this.settings.level; }
-
-  get allow() { return [...new Set([...super.allow, ...this.settings.allow])]; }
 
   get projectMemory() { return true; }
 
@@ -121,7 +117,7 @@ export class DedupeStage extends ReviewStage {
 
   values({ journal }) {
     return {
-      STAGES: formatStages(this.toolkit.config.stages),
+      STAGES: formatStages(analysisStages(this.toolkit.config)),
       FINDINGS: formatFindings(journal.findings),
     };
   }
@@ -132,8 +128,6 @@ export class SkepticStage extends ReviewStage {
   get key() { return 'skeptic'; }
 
   get name() { return 'скептик'; }
-
-  get level() { return ASSESSED; }
 
   get projectMemory() { return true; }
 
@@ -149,7 +143,7 @@ export class SkepticStage extends ReviewStage {
 
   values({ materials, journal }) {
     return {
-      STAGES: formatStages(this.toolkit.config.stages),
+      STAGES: formatStages(analysisStages(this.toolkit.config)),
       FINDINGS: formatFindings(findingContexts(journal.keptFindings, materials.cwd)),
       PACK: materials.renderPack(),
     };

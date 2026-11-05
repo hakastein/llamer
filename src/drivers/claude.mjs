@@ -9,13 +9,6 @@ import { log } from '../log.mjs';
 
 export const CLAUDE_DEFAULTS = {
   bin: 'claude',
-  levels: [
-    { model: 'claude-sonnet-5-5', effort: 'medium' },
-    { model: 'claude-sonnet-5-5', effort: 'high' },
-    { model: 'claude-opus-5-5', effort: 'low' },
-    { model: 'claude-opus-5-5', effort: 'medium' },
-    { model: 'claude-opus-5-5', effort: 'high' },
-  ],
   env: {},
 };
 
@@ -134,6 +127,10 @@ export class ClaudeDriver extends StageDriver {
 
   get skillsHow() { return 'Загрузи каждый из этих скиллов инструментом Skill до начала работы.'; }
 
+  get onDemandHow() {
+    return 'Загрузи инструментом Skill те из этих скиллов, чьё описание подходит к файлам реквеста; остальные не загружай.';
+  }
+
   skillRef(name) { return `${STAGE_PLUGIN}:${name}`; }
 
   /**
@@ -146,7 +143,7 @@ export class ClaudeDriver extends StageDriver {
   launch({
     level, projectMemory, commands, allow, shared, prompt, env,
   }) {
-    const { model, effort } = this.level(level);
+    const { model, effort } = level;
     const settings = projectMemory ? {} : { claudeMdExcludes: PROJECT_MEMORY_FILES };
     return {
       command: this.settings.bin,

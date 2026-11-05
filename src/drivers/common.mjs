@@ -26,8 +26,8 @@ export function binaryGap(name, settings, env) {
 }
 
 /**
- * Общее у драйверов: уровень глубины → модель × усилие и блок скиллов в задании.
- * Как этап берёт скилл, говорит наследник: `skillsHow` и `skillRef(name)`.
+ * Общее у драйверов: блок скиллов в задании. Как этап берёт скилл, говорит
+ * наследник: `skillsHow`, `onDemandHow` и `skillRef(name)`.
  */
 export class StageDriver {
   #settings;
@@ -38,14 +38,22 @@ export class StageDriver {
 
   get settings() { return this.#settings; }
 
-  level(number) { return this.#settings.levels[number - 1]; }
-
-  skillsBlock(library, names) {
-    if (names.length === 0) return '';
-    library.assertPresent(names);
-    return '## Твой метод\n\n'
-      + `${this.skillsHow} Это твой метод,\n`
-      + 'он обязателен, и ниже его содержание не повторяется.\n\n'
-      + names.map((name) => `- ${this.skillRef(name)}`).join('\n');
+  // Скиллы onDemand этап выбирает сам по описанию из frontmatter: грузить все
+  // на каждый дифф стоило бы токенов на скиллах, которым в реквесте нечего делать.
+  skillsBlock(library, { always, onDemand }) {
+    library.assertPresent([...always, ...onDemand]);
+    const blocks = [];
+    if (always.length > 0) {
+      blocks.push('## Твой метод\n\n'
+        + `${this.skillsHow} Это твой метод,\n`
+        + 'он обязателен, и ниже его содержание не повторяется.\n\n'
+        + always.map((name) => `- ${this.skillRef(name)}`).join('\n'));
+    }
+    if (onDemand.length > 0) {
+      blocks.push('## Скиллы по файлам\n\n'
+        + `${this.onDemandHow}\n\n`
+        + onDemand.map((name) => `- ${this.skillRef(name)} — ${library.description(name)}`).join('\n'));
+    }
+    return blocks.join('\n\n');
   }
 }

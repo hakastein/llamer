@@ -1,6 +1,7 @@
 import {
   AssessStage, ThreadsStage, AnalysisStage, DedupeStage, SkepticStage,
 } from './stages/stages.mjs';
+import { analysisStages } from './config.mjs';
 import { foldJournals } from './domain/journal.mjs';
 import { log } from './log.mjs';
 
@@ -35,7 +36,7 @@ export class ReviewPipeline {
     log(`оценка: ${assessment.nature}, риск ${assessment.risk}, уровень ${assessment.level}`);
 
     const deep = { assessed: assessment.level };
-    const review = toolkit.config.stages.map((settings) => new AnalysisStage(toolkit, settings));
+    const review = analysisStages(toolkit.config).map((settings) => new AnalysisStage(toolkit, settings));
     const leader = review.find((stage) => stage.applies(toolkit.materials)) ?? review[0];
     await runWave(leader, review, deep);
 

@@ -5,7 +5,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CONFIG, SECRETS, git, makeRepo, run, write,
+  CONFIG, SECRETS, git, levels, makeRepo, run, write,
 } from './fixtures/repo.mjs';
 
 const stagesOf = (launches) => launches.map((launch) => launch.stage).sort();
@@ -83,8 +83,7 @@ test('--local: правка той же длины в секунду запис�
 });
 
 test('этап claude изолирован: свои разрешения, окружение — белый список, общий пакет один на все этапы', async () => {
-  const levels = [1, 2, 3, 4, 5].map((n) => ({ model: `model-${n}`, effort: `effort-${n}` }));
-  const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { levels } } } });
+  const root = makeRepo({ config: { ...CONFIG, levels: levels() } });
 
   const { launches, status, stderr } = await run(root, ['--local'], {
     CI_REGISTRY_PASSWORD: 'registry-password-value', HTTPS_PROXY: 'http://proxy.example.com:3128',
@@ -117,16 +116,21 @@ test('этап claude изолирован: свои разрешения, ок�
   assert.equal(modelOf(byStage.logic), 'model-2/effort-2', 'logic идёт на уровне оценщика (2)');
   assert.ok(byStage.logic.includes('--append-system-prompt-file'));
   assert.ok(!byStage.dedupe.includes('--append-system-prompt-file'), 'дедупликации пакет не нужен');
+
+  const logic = launches.find((launch) => launch.stage === 'logic').prompt;
+  assert.match(logic, /- stage:reviewing-business-logic\n- stage:reviewing\n/, 'always: встроенный и добавленный конфигом');
+  assert.match(logic, /- stage:backend — Use when the request touches PHP/, 'onDemand — с описанием');
 });
 
 test('--local на драйвере codex: read-only, временные HOME и CODEX_HOME, журнал пишет правилом', async () => {
-  const config = {
-    ...CONFIG,
-    service: { ...CONFIG.service, assess: { driver: 'codex' }, dedupe: { driver: 'codex' } },
-    stages: CONFIG.stages.map((stage) => ({ ...stage, driver: 'codex' })),
-  };
-  config.service.skeptic = { ...config.service.skeptic, driver: 'codex' };
-  const root = makeRepo({ config });
+  const root = makeRepo({
+    config: {
+      ...CONFIG,
+      levels: levels({
+        1: 'codex', 2: 'codex', 3: 'codex', 4: 'codex', 5: 'codex',
+      }),
+    },
+  });
 
   const result = await run(root, ['--local']);
 
@@ -148,6 +152,9 @@ test('--local на драйвере codex: read-only, временные HOME и
   const logic = result.launches.find((launch) => launch.stage === 'logic');
   assert.match(logic.prompt, /^Дальше — материал merge request/, 'общий пакет — началом stdin');
   assert.match(logic.prompt, /stage-plugin\/skills\/reviewing\/SKILL\.md/, 'скилл — файлом');
+  const onDemand = logic.prompt.match(/- (\S+stage-plugin\/skills\/backend\/SKILL\.md) — Use when the request touches PHP/);
+  assert.ok(onDemand, 'onDemand — файлом с описанием');
+  assert.ok(existsSync(onDemand[1]), 'скилл onDemand лежит в каталоге прогона');
 });
 
 test('--base/--head: голова выкладывается отдельным деревом и убирается после прогона', async () => {
@@ -192,7 +199,7 @@ test('нет токена трекера — preflight сообщает проб
 
 test('--preflight: пробелы окружения JSON-ом, без флага прогон не стартует', async () => {
   const config = { ...CONFIG, tracker: { type: 'youtrack', issuePattern: 'PROJ-\\d+' } };
-  config.stages = [...CONFIG.stages, { id: 'extra', skills: ['missing-skill'], mandate: 'Что-то ещё.' }];
+  config.stages = { ...CONFIG.stages, extra: { skills: { always: ['missing-skill'] }, mandate: 'Что-то ещё.' } };
   const root = makeRepo({ config });
 
   const preflight = await run(root, ['--local', '--preflight'], { YOUTRACK_URL: '' });
@@ -208,14 +215,47 @@ test('--preflight: пробелы окружения JSON-ом, без флаг�
   assert.equal(existsSync(join(root, '.llamer')), false, 'до проверки окружения артефактов нет');
 });
 
-test('preflight видит неработающий драйвер и отсутствие входа', async () => {
-  const root = makeRepo({
-    config: { ...CONFIG, drivers: { codex: { bin: 'codex-нет-такого' } }, service: { assess: { driver: 'codex' } } },
+test('preflight проверяет драйверы из levels: неработающий бинарь и отсутствие входа', async () => {
+  const drivers = { codex: { bin: 'codex-нет-такого' } };
+  const gapsOf = async (config) => JSON.parse((await run(makeRepo({ config }), ['--local', '--preflight'], { CLAUDE_CODE_OAUTH_TOKEN: '' })).stdout)
+    .gaps.map((gap) => gap.id).sort();
+
+  assert.deepEqual(await gapsOf({ ...CONFIG, drivers }), ['auth-claude'], 'codex нет в levels — не проверяется');
+  assert.deepEqual(await gapsOf({ ...CONFIG, drivers, levels: levels({ 5: 'codex' }) }), ['auth-claude', 'driver-codex']);
+});
+
+test('конфиг из одной версии: встроенные этапы идут со встроенными скиллами', async () => {
+  const root = makeRepo({ config: { version: 1 } });
+
+  const preflight = await run(root, ['--local', '--preflight']);
+  assert.equal(preflight.status, 0, preflight.stderr);
+  assert.deepEqual(JSON.parse(preflight.stdout).gaps, []);
+
+  const result = await run(root, ['--local']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(stagesOf(result.launches), ['assess', 'dedupe', 'logic', 'quality', 'skeptic']);
+  const prompts = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.prompt]));
+  assert.match(prompts.assess, /- stage:assessing-review-scope/);
+  assert.match(prompts.logic, /- stage:reviewing-business-logic/);
+  assert.match(prompts.logic, /Бизнес-логика: что реквест делает/, 'встроенный мандат');
+  assert.match(prompts.quality, /- stage:reviewing-code-quality/);
+  assert.match(prompts.skeptic, /- stage:refuting-review-findings/);
+  assert.match(prompts.skeptic, /- quality: Качество кода: каждый файл/, 'скептик видит мандаты встроенных этапов');
+  const plugin = join(JSON.parse(result.stdout).artifacts, 'stage-plugin', 'skills');
+  assert.deepEqual(readdirSync(plugin).sort(), ['assessing-review-scope', 'refuting-review-findings', 'reviewing-business-logic', 'reviewing-code-quality']);
+});
+
+test('этап идёт драйвером своего уровня', async () => {
+  // Уровень 1 — codex: оценщик и дедупликация на нём; logic и скептик — на уровне оценщика (2), quality — на 2.
+  const root = makeRepo({ config: { ...CONFIG, levels: levels({ 1: 'codex' }) } });
+
+  const result = await run(root, ['--local']);
+
+  assert.equal(result.status, 0, result.stderr);
+  const driverOf = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.driver]));
+  assert.deepEqual(driverOf, {
+    assess: 'codex', dedupe: 'codex', logic: 'claude', quality: 'claude', skeptic: 'claude',
   });
-
-  const answer = JSON.parse((await run(root, ['--local', '--preflight'], { CLAUDE_CODE_OAUTH_TOKEN: '' })).stdout);
-
-  assert.deepEqual(answer.gaps.map((gap) => gap.id).sort(), ['auth-claude', 'driver-codex']);
 });
 
 test('неизвестный ключ или версия конфига останавливают прогон', async () => {

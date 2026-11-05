@@ -9,13 +9,6 @@ import { log } from '../log.mjs';
 
 export const CODEX_DEFAULTS = {
   bin: 'codex',
-  levels: [
-    { model: 'gpt-5.6-terra', effort: 'medium' },
-    { model: 'gpt-5.6-terra', effort: 'high' },
-    { model: 'gpt-5.6-sol', effort: 'low' },
-    { model: 'gpt-5.6-sol', effort: 'medium' },
-    { model: 'gpt-5.6-sol', effort: 'high' },
-  ],
   env: {},
 };
 
@@ -145,6 +138,10 @@ export class CodexDriver extends StageDriver {
   // Инструмента Skill у Codex нет — метод этапа он читает файлом из каталога скиллов прогона.
   get skillsHow() { return 'Прочитай каждый из этих файлов целиком до начала работы.'; }
 
+  get onDemandHow() {
+    return 'Прочитай целиком те из этих файлов, чьё описание подходит к файлам реквеста; остальные не читай.';
+  }
+
   skillRef(name) { return join(this.#runSkills, 'skills', name, 'SKILL.md'); }
 
   /**
@@ -155,7 +152,7 @@ export class CodexDriver extends StageDriver {
   launch({
     stage, level, projectMemory, allow, shared, prompt, env,
   }) {
-    const { model, effort } = this.level(level);
+    const { model, effort } = level;
     const home = join(this.#tmp, `codex-${stage}`);
     const codexHome = join(home, '.codex');
     mkdirSync(join(codexHome, 'rules'), { recursive: true });

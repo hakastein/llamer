@@ -37,17 +37,17 @@ export const CONFIG = {
   version: 1,
   skillPaths: ['skills'],
   allow: ['rg'],
-  service: { skeptic: { skills: ['refuting'] } },
-  stages: [
-    {
-      id: 'logic', skills: ['reviewing'], mandate: 'Бизнес-логика: делает ли код то, что просили.', allow: ['git log'],
-    },
-    {
-      id: 'quality', mandate: 'Качество кода: читаемость и размещение логики.', level: 2, paths: ['src/**'],
-    },
-    { id: 'docs', mandate: 'Документация.', paths: ['docs/**'] },
-  ],
+  stages: {
+    logic: { skills: { always: ['reviewing'], onDemand: ['backend'] }, allow: ['git log'] },
+    skeptic: { skills: { always: ['refuting'] } },
+    docs: { mandate: 'Документация.', paths: ['docs/**'] },
+  },
 };
+
+/** Пять уровней на моделях `model-<номер>`; драйвер уровня — из `drivers` по номеру, иначе claude. */
+export function levels(drivers = {}) {
+  return [1, 2, 3, 4, 5].map((n) => ({ driver: drivers[n] ?? 'claude', model: `model-${n}`, effort: `effort-${n}` }));
+}
 
 /**
  * Ветка feature/dev-7-orders ответвилась от main, после чего main ушла вперёд:
@@ -62,6 +62,7 @@ export function makeRepo({ config = CONFIG } = {}) {
   write(root, '.llamer.json', JSON.stringify(config, null, 2));
   write(root, 'skills/reviewing/SKILL.md', '---\nname: reviewing\n---\nМетод разбора.\n');
   write(root, 'skills/refuting/SKILL.md', '---\nname: refuting\n---\nМетод скептика.\n');
+  write(root, 'skills/backend/SKILL.md', '---\nname: backend\ndescription: "Use when the request touches PHP"\n---\nСоглашения бэкенда.\n');
   write(root, 'src/Order.php', '<?php\n\nfunction total() {\n    return 1;\n}\n');
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'init');

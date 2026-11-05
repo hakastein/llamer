@@ -10,8 +10,8 @@ import { log } from '../log.mjs';
 export const FINDING_COMMANDS = ['finding', 'amend', 'batch', 'list', 'blame'];
 
 /**
- * Этап прогона: свой промпт, драйвер, уровень и набор команд харнесса. Общаются
- * этапы только журналом прогона.
+ * Этап прогона: свой промпт, уровень и набор команд харнесса; драйвер — тот,
+ * которым идёт уровень. Общаются этапы только журналом прогона.
  */
 export class ReviewStage {
   #toolkit; #journal; #record = null; #template = null; #responding; #markResponding;
@@ -50,16 +50,14 @@ export class ReviewStage {
 
   get templateKey() { return this.key; }
 
-  /** Номер уровня или ASSESSED — глубина от оценщика. */
-  get level() { return 1; }
+  get settings() { return this.#toolkit.config.stages[this.key]; }
 
-  get settings() { return this.#toolkit.config.service[this.key]; }
+  /** Номер уровня или ASSESSED — глубина от оценщика. */
+  get level() { return this.settings.level; }
 
   get skills() { return this.settings.skills; }
 
-  get driverName() { return this.settings.driver; }
-
-  get allow() { return this.#toolkit.config.allow; }
+  get allow() { return [...new Set([...this.#toolkit.config.allow, ...this.settings.allow])]; }
 
   get projectMemory() { return false; }
 
@@ -76,22 +74,20 @@ export class ReviewStage {
     return this.#template;
   }
 
-  get driver() { return this.#toolkit.drivers.get(this.driverName); }
-
-  prompt(journal = null) {
+  prompt(driver, journal = null) {
     const { protocol } = this.#toolkit;
     const context = { materials: protocol.materials, journal };
-    return this.template.render({ ...this.#shared(), ...this.values(context) });
+    return this.template.render({ ...this.#shared(driver), ...this.values(context) });
   }
 
-  #shared() {
+  #shared(driver) {
     const { protocol, library, commands } = this.#toolkit;
     const wanted = this.template.names;
     const shared = {
       PROTOCOL: protocol.protocol(),
       HARNESS: protocol.harness(),
       COMMANDS: describeCommands(commands, this.commands).trimEnd(),
-      SKILLS: this.driver.skillsBlock(library, this.skills),
+      SKILLS: driver.skillsBlock(library, this.skills),
     };
     if (wanted.has('DIFF_ORIGIN')) shared.DIFF_ORIGIN = protocol.diffOrigin();
     if (wanted.has('PLAN')) shared.PLAN = protocol.plan(this.allow);
@@ -121,11 +117,13 @@ export class ReviewStage {
 
     const briefPath = artifacts.saveBrief(this.key, this.brief(materials));
     const level = this.level === ASSESSED ? assessed : this.level;
-    const prompt = this.prompt(journal);
+    const settings = this.#toolkit.config.levels[level - 1];
+    const driver = this.#toolkit.drivers.get(settings.driver);
+    const prompt = this.prompt(driver, journal);
     const promptPath = artifacts.savePrompt(this.name, prompt);
-    const launch = this.driver.launch({
+    const launch = driver.launch({
       stage: this.key,
-      level,
+      level: settings,
       projectMemory: this.projectMemory,
       commands: this.commands,
       allow: this.allow,
@@ -133,14 +131,14 @@ export class ReviewStage {
       prompt,
       env: { [BRIEF_ENV]: briefPath },
     });
-    log(`этап «${this.name}» пошёл: ${this.driver.name}, уровень ${level} (${launch.model}/${launch.effort}),`
+    log(`этап «${this.name}» пошёл: ${driver.name}, уровень ${level} (${launch.model}/${launch.effort}),`
       + ` промпт ${prompt.length} символов → ${promptPath}`);
     log(`этап «${this.name}» запускается: ${launch.command} ${launch.argv.join(' ')}`);
 
     const telemetry = new StageTelemetry({
       stage: this,
       artifacts,
-      skills: this.skills,
+      skills: this.skills.always,
       cwd: materials.cwd,
       onResponse: this.#markResponding,
     });

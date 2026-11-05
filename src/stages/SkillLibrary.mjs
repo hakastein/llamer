@@ -1,12 +1,19 @@
-import { cpSync, existsSync, readdirSync } from 'node:fs';
+import {
+  cpSync, existsSync, readFileSync, readdirSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const SKILL_FILE = 'SKILL.md';
 
+/** Встроенные скиллы — `skills/` пакета. */
+export const BUILTIN_SKILLS = fileURLToPath(new URL('../../skills', import.meta.url));
+
 /**
- * Скиллы этапов из каталогов `skillPaths`: скилл — подкаталог с SKILL.md.
- * Одно имя в двух каталогах — ошибка: какой метод получит этап, решал бы порядок
- * каталогов, а не тот, кто писал конфиг.
+ * Скиллы этапов: встроенные и из каталогов `skillPaths`, скилл — подкаталог с
+ * SKILL.md. Одно имя в двух каталогах `skillPaths` — ошибка: какой метод получит
+ * этап, решал бы порядок каталогов, а не тот, кто писал конфиг. Встроенный скилл
+ * одноимённым из `skillPaths` не подменяется и ошибкой не считается.
  */
 export class SkillLibrary {
   #index;
@@ -17,11 +24,14 @@ export class SkillLibrary {
 
   static load(paths) {
     const index = new Map();
-    for (const root of paths) {
+    const builtin = new Set();
+    for (const root of [BUILTIN_SKILLS, ...paths]) {
       if (!existsSync(root)) throw new Error(`каталога скиллов ${root} нет`);
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         const dir = join(root, entry.name);
         if (!(entry.isDirectory() || entry.isSymbolicLink()) || !existsSync(join(dir, SKILL_FILE))) continue;
+        if (builtin.has(entry.name)) continue;
+        if (root === BUILTIN_SKILLS) builtin.add(entry.name);
         if (index.has(entry.name)) {
           throw new Error(`скилл ${entry.name} есть в двух каталогах: ${index.get(entry.name)} и ${dir}`);
         }
@@ -33,6 +43,17 @@ export class SkillLibrary {
 
   dirOf(name) {
     return this.#index.get(name) ?? null;
+  }
+
+  // shortcut: описание — однострочное `description:` frontmatter, блочный YAML (`>`, `|`)
+  // не читается; разбирать YAML целиком — когда такой скилл появится.
+  description(name) {
+    const frontmatter = readFileSync(join(this.dirOf(name), SKILL_FILE), 'utf-8').match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+    const value = frontmatter.match(/^description:[ \t]*(.*?)[ \t]*$/m)?.[1].replace(/^(["'])(.*)\1$/, '$2');
+    if (!value) {
+      throw new Error(`скилл ${name}: в frontmatter ${SKILL_FILE} нет description — этапу не по чему его выбрать`);
+    }
+    return value;
   }
 
   missing(names) {
