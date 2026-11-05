@@ -1,9 +1,10 @@
 import {
-  copyFileSync, existsSync, mkdirSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { HARNESS } from '../agent/stageBin.mjs';
+import { parseStreamLine } from '../agent/stream.mjs';
 import { StageDriver, binaryGap, stageEnvOf } from './common.mjs';
 import { log } from '../log.mjs';
 
@@ -15,6 +16,56 @@ export const CODEX_DEFAULTS = {
 export const CODEX_AUTH = ['CODEX_API_KEY', 'OPENAI_API_KEY'];
 
 export const RULES_FILE = 'llamer.rules';
+
+// Долларов за миллион токенов, Standard, запрос до 272K токенов входа:
+// https://developers.openai.com/api/docs/pricing. Запрос длиннее целиком стоит
+// вдвое за вход и кэш и в полтора раза за выход — там же, на страницах моделей.
+// Модели без цены здесь — `$?` в отчёте.
+export const CODEX_PRICES = {
+  'gpt-6.1-sol': {
+    input: 2, cached: 0.1, cacheWrite: 2.5, output: 10,
+  },
+  'gpt-6.1-terra': {
+    input: 1, cached: 0.05, cacheWrite: 1.25, output: 5,
+  },
+};
+
+const LONG_PROMPT = 272_000;
+
+/** Цена одного запроса по его usage; null — цены модели нет. */
+export function requestCost(model, usage) {
+  const price = CODEX_PRICES[model];
+  if (!price) return null;
+  const cached = usage.cached_input_tokens ?? 0;
+  const input = ((usage.input_tokens ?? 0) - cached) * price.input + cached * price.cached
+    + (usage.cache_write_input_tokens ?? 0) * price.cacheWrite;
+  const output = (usage.output_tokens ?? 0) * price.output;
+  return ((usage.input_tokens ?? 0) > LONG_PROMPT ? input * 2 + output * 1.5 : input + output) / 1e6;
+}
+
+/**
+ * Usage каждого запроса этапа из журнала сессии codex (`token_usage_record`):
+ * `--json` отдаёт только сумму за ход, а размер контекста и надбавка за длинный
+ * промпт считаются по запросам.
+ */
+export function sessionRequests(codexHome) {
+  const sessions = join(codexHome, 'sessions');
+  if (!existsSync(sessions)) return [];
+  return readdirSync(sessions, { recursive: true })
+    .filter((file) => /rollout-[^/]*\.jsonl$/.test(file))
+    .flatMap((file) => readFileSync(join(sessions, file), 'utf-8').split('\n').map(parseStreamLine))
+    .filter((record) => record?.type === 'token_usage_record' && record.payload?.usage)
+    .map((record) => record.payload.usage);
+}
+
+/** Пик контекста и цена этапа по его запросам; цена null, если хоть один не оценить. */
+export function sessionTotals(model, requests) {
+  const costs = requests.map((usage) => requestCost(model, usage));
+  return {
+    contextTokens: Math.max(0, ...requests.map((usage) => usage.input_tokens ?? 0)),
+    cost: costs.length > 0 && !costs.includes(null) ? costs.reduce((sum, cost) => sum + cost, 0) : null,
+  };
+}
 
 const codexHomeOf = (env) => env.CODEX_HOME || join(homedir(), '.codex');
 
@@ -43,8 +94,8 @@ function toolResult(id, isError, content) {
 
 /**
  * События `codex exec --json` в форме потока claude: телеметрия, статистика
- * этапа и разбор срыва читают один формат. Цены codex в потоке не отдаёт —
- * `total_cost_usd` остаётся неизвестным, токены считаются.
+ * этапа и разбор срыва читают один формат. Цены и usage отдельных запросов
+ * в потоке нет — их после выхода берёт `afterExit` из журнала сессии.
  */
 export function codexNormalizer(model) {
   let lastMessage = '';
@@ -137,18 +188,24 @@ export class CodexDriver extends StageDriver {
 
   get name() { return 'codex'; }
 
-  // Инструмента Skill у Codex нет — метод этапа он читает файлом из каталога скиллов прогона.
-  get skillsHow() { return 'Прочитай каждый из этих файлов целиком до начала работы.'; }
+  // Скиллы прогона codex находит сам в `$HOME/.agents/skills` этапа, а упоминание
+  // `$имя` в задании подключает скилл целиком ещё до первого хода.
+  get skillsHow() { return 'Эти скиллы подключены упоминанием — их текст уже у тебя, следуй им с начала работы.'; }
 
   get onDemandHow() {
-    return 'Прочитай целиком те из этих файлов, чьё описание подходит к файлам реквеста; остальные не читай.';
+    return 'Загрузи те из этих скиллов, чьё описание подходит к файлам реквеста; остальные не загружай.';
   }
 
-  skillRef(name) { return join(this.#runSkills, 'skills', name, 'SKILL.md'); }
+  skillRef(name) { return `$${name}`; }
+
+  // Без `$`: упоминание подключило бы скилл сразу, а onDemand этап выбирает сам.
+  onDemandRef(name) { return name; }
 
   /**
-   * Свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME, конфиг и
-   * правила — из CODEX_HOME, а правила у этапов разные (`allow` этапа).
+   * Свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME — там
+   * только скиллы прогона, встроенные отключены; конфиг и правила — из
+   * CODEX_HOME, а правила у этапов разные (`allow` этапа). Журнал сессии
+   * остаётся в CODEX_HOME этапа: по нему считаются цена и размер контекста.
    * Общая часть пакета идёт началом stdin: кэш префикса делится между этапами.
    */
   launch({
@@ -160,6 +217,11 @@ export class CodexDriver extends StageDriver {
     mkdirSync(join(codexHome, 'rules'), { recursive: true });
     writeFileSync(join(codexHome, 'rules', RULES_FILE), rulesFor(allow));
     if (existsSync(this.#auth)) copyFileSync(this.#auth, join(codexHome, 'auth.json'));
+    const skills = join(home, '.agents', 'skills');
+    if (this.#runSkills && !existsSync(skills)) {
+      mkdirSync(join(home, '.agents'), { recursive: true });
+      symlinkSync(join(this.#runSkills, 'skills'), skills);
+    }
     return {
       command: this.settings.bin,
       argv: [
@@ -167,7 +229,7 @@ export class CodexDriver extends StageDriver {
         '--sandbox', 'read-only',
         '--skip-git-repo-check',
         '--ignore-user-config',
-        '--ephemeral',
+        '-c', 'skills.bundled.enabled=false',
         '-m', model,
         '-c', `model_reasoning_effort=${toml(effort)}`,
         '-c', 'approval_policy="never"',
@@ -181,6 +243,7 @@ export class CodexDriver extends StageDriver {
       model,
       effort,
       normalize: codexNormalizer(model),
+      afterExit: () => sessionTotals(model, sessionRequests(codexHome)),
     };
   }
 }

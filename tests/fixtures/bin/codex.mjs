@@ -1,7 +1,9 @@
 // Заглушка `codex exec --json`: события в формате codex, журнал — харнессом из PATH.
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import {
+  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { stubCommands } from '../stub-plan.mjs';
 
@@ -16,6 +18,7 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const prompt = Buffer.concat(chunks).toString('utf-8');
 const brief = JSON.parse(readFileSync(process.env.LLAMER_BRIEF, 'utf-8'));
 const rules = join(process.env.CODEX_HOME ?? '', 'rules', 'llamer.rules');
+const skills = join(process.env.HOME ?? '', '.agents', 'skills');
 
 appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   driver: 'codex',
@@ -27,7 +30,18 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   codexHome: process.env.CODEX_HOME,
   auth: existsSync(join(process.env.CODEX_HOME ?? '', 'auth.json')),
   rules: existsSync(rules) ? readFileSync(rules, 'utf-8') : null,
+  skills: existsSync(skills) ? readdirSync(skills).sort() : null,
 })}\n`);
+
+// Журнал сессии, как у codex: по записи на запрос, сумма — в turn.completed ниже.
+if (!process.argv.includes('--ephemeral')) {
+  const sessions = join(process.env.CODEX_HOME, 'sessions', '2026', '11', '05');
+  mkdirSync(sessions, { recursive: true });
+  writeFileSync(join(sessions, 'rollout-stub.jsonl'), [
+    { input_tokens: 2000, cached_input_tokens: 1500, output_tokens: 100 },
+    { input_tokens: 3000, cached_input_tokens: 2500, output_tokens: 200 },
+  ].map((usage) => JSON.stringify({ type: 'token_usage_record', payload: { usage } })).join('\n'));
+}
 
 emit({ type: 'thread.started', thread_id: 'stub' });
 emit({ type: 'turn.started' });

@@ -158,6 +158,8 @@ export function spawnStage({
       }
 
       const apiError = result?.is_error === true;
+      // Чего нет в потоке драйвера (у codex — usage по запросам), он досчитывает после выхода.
+      const late = launch.afterExit?.() ?? {};
       resolve({
         name,
         model: launch.model,
@@ -168,11 +170,11 @@ export function spawnStage({
         signal,
         result,
         durationMs: Date.now() - startedAt,
-        // null — драйвер цены не назвал (codex): в отчёте это `$?`, а не $0.
-        cost: result ? (result.total_cost_usd ?? null) : 0,
+        // null — драйвер цены не назвал (модель codex без цены): в отчёте это `$?`, а не $0.
+        cost: result ? (late.cost ?? result.total_cost_usd ?? null) : 0,
         usage: result?.modelUsage ?? (sawUsage ? { stream: streamUsage } : null),
         usageApprox: result?.modelUsage == null && sawUsage,
-        contextTokens,
+        contextTokens: Math.max(contextTokens, late.contextTokens ?? 0),
         turns,
       });
     });

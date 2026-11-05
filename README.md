@@ -216,9 +216,10 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin |
 | песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
 | изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json`, `--ignore-user-config` |
-| скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | путями до `SKILL.md` в каталоге прогона |
+| скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | каталог скиллов прогона — `$HOME/.agents/skills` этапа, встроенные скиллы codex отключены; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком, `onDemand` — именем с описанием |
 | общий пакет | `--append-system-prompt-file` | начало stdin |
-| цена | из потока | неизвестна (`$?`), токены считаются |
+| цена | из потока | по ценам OpenAI API (Standard, промпт длиннее 272K дороже) и usage каждого запроса из журнала сессии в `CODEX_HOME` этапа; известны `gpt-6.1-sol` и `gpt-6.1-terra`, у остальных моделей `$?` |
+| размер контекста | пик по `usage` запросов в потоке | пик по журналу сессии |
 | вход | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` или креды в конфиге | `CODEX_API_KEY`, `OPENAI_API_KEY` или `$CODEX_HOME/auth.json` |
 
 Уровни по умолчанию — все на `claude`:

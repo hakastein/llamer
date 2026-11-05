@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { filesIn, StageStats } from '../src/agent/stream.mjs';
-import { codexNormalizer } from '../src/drivers/codex.mjs';
+import { codexNormalizer, requestCost, sessionTotals } from '../src/drivers/codex.mjs';
 
 function workspace(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'llamer-stream-'));
@@ -82,4 +82,19 @@ test('StageStats считает вызовы харнесса, не дошедш
     },
   ].flatMap(normalize));
   assert.equal(codex.lostWrites, 1);
+});
+
+test('цена запроса codex: Standard по прейскуранту, промпт длиннее 272K — вдвое за вход и кэш и в полтора раза за выход', () => {
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} ≠ ${expected}`);
+  near(requestCost('gpt-6.1-terra', { input_tokens: 100_000, cached_input_tokens: 0, output_tokens: 100_000 }), 0.6);
+  near(requestCost('gpt-6.1-sol', { input_tokens: 272_000, cached_input_tokens: 72_000, output_tokens: 1000 }), 0.4172);
+  // 200K × $2 + 100K × $0.10 = $0.41 вдвое, 1K × $10 в полтора раза
+  near(requestCost('gpt-6.1-sol', { input_tokens: 300_000, cached_input_tokens: 100_000, output_tokens: 1000 }), 0.835);
+  assert.equal(requestCost('gpt-неизвестная', { input_tokens: 1 }), null);
+
+  const requests = [{ input_tokens: 9000, output_tokens: 10 }, { input_tokens: 12_000, output_tokens: 10 }];
+  assert.equal(sessionTotals('gpt-6.1-terra', requests).contextTokens, 12_000, 'пик контекста — самый длинный запрос');
+  near(sessionTotals('gpt-6.1-terra', requests).cost, 0.0211);
+  assert.equal(sessionTotals('gpt-неизвестная', requests).cost, null, 'цены нет — $?, а не $0');
+  assert.deepEqual(sessionTotals('gpt-6.1-terra', []), { contextTokens: 0, cost: null }, 'журнала нет — цена неизвестна');
 });

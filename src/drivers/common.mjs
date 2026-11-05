@@ -27,7 +27,7 @@ export function binaryGap(name, settings, env) {
 
 /**
  * Общее у драйверов: блок скиллов в задании. Как этап берёт скилл, говорит
- * наследник: `skillsHow`, `onDemandHow` и `skillRef(name)`.
+ * наследник: `skillsHow`, `onDemandHow`, `skillRef(name)` и `onDemandRef(name)`.
  */
 export class StageDriver {
   #settings;
@@ -37,6 +37,8 @@ export class StageDriver {
   }
 
   get settings() { return this.#settings; }
+
+  onDemandRef(name) { return this.skillRef(name); }
 
   // Скиллы onDemand этап выбирает сам по описанию из frontmatter: грузить все
   // на каждый дифф стоило бы токенов на скиллах, которым в реквесте нечего делать.
@@ -52,7 +54,7 @@ export class StageDriver {
     if (onDemand.length > 0) {
       blocks.push('## Скиллы по файлам\n\n'
         + `${this.onDemandHow}\n\n`
-        + onDemand.map((name) => `- ${this.skillRef(name)} — ${library.description(name)}`).join('\n'));
+        + onDemand.map((name) => `- ${this.onDemandRef(name)} — ${library.description(name)}`).join('\n'));
     }
     return blocks.join('\n\n');
   }

@@ -128,7 +128,7 @@ test('--local на драйвере codex: read-only, временные HOME и
       ...CONFIG,
       levels: levels({
         1: 'codex', 2: 'codex', 3: 'codex', 4: 'codex', 5: 'codex',
-      }),
+      }).map((level) => ({ ...level, model: 'gpt-6.1-terra' })),
     },
   });
 
@@ -141,6 +141,7 @@ test('--local на драйвере codex: read-only, временные HOME и
     assert.equal(launch.driver, 'codex');
     assert.deepEqual(launch.argv.slice(0, 4), ['exec', '--json', '--sandbox', 'read-only'], launch.stage);
     assert.ok(launch.argv.includes('--ignore-user-config'), launch.stage);
+    assert.ok(launch.argv.includes('skills.bundled.enabled=false'), `${launch.stage}: встроенные скиллы codex отключены`);
     assert.notEqual(launch.home, result.env.HOME, `${launch.stage}: личный HOME`);
     assert.notEqual(launch.codexHome, result.env.CODEX_HOME, `${launch.stage}: личный CODEX_HOME`);
     assert.ok(launch.auth, `${launch.stage}: вход codex не скопирован`);
@@ -151,10 +152,19 @@ test('--local на драйвере codex: read-only, временные HOME и
   }
   const logic = result.launches.find((launch) => launch.stage === 'logic');
   assert.match(logic.prompt, /^Дальше — материал merge request/, 'общий пакет — началом stdin');
-  assert.match(logic.prompt, /stage-plugin\/skills\/reviewing\/SKILL\.md/, 'скилл — файлом');
-  const onDemand = logic.prompt.match(/- (\S+stage-plugin\/skills\/backend\/SKILL\.md) — Use when the request touches PHP/);
-  assert.ok(onDemand, 'onDemand — файлом с описанием');
-  assert.ok(existsSync(onDemand[1]), 'скилл onDemand лежит в каталоге прогона');
+  assert.match(logic.prompt, /- \$reviewing-business-logic\n- \$reviewing\n/, 'always — упоминанием $имя, оно подключает скилл');
+  assert.match(logic.prompt, /\n- backend — Use when the request touches PHP/, 'onDemand — именем с описанием');
+  assert.doesNotMatch(logic.prompt, /\$backend/, 'упоминание подключило бы onDemand без выбора');
+  for (const name of ['reviewing', 'backend']) {
+    assert.ok(logic.skills?.includes(name), `${name}: codex не найдёт скилл в $HOME/.agents/skills`);
+  }
+
+  // Цена и пик контекста — по запросам из журнала сессии заглушки: 2000 и 3000 токенов входа.
+  const cost = JSON.parse(readFileSync(join(JSON.parse(result.stdout).artifacts, 'cost.json'), 'utf-8'));
+  for (const stage of cost.stages) {
+    assert.equal(stage.contextTokens, 3000, stage.name);
+    assert.ok(Math.abs(stage.cost - 0.0027) < 1e-9, `${stage.name}: ${stage.cost}`);
+  }
 });
 
 

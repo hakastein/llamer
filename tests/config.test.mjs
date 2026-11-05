@@ -150,8 +150,8 @@ test('задание: always — загрузить до начала работ
   assert.match(claude, /## Скиллы по файлам\n\nЗагрузи инструментом Skill те из этих скиллов, чьё описание подходит к файлам реквеста[^\n]*\n\n- stage:backend — Use when PHP changes$/);
 
   const codex = new CodexDriver({ settings: {}, env: {}, runSkills: '/run' }).skillsBlock(library, skills);
-  assert.match(codex, /Прочитай каждый из этих файлов целиком до начала работы[^#]*\n- \/run\/skills\/method\/SKILL\.md\n\n## /);
-  assert.match(codex, /Прочитай целиком те из этих файлов, чьё описание подходит к файлам реквеста[^\n]*\n\n- \/run\/skills\/backend\/SKILL\.md — Use when PHP changes$/);
+  assert.match(codex, /## Твой метод\n\nЭти скиллы подключены упоминанием[^#]*\n- \$method\n\n## /);
+  assert.match(codex, /Загрузи те из этих скиллов, чьё описание подходит к файлам реквеста[^\n]*\n\n- backend — Use when PHP changes$/);
 
   assert.equal(new ClaudeDriver({ settings: {}, env: {} }).skillsBlock(library, { always: [], onDemand: [] }), '');
   assert.doesNotMatch(claude.split('## Скиллы по файлам')[0], /backend/, 'onDemand не велят грузить до работы');
