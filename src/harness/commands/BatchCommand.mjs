@@ -69,23 +69,23 @@ export class BatchCommand extends Command {
   }
 
   get summary() {
-    return 'записать несколько событий журнала одним вызовом';
+    return 'record several journal events in one call';
   }
 
   get manual() {
-    return 'Типы в одном массиве можно смешивать. Отбитое событие не записывается и'
-      + ' возвращается предупреждением с его номером — повтори его исправленным,'
-      + ' остальные уже записаны. Весь вызов отбивает только неразборчивый JSON.'
-      + ' Номера находок для `amend` и `dupe` бери из `list`: этапы пишут параллельно,'
-      + ' и порядок складывается в журнале, а не в этом ответе.';
+    return 'Types may be mixed in one array. A refused event is not recorded and comes back'
+      + ' as a warning naming it — repeat that one fixed, the rest are already in.'
+      + ' Only unparsable JSON refuses the whole call. Finding numbers for `amend` and'
+      + ' `dupe` come from `list`: stages record in parallel, and the order settles in the'
+      + ' journal, not in this answer.';
   }
 
   get options() {
     return [
       {
         flags: '--json <array>',
-        hint: 'JSON-массив событий: {"type":"finding",…}, поля названы как флаги'
-          + ' одиночной команды в camelCase',
+        hint: 'a JSON array of events: {"type":"finding",…}, fields named as'
+          + " the single command's flags in camelCase",
         required: true,
       },
     ];

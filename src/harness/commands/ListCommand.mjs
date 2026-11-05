@@ -12,13 +12,13 @@ export class ListCommand extends Command {
   }
 
   get summary() {
-    return 'напечатать журнал прогона: номер, вес и место каждой находки';
+    return 'print the run journal: number, severity and place of every finding';
   }
 
   get manual() {
-    return 'Весь журнал, все этапы, включая находки, уже снятые с публикации'
-      + ' ([опровергнута], [повтор #N]). Запись подтверждается без номера,'
-      + ' так что вне ответа batch номер берётся отсюда.';
+    return 'The whole journal, every stage, including findings already dropped from'
+      + ' publication ([refuted], [duplicate of #N]). A write confirms without a number,'
+      + ' so this is where a number comes from outside a batch report.';
   }
 
   get prints() {

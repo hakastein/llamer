@@ -1,5 +1,5 @@
 import {
-  cpSync, existsSync, readFileSync, readdirSync,
+  cpSync, existsSync, readdirSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,17 +43,6 @@ export class SkillLibrary {
 
   dirOf(name) {
     return this.#index.get(name) ?? null;
-  }
-
-  // shortcut: описание — однострочное `description:` frontmatter, блочный YAML (`>`, `|`)
-  // не читается; разбирать YAML целиком — когда такой скилл появится.
-  description(name) {
-    const frontmatter = readFileSync(join(this.dirOf(name), SKILL_FILE), 'utf-8').match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
-    const value = frontmatter.match(/^description:[ \t]*(.*?)[ \t]*$/m)?.[1].replace(/^(["'])(.*)\1$/, '$2');
-    if (!value) {
-      throw new Error(`скилл ${name}: в frontmatter ${SKILL_FILE} нет description — этапу не по чему его выбрать`);
-    }
-    return value;
   }
 
   missing(names) {

@@ -6,11 +6,11 @@ export class SummaryCommand extends Command {
   }
 
   get summary() {
-    return 'закрыть разбор выводом по реквесту в рамках своего мандата';
+    return 'close the review with the verdict on the whole request';
   }
 
   get options() {
-    return [{ flags: '--text <text>', hint: 'вывод по реквесту целиком', required: true }];
+    return [{ flags: '--text <text>', hint: 'the verdict on the request as a whole', required: true }];
   }
 
   build(values) {
@@ -24,11 +24,11 @@ export class StopCommand extends Command {
   }
 
   get summary() {
-    return 'прекратить этап и сказать почему';
+    return 'abort the stage and say why';
   }
 
   get options() {
-    return [{ flags: '--reason <text>', hint: 'почему разбор прекращён', required: true }];
+    return [{ flags: '--reason <text>', hint: 'why the review was aborted', required: true }];
   }
 
   build(values, context) {

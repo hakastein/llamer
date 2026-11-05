@@ -8,7 +8,7 @@ export class BlameCommand extends Command {
   }
 
   get summary() {
-    return 'кто последним менял строку и с каким сообщением коммита';
+    return 'who last changed a line and with what commit message';
   }
 
   get prints() {
@@ -17,8 +17,8 @@ export class BlameCommand extends Command {
 
   get options() {
     return [
-      { flags: '--file <path>', hint: 'путь от корня репозитория', required: true },
-      { flags: '--line <number>', hint: 'строка в текущей версии', required: true },
+      { flags: '--file <path>', hint: 'a repo-root-relative path', required: true },
+      { flags: '--line <number>', hint: 'the line in the current version', required: true },
     ];
   }
 

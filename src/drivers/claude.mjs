@@ -137,11 +137,7 @@ export class ClaudeDriver extends StageDriver {
 
   get name() { return 'claude'; }
 
-  get skillsHow() { return 'Загрузи каждый из этих скиллов инструментом Skill до начала работы.'; }
-
-  get onDemandHow() {
-    return 'Загрузи инструментом Skill те из этих скиллов, чьё описание подходит к файлам реквеста; остальные не загружай.';
-  }
+  get skillsHow() { return 'Load each of these with the Skill tool before you start.'; }
 
   skillRef(name) { return `${STAGE_PLUGIN}:${name}`; }
 

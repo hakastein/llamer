@@ -8,26 +8,26 @@ export class AmendCommand extends Command {
   }
 
   get summary() {
-    return 'поправить уже записанную находку по её номеру';
+    return 'correct a finding you already recorded, by its number';
   }
 
   get manual() {
-    return 'Меняются только названные поля; номер остаётся, и вердикты и метки повтора'
-      + ' продолжают указывать на неё. Правит только находки своего этапа.';
+    return 'Only the named fields change; the number stays, so verdicts and duplicate'
+      + ' marks keep pointing at it. Amends only findings recorded by your own stage.';
   }
 
   get options() {
     return [
-      { flags: '--id <number>', hint: 'номер из ответа batch или list', required: true },
-      { flags: '--text <text>', hint: 'что не так и как это решить' },
+      { flags: '--id <number>', hint: 'the number the batch report printed', required: true },
+      { flags: '--text <text>', hint: 'what is wrong and how to solve it' },
       {
         flags: '--severity <level>',
-        hint: 'ступень, на которую находку ставит последствие',
+        hint: 'the level the consequence puts the finding on',
         choices: SEVERITIES,
       },
-      { flags: '--severity-reason <text>', hint: 'чем обоснован вес' },
-      { flags: '--related <list>', hint: 'куда ты смотрел, «путь:строка» через запятую' },
-      { flags: '--suggestion <code>', hint: 'полная замена выделенного фрагмента' },
+      { flags: '--severity-reason <text>', hint: 'what justifies the severity' },
+      { flags: '--related <list>', hint: 'where you looked, «path:line» comma-separated' },
+      { flags: '--suggestion <code>', hint: 'a complete replacement for the highlighted fragment' },
     ];
   }
 

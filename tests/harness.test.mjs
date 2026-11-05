@@ -20,14 +20,16 @@ const DIFF = [
 ].join('\n');
 
 // Несколько этапов одного прогона — общий `journalDir`, у каждого свой файл журнала.
-function stage(commands, { name = 'logic', journalDir = null, threads = [] } = {}) {
+function stage(commands, {
+  name = 'logic', journalDir = null, threads = [], relatedRequired = true,
+} = {}) {
   const dir = tempDir('llamer-harness-');
   const journal = journalDir ?? join(dir, 'journal');
   mkdirSync(journal, { recursive: true });
   write(dir, 'src/A.php', 'one\nnew\nnewer\n');
   writeFileSync(join(dir, 'task.diff'), DIFF);
   writeFileSync(join(dir, 'brief.json'), JSON.stringify({
-    stage: name, name, journalDir: journal, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands, threads,
+    stage: name, name, journalDir: journal, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands, threads, relatedRequired,
   }));
   const call = (...args) => spawnSync(process.execPath, [HARNESS, ...args], {
     cwd: dir, encoding: 'utf-8', env: { ...process.env, LLAMER_BRIEF: join(dir, 'brief.json') },
@@ -84,11 +86,22 @@ test('неизвестный флаг и пропущенный обязател
   const { call } = stage(['finding', 'stop']);
 
   assert.match(call('stop', '--why', 'x').stderr, /отказ: неизвестный флаг/);
-  assert.match(call('stop').stderr, /отказ: нужен --reason: почему разбор прекращён/);
+  assert.match(call('stop').stderr, /отказ: нужен --reason: why the review was aborted/);
   const help = call('finding', '--help');
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /--line-end <number>.*\[обязателен\]/);
-  assert.match(call('--help').stdout, /Команды этапа:\n {2}finding/);
+  // Раскладка commander: колонка флагов по самому длинному, описание переносится в 80 символов.
+  assert.match(help.stdout, /^Usage: review finding \[options\]\n\nrecord a remark on the request, anchored to diff lines\n/);
+  assert.match(help.stdout, /\n {2}--line-end <number> {7}last line of it; no default, so repeat --line for a\n {28}one-line remark \[required\]\n/);
+  assert.match(help.stdout, /\(choices: "minor", "major", "critical"\)/);
+  assert.match(help.stdout, /\n {2}-h, --help {16}display this message\n/);
+  assert.match(call('--help').stdout, /Stage commands:\n {2}finding/);
+});
+
+test('находке комментариев --related не обязателен: место доказывает сам комментарий', () => {
+  const bare = finding('3').slice(0, -2);
+
+  assert.match(stage(['finding']).call(...bare).stderr, /нужен --related/);
+  assert.equal(stage(['finding'], { relatedRequired: false }).call(...bare).status, 0);
 });
 
 test('батч приводит JSON-значения к виду флагов: false у --deleted не делает находку удалённой', () => {

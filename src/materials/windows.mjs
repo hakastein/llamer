@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const FINDING_PAD = 3;
+const WINDOW_FALLBACK = 6;
+const CONTEXT_CAP = 40;
 
 export function fileReader(cwd) {
   const cache = new Map();
@@ -24,6 +26,66 @@ export function extractFindingContext(fileText, lineStart, lineEnd) {
   const body = [];
   for (let i = from; i <= to; i += 1) body.push(`L${i}\t${lines[i - 1] ?? ''}`);
   return body.join('\n');
+}
+
+function braceBodyEnd(lines, from, cap) {
+  let depth = 0;
+  let seen = false;
+  let end = from - 1;
+  for (let i = from; i <= cap; i += 1) {
+    for (const char of lines[i - 1] ?? '') {
+      if (char === '{') {
+        depth += 1;
+        seen = true;
+      } else if (char === '}') depth -= 1;
+    }
+    end = i;
+    if (seen && depth <= 0) break;
+  }
+  return end;
+}
+
+/**
+ * Фрагменты «комментарий + код под ним»: смежные строки-комментарии (разрыв ≤1)
+ * образуют шапку, за ней идёт тело до закрытия скобки либо окно в
+ * WINDOW_FALLBACK строк.
+ *
+ * Пометка `L<n>+` обязательна: комментарий, чья шапка попала внутрь окна
+ * предыдущего фрагмента, иначе неотличим от старого окружения — и этап его
+ * не разбирает.
+ */
+export function extractCommentContext(fileText, commentLines) {
+  const lines = fileText.split('\n');
+  const isAdded = new Set(commentLines);
+  const blocks = [];
+  for (const number of [...commentLines].sort((a, b) => a - b)) {
+    const last = blocks[blocks.length - 1];
+    if (last && number <= last.commentEnd + 1) last.commentEnd = number;
+    else blocks.push({ commentStart: number, commentEnd: number });
+  }
+
+  const fragments = [];
+  let prevEnd = 0;
+  for (const block of blocks) {
+    let bodyStart = block.commentEnd + 1;
+    while (bodyStart <= lines.length && lines[bodyStart - 1]?.trim() === '') bodyStart += 1;
+    const opensBrace = bodyStart <= lines.length
+      && bodyStart <= block.commentEnd + 3
+      && (lines.slice(block.commentEnd, bodyStart).join('') + (lines[bodyStart - 1] ?? '')).includes('{');
+    const end = opensBrace
+      ? braceBodyEnd(lines, bodyStart, Math.min(lines.length, block.commentStart + CONTEXT_CAP))
+      : Math.min(lines.length, block.commentEnd + WINDOW_FALLBACK);
+    const start = Math.max(prevEnd + 1, block.commentStart);
+    if (start > end) continue;
+
+    const body = [];
+    for (let i = start; i <= end; i += 1) {
+      body.push(`L${i}${isAdded.has(i) ? '+' : ''}\t${lines[i - 1] ?? ''}`);
+    }
+    fragments.push(body.join('\n'));
+    prevEnd = end;
+  }
+  return fragments.join('\n  …\n');
 }
 
 /**
@@ -55,4 +117,17 @@ export function findingContexts(findings, cwd) {
     }
     return enriched;
   });
+}
+
+/** Добавленные комментарии реквеста с кодом под ними — материал этапа комментариев. */
+export function commentsContext(diff, cwd) {
+  const read = fileReader(cwd);
+  const parts = [];
+  for (const [file, commentLines] of diff.addedCommentLines()) {
+    const text = read(file);
+    if (text === null) continue;
+    const fragment = extractCommentContext(text, commentLines);
+    if (fragment) parts.push(`${file}\n${fragment}`);
+  }
+  return parts.join('\n\n');
 }

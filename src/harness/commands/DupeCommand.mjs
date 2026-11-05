@@ -8,19 +8,19 @@ export class DupeCommand extends Command {
   }
 
   get summary() {
-    return 'пометить находку повтором другой';
+    return 'mark a finding as a duplicate of another one';
   }
 
   get manual() {
-    return 'Тот же дефект, что у другой находки: то же место, та же причина. Помеченная'
-      + ' выбывает — в --of ставь лучше написанную из двух.';
+    return 'Same defect as another finding: same place, same cause. The marked one drops'
+      + ' out — --of should be the better-written of the two.';
   }
 
   get options() {
     return [
-      { flags: '--id <number>', hint: 'номер находки-повтора', required: true },
-      { flags: '--of <number>', hint: 'номер находки, которая остаётся', required: true },
-      { flags: '--reason <text>', hint: 'почему это то же место и та же причина', required: true },
+      { flags: '--id <number>', hint: 'the number of the duplicate finding', required: true },
+      { flags: '--of <number>', hint: 'the number of the finding that stays', required: true },
+      { flags: '--reason <text>', hint: 'why this is the same place and the same cause', required: true },
     ];
   }
 

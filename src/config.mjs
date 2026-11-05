@@ -14,22 +14,19 @@ export const ASSESSED = 'assessed';
 
 export const SERVICE_STAGES = ['assess', 'dedupe', 'skeptic', 'threads'];
 
-const LOGIC_MANDATE = 'Бизнес-логика: что реквест делает, делает ли он то, что просили в задаче, и что он'
-  + ' ломает — доменные правила, полнота случаев, деньги, целостность данных, доступ. Файлы данных —'
-  + ' локализация, .json, .yaml, .sql, спеки — разбираются по диффу и поиском: нет ли дубля, есть ли'
-  + ' строка в других локалях.';
-const QUALITY_MANDATE = 'Качество кода: каждый файл реквеста проходит каталог скилла reviewing-code-quality,'
-  + ' и сработавший пункт становится находкой на той строке, где он сработал.';
-
 /**
- * Встроенные этапы идут всегда. Мандат служебного этапа — в его шаблоне, у
- * разбирающих — здесь; скиллы — из `skills/` пакета.
+ * Встроенные этапы идут всегда. Задание каждого — в его шаблоне; `title`
+ * встроенного разбирающего этапа — то, как его называют дедупликация и скептик.
+ * Скиллы — из `skills/` пакета; методу тестов и комментариев своего скилла в
+ * пакете нет, его дают конфигом. `paths` — маски по умолчанию.
  */
 export const BUILTIN_STAGES = {
   assess: { skills: ['assessing-review-scope'], level: 1 },
   threads: { skills: [], level: 1 },
-  logic: { skills: ['reviewing-business-logic'], level: ASSESSED, mandate: LOGIC_MANDATE },
-  quality: { skills: ['reviewing-code-quality'], level: 2, mandate: QUALITY_MANDATE },
+  logic: { skills: ['reviewing-business-logic'], level: ASSESSED, title: 'the business-logic reviewer' },
+  quality: { skills: ['reviewing-code-quality'], level: 2, title: 'the code-quality reviewer' },
+  comments: { skills: [], level: 1, title: 'the comments reviewer' },
+  tests: { skills: [], level: 1, title: 'the test reviewer', paths: ['**/tests/**'] },
   dedupe: { skills: [], level: 1 },
   skeptic: { skills: ['refuting-review-findings'], level: ASSESSED },
 };
@@ -45,9 +42,11 @@ export const DEFAULT_LEVELS = [
   { driver: 'claude', model: 'claude-opus-5-5', effort: 'high' },
 ];
 
-const ROOT_KEYS = ['version', 'skillPaths', 'allow', 'drivers', 'levels', 'tracker', 'sharedBranches', 'stages'];
-const BUILTIN_KEYS = ['skills', 'level', 'allow'];
-const STAGE_KEYS = ['mandate', 'skills', 'level', 'paths', 'allow'];
+const ROOT_KEYS = ['version', 'skillPaths', 'allow', 'prompt', 'drivers', 'levels', 'tracker', 'sharedBranches', 'stages'];
+const BUILTIN_KEYS = ['skills', 'level', 'allow', 'prompt'];
+const BUILTIN_ANALYSIS_KEYS = [...BUILTIN_KEYS, 'paths'];
+const STAGE_KEYS = ['task', 'skills', 'level', 'paths', 'allow', 'prompt'];
+const PROMPT_KEYS = ['protocol', 'plan'];
 const SKILLS_KEYS = ['always', 'onDemand'];
 const DRIVER_KEYS = ['bin', 'env'];
 const LEVEL_KEYS = ['driver', 'model', 'effort'];
@@ -162,13 +161,27 @@ function parseSkills(read, raw, path, base) {
 }
 
 /**
- * Этап конфига поверх встроенного: встроенному добавляются скиллы, задаются
- * уровень и `allow`; свой этап несёт мандат и маски путей.
+ * Строки задания, которые знает проект, а не движок: `protocol` дописывается в
+ * «How This Run Works», `plan` заменяет план по умолчанию (поиск по тексту).
+ * Так проект говорит этапу о навигации, которую сам поднял и разрешил в `allow`.
  */
-function parseStage(read, key, raw) {
+function parsePrompt(read, raw, path) {
+  if (raw === undefined) return {};
+  const value = read.object(raw, path, PROMPT_KEYS);
+  return Object.fromEntries(PROMPT_KEYS.filter((key) => value[key] !== undefined)
+    .map((key) => [key, read.string(value[key], `${path}.${key}`)]));
+}
+
+/**
+ * Этап конфига поверх встроенного: встроенному добавляются скиллы, задаются
+ * уровень, `allow` и `prompt`, разбирающему — ещё маски; свой этап несёт задачу
+ * и маски путей. `prompt` этапа перекрывает общий по ключам.
+ */
+function parseStage(read, key, raw, prompt) {
   const path = `stages.${key}`;
   const builtin = BUILTIN_STAGES[key];
-  const stage = read.object(raw, path, builtin ? BUILTIN_KEYS : STAGE_KEYS);
+  const keys = builtin ? (builtin.title ? BUILTIN_ANALYSIS_KEYS : BUILTIN_KEYS) : STAGE_KEYS;
+  const stage = read.object(raw, path, keys);
   if (!builtin && !STAGE_ID.test(key)) read.fail(path, `имя этапа не подходит под ${STAGE_ID}`);
   const level = parseLevel(read, stage.level, `${path}.level`, builtin?.level ?? ASSESSED);
   if (level === ASSESSED && BEFORE_ASSESSMENT.includes(key)) {
@@ -176,11 +189,13 @@ function parseStage(read, key, raw) {
   }
   return {
     key,
-    mandate: builtin ? builtin.mandate ?? null : read.string(stage.mandate, `${path}.mandate`),
+    title: builtin ? builtin.title ?? null : `the ${key} stage`,
+    task: builtin ? null : read.string(stage.task, `${path}.task`),
     skills: parseSkills(read, stage.skills ?? {}, `${path}.skills`, builtin?.skills ?? []),
-    paths: read.strings(stage.paths, `${path}.paths`),
+    paths: stage.paths === undefined ? builtin?.paths ?? [] : read.strings(stage.paths, `${path}.paths`),
     level,
     allow: read.strings(stage.allow, `${path}.allow`, COMMAND),
+    prompt: { ...prompt, ...parsePrompt(read, stage.prompt, `${path}.prompt`) },
   };
 }
 
@@ -213,10 +228,11 @@ export function parseConfig(raw, { file, env = process.env }) {
   const drivers = {};
   for (const name of Object.keys(DRIVER_DEFAULTS)) drivers[name] = parseDriver(read, name, config.drivers?.[name], env);
 
+  const prompt = parsePrompt(read, config.prompt, 'prompt');
   const own = config.stages === undefined ? {} : read.object(config.stages, 'stages', Object.keys(Object(config.stages)));
   const stages = {};
   for (const key of new Set([...Object.keys(BUILTIN_STAGES), ...Object.keys(own)])) {
-    stages[key] = parseStage(read, key, Object.hasOwn(own, key) ? own[key] : {});
+    stages[key] = parseStage(read, key, Object.hasOwn(own, key) ? own[key] : {}, prompt);
   }
 
   const base = dirname(file);

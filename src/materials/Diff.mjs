@@ -4,6 +4,8 @@ import { fileReader } from './windows.mjs';
 
 const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
+const COMMENT_LINE = /^(\/\/|\/\*|\*\/|\*|#|<!--|-->)/;
+
 function sideOf(store, header, prefix) {
   const path = header.slice(4).trim();
   if (path === '/dev/null') return null;
@@ -201,8 +203,22 @@ export class Diff {
         ? widenFromWorkTree({
           files: this.files, added: this.added, removed: this.removed, read: this.#read, context,
         })
-        : git(['diff', `-U${context}`, ...this.revs, '--', ...this.files], this.#cwd));
+        // git() срезает перевод строки в конце вывода — дифф отдаётся таким, каким его печатает git.
+        : `${git(['diff', `-U${context}`, ...this.revs, '--', ...this.files], this.#cwd)}\n`);
     }
     return this.#widened.get(context);
+  }
+
+  /** Добавленные строки-комментарии по файлам: Map<путь, номера строк по возрастанию>. */
+  addedCommentLines() {
+    const byFile = new Map();
+    for (const [file, lines] of this.added) {
+      const numbers = [...lines.entries()]
+        .filter(([, entry]) => COMMENT_LINE.test(entry.text.trim()))
+        .map(([number]) => number)
+        .sort((a, b) => a - b);
+      if (numbers.length > 0) byFile.set(file, numbers);
+    }
+    return byFile;
   }
 }

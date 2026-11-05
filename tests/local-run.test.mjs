@@ -24,7 +24,7 @@ test('--local: конвейер на заглушке claude доходит до
   assert.equal(answer.assessment.level, 2);
   // Два разбирающих этапа отметили одно место — дедупликация оставила одну находку.
   assert.equal(answer.findings.length, 1);
-  assert.deepEqual(answer.summaries.map((summary) => summary.stage).sort(), ['logic', 'quality']);
+  assert.deepEqual(answer.summaries.map((summary) => summary.stage).sort(), ['logic']);
   assert.match(readFileSync(answer.report, 'utf-8'), /## Находки: 1/);
 
   // Токен, напечатанный заглушкой в находке, не доходит ни до отчёта, ни до журналов.
@@ -34,8 +34,8 @@ test('--local: конвейер на заглушке claude доходит до
   assert.match(answer.findings[0].text, /токен \*\*\*REDACTED\*\*\*/);
   assert.ok(written.every((text) => !text.includes(SECRETS.GITLAB_TOKEN)), 'токен в отчёте или журнале');
 
-  // Этап docs не поднялся: файлов под его маски в изменениях нет. Тредов локально нет.
-  assert.deepEqual(stagesOf(result.launches), ['assess', 'dedupe', 'logic', 'quality', 'skeptic']);
+  // Этапы docs и tests не поднялись: файлов под их маски в изменениях нет. Тредов локально нет.
+  assert.deepEqual(stagesOf(result.launches), ['assess', 'comments', 'dedupe', 'logic', 'quality', 'skeptic']);
   assert.equal(git(root, 'status', '--porcelain'), statusBefore, 'индекс и рабочее дерево разработчика не тронуты');
 });
 
@@ -119,7 +119,7 @@ test('этап claude изолирован: свои разрешения, ок�
 
   const logic = launches.find((launch) => launch.stage === 'logic').prompt;
   assert.match(logic, /- stage:reviewing-business-logic\n- stage:reviewing\n/, 'always: встроенный и добавленный конфигом');
-  assert.match(logic, /- stage:backend — Use when the request touches PHP/, 'onDemand — с описанием');
+  assert.doesNotMatch(logic, /backend/, 'onDemand в задании не называется: claude видит скиллы плагина сам');
 });
 
 test('--local на драйвере codex: read-only, временные HOME и CODEX_HOME, журнал пишет правилом', async () => {
@@ -136,11 +136,11 @@ test('--local на драйвере codex: read-only, временные HOME и
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).findings.length, 1);
-  assert.deepEqual(stagesOf(result.launches), ['assess', 'dedupe', 'logic', 'quality', 'skeptic']);
+  assert.deepEqual(stagesOf(result.launches), ['assess', 'comments', 'dedupe', 'logic', 'quality', 'skeptic']);
   for (const launch of result.launches) {
     assert.equal(launch.driver, 'codex');
     assert.deepEqual(launch.argv.slice(0, 4), ['exec', '--json', '--sandbox', 'read-only'], launch.stage);
-    assert.ok(launch.argv.includes('--ignore-user-config'), launch.stage);
+    assert.ok(!launch.argv.includes('--ignore-user-config'), `${launch.stage}: config.toml этапа — свой, его надо читать`);
     assert.ok(launch.argv.includes('skills.bundled.enabled=false'), `${launch.stage}: встроенные скиллы codex отключены`);
     assert.notEqual(launch.home, result.env.HOME, `${launch.stage}: личный HOME`);
     assert.notEqual(launch.codexHome, result.env.CODEX_HOME, `${launch.stage}: личный CODEX_HOME`);
@@ -151,10 +151,12 @@ test('--local на драйвере codex: read-only, временные HOME и
     for (const name of Object.keys(SECRETS)) assert.ok(!launch.env.includes(name), `${launch.stage}: ${name}`);
   }
   const logic = result.launches.find((launch) => launch.stage === 'logic');
-  assert.match(logic.prompt, /^Дальше — материал merge request/, 'общий пакет — началом stdin');
+  assert.match(logic.config, /^developer_instructions = "What follows is the material of a merge request/, 'общий пакет — developer_instructions');
+  assert.match(logic.prompt, /^You are a Senior Software Engineer/, 'в задании пакета нет');
+  assert.equal(result.launches.find((launch) => launch.stage === 'dedupe').config, '', 'дедупликации пакет не нужен');
+  assert.match(logic.prompt, /closed as `values\['"'"'severity'"'"'\]`/, 'кавычка — в форме, которую признают правила codex');
   assert.match(logic.prompt, /- \$reviewing-business-logic\n- \$reviewing\n/, 'always — упоминанием $имя, оно подключает скилл');
-  assert.match(logic.prompt, /\n- backend — Use when the request touches PHP/, 'onDemand — именем с описанием');
-  assert.doesNotMatch(logic.prompt, /\$backend/, 'упоминание подключило бы onDemand без выбора');
+  assert.doesNotMatch(logic.prompt, /backend/, 'onDemand в задании не называется: упоминание подключило бы его без выбора');
   for (const name of ['reviewing', 'backend']) {
     assert.ok(logic.skills?.includes(name), `${name}: codex не найдёт скилл в $HOME/.agents/skills`);
   }
@@ -169,20 +171,20 @@ test('--local на драйвере codex: read-only, временные HOME и
 
 
 test('этап вышел без сводки или с отклонённым вызовом харнесса — сорван: код 1, причина в отчёте', async () => {
-  for (const [knob, reason] of [
-    ['STUB_NO_SUMMARY', 'сводка не записана'],
-    ['STUB_DENY_STAGE', 'вызовов харнесса не дошло до журнала: 1'],
+  for (const [knob, stage, reason] of [
+    ['STUB_NO_SUMMARY', 'logic', 'сводка не записана'],
+    ['STUB_DENY_STAGE', 'quality', 'вызовов харнесса не дошло до журнала: 1'],
   ]) {
-    const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { env: { [knob]: 'quality' } } } } });
+    const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { env: { [knob]: stage } } } } });
 
     const result = await run(root, ['--local']);
 
     assert.equal(result.status, 1, knob);
     const answer = JSON.parse(result.stdout);
-    assert.ok(answer.gaps.includes(`этап «quality» сорвался: ${reason}`), `${knob}: ${answer.gaps}`);
+    assert.ok(answer.gaps.includes(`этап «${stage}» сорвался: ${reason}`), `${knob}: ${answer.gaps}`);
     const report = readFileSync(answer.report, 'utf-8');
-    assert.match(report, new RegExp(`## Недостача\\n\\n- этап «quality» сорвался: ${reason}`), knob);
-    assert.match(report, new RegExp(`quality \\(${reason}\\)`), `${knob}: этап помечен в таблице цены`);
+    assert.match(report, new RegExp(`## Недостача\\n\\n- этап «${stage}» сорвался: ${reason}`), knob);
+    assert.match(report, new RegExp(`${stage} \\(${reason}\\)`), `${knob}: этап помечен в таблице цены`);
   }
 });
 
@@ -228,7 +230,7 @@ test('нет токена трекера — preflight сообщает проб
 
 test('--preflight: пробелы окружения JSON-ом, без флага прогон не стартует', async () => {
   const config = { ...CONFIG, tracker: { type: 'youtrack', issuePattern: 'PROJ-\\d+' } };
-  config.stages = { ...CONFIG.stages, extra: { skills: { always: ['missing-skill'] }, mandate: 'Что-то ещё.' } };
+  config.stages = { ...CONFIG.stages, extra: { skills: { always: ['missing-skill'] }, task: 'Что-то ещё.' } };
   const root = makeRepo({ config });
 
   const preflight = await run(root, ['--local', '--preflight'], { YOUTRACK_URL: '' });
@@ -262,20 +264,62 @@ test('конфиг из одной версии: встроенные этапы
 
   const result = await run(root, ['--local']);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(stagesOf(result.launches), ['assess', 'dedupe', 'logic', 'quality', 'skeptic']);
+  assert.deepEqual(stagesOf(result.launches), ['assess', 'comments', 'dedupe', 'logic', 'quality', 'skeptic']);
   const prompts = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.prompt]));
   assert.match(prompts.assess, /- stage:assessing-review-scope/);
   assert.match(prompts.logic, /- stage:reviewing-business-logic/);
-  assert.match(prompts.logic, /Бизнес-логика: что реквест делает/, 'встроенный мандат');
   assert.match(prompts.quality, /- stage:reviewing-code-quality/);
   assert.match(prompts.skeptic, /- stage:refuting-review-findings/);
-  assert.match(prompts.skeptic, /- quality: Качество кода: каждый файл/, 'скептик видит мандаты встроенных этапов');
+  assert.match(prompts.skeptic, /written by different stages: the business-logic reviewer, the code-quality reviewer, the comments reviewer and the test reviewer\./);
   const plugin = join(JSON.parse(result.stdout).artifacts, 'stage-plugin', 'skills');
   assert.deepEqual(readdirSync(plugin).sort(), ['assessing-review-scope', 'refuting-review-findings', 'reviewing-business-logic', 'reviewing-code-quality']);
 });
 
+test('встроенный разбирающий этап идёт своим шаблоном старого движка, свой этап — общим с его task', async () => {
+  const root = makeRepo();
+  write(root, 'docs/guide.md', 'Руководство.\n');
+  write(root, 'tests/OrderTest.php', '<?php\n\n// Проверяет сумму заказа.\nfunction testTotal() {}\n');
+
+  const result = await run(root, ['--local']);
+
+  assert.equal(result.status, 0, result.stderr);
+  const prompts = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.prompt]));
+  assert.match(prompts.logic, /^You are a Senior Software Engineer with expertise in domain logic/);
+  assert.match(prompts.quality, /^You are a Senior Software Engineer with expertise in readability/);
+  assert.match(prompts.comments, /^You are a Senior Software Engineer with expertise in code documentation/);
+  assert.match(prompts.comments, /<added_comments>\ntests\/OrderTest\.php\nL3\+\t\/\/ Проверяет сумму заказа\.\nL4\tfunction testTotal\(\) \{\}/);
+  assert.match(prompts.tests, /^You are a Senior Test Engineer/);
+  assert.match(prompts.tests, /Files:\n\n- tests\/OrderTest\.php\n\n/, 'тестам — только файлы под их маски');
+  assert.match(prompts.docs, /^Документация\.\n\nFindings outside this task are not yours/);
+  // Сводку пишут бизнес-логика и свой этап, как reviewer старого движка; остальные разбирающие — без неё.
+  const summary = /\$ review summary --help/;
+  for (const stage of ['logic', 'docs']) assert.match(prompts[stage], summary, stage);
+  for (const stage of ['quality', 'comments', 'tests']) assert.doesNotMatch(prompts[stage], summary, stage);
+  assert.match(prompts.skeptic, /written by different stages: the business-logic reviewer, the code-quality reviewer, the comments reviewer, the test reviewer and the docs stage\./);
+});
+
+test('prompt конфига: строка протокола — в «How This Run Works», план заменяет поиск по тексту; без него — поиск', async () => {
+  const config = {
+    ...CONFIG,
+    prompt: { protocol: '`nav` is up.', plan: 'Plan with `nav def`.' },
+    stages: { ...CONFIG.stages, quality: { prompt: { plan: 'Quality plan.' } } },
+  };
+  const prompts = Object.fromEntries((await run(makeRepo({ config }), ['--local'])).launches
+    .map((launch) => [launch.stage, launch.prompt]));
+  const plain = Object.fromEntries((await run(makeRepo(), ['--local'])).launches.map((launch) => [launch.stage, launch.prompt]));
+
+  for (const stage of ['assess', 'logic', 'skeptic']) {
+    assert.match(prompts[stage], /such files open by direct path\.\n`nav` is up\.\nLinters, tests/, stage);
+  }
+  assert.match(prompts.logic, /## Your Plan\n\nPlan with `nav def`\.\n\nThen work through the plan\./);
+  assert.match(prompts.quality, /## Your Plan\n\nQuality plan\.\n\nThen work through the plan\./);
+  assert.doesNotMatch(prompts.logic, /or a text search/);
+  assert.match(plain.logic, /direct path\.\nLinters, tests/);
+  assert.match(plain.logic, /## Your Plan\n\nPresent a plan before your first search: [^\n]*, or a text search\./);
+});
+
 test('этап идёт драйвером своего уровня', async () => {
-  // Уровень 1 — codex: оценщик и дедупликация на нём; logic и скептик — на уровне оценщика (2), quality — на 2.
+  // Уровень 1 — codex: оценщик, комментарии и дедупликация на нём; logic и скептик — на уровне оценщика (2), quality — на 2.
   const root = makeRepo({ config: { ...CONFIG, levels: levels({ 1: 'codex' }) } });
 
   const result = await run(root, ['--local']);
@@ -283,7 +327,7 @@ test('этап идёт драйвером своего уровня', async () 
   assert.equal(result.status, 0, result.stderr);
   const driverOf = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.driver]));
   assert.deepEqual(driverOf, {
-    assess: 'codex', dedupe: 'codex', logic: 'claude', quality: 'claude', skeptic: 'claude',
+    assess: 'codex', comments: 'codex', dedupe: 'codex', logic: 'claude', quality: 'claude', skeptic: 'claude',
   });
 });
 

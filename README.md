@@ -4,7 +4,7 @@
 через этапы на моделях (`claude` или `codex`) и отдаёт результат либо в GitLab — тредами
 на строках, либо агенту, который его запустил, — отчётом и JSON.
 
-Знания о конкретном проекте в движке нет. Встроенные этапы с мандатами и скиллами идут без
+Знания о конкретном проекте в движке нет. Встроенные этапы со своими заданиями и скиллами идут без
 настройки; свои этапы, скиллы сверх встроенных, разрешённые команды, драйверы, уровни и
 трекер задаёт `.llamer.json` в корне проекта.
 
@@ -142,6 +142,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | `version` | версия схемы, сейчас `1` | обязателен |
 | `skillPaths` | каталоги скиллов: скилл — подкаталог с `SKILL.md`. Путь — от каталога конфига, `~` и `${VAR}` раскрываются. Одноимённые скиллы в разных каталогах — ошибка; одноимённый со встроенным скилл ошибкой не считается, этап получает встроенный | `[]` |
 | `allow` | команды, разрешённые всем этапам, — префиксы из слов без метасимволов оболочки (`"rg"`, `"git log"`). Команды харнесса разрешены всегда | `[]` |
+| `prompt` | строки задания, которые знает проект: `protocol` дописывается в раздел «How This Run Works» после строк о поиске, `plan` заменяет план по умолчанию в «Your Plan» (поиск по тексту). Так проект говорит этапам о навигации, которую сам поднял и разрешил в `allow`, — пример ниже | `{}` |
 | `drivers.<claude\|codex>` | `bin` — бинарь, `env` — переменные окружения этапов этого драйвера, `${VAR}` в значениях раскрывается из окружения движка, как в `skillPaths` | `bin` — `claude` / `codex` |
 | `levels` | ровно пять уровней глубины `{ "driver", "model", "effort" }`, `driver` — `claude` или `codex`. Этап идёт драйвером и моделью своего уровня | пять уровней `claude`, см. «Драйверы» |
 | `tracker` | `{ "type": "youtrack", "issuePattern": "<регулярка>" }` — номер задачи ищется регуляркой в имени ветки, текст задачи идёт этапам. `{ "type": "none" }` — без трекера | `none` |
@@ -150,29 +151,34 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 
 Встроенные этапы идут всегда, даже без записи в `stages`:
 
-| Этап | Скилл метода | Уровень по умолчанию |
-|---|---|---|
-| `assess` | `assessing-review-scope` | 1 |
-| `threads` | — | 1 |
-| `logic` | `reviewing-business-logic` | `"assessed"` |
-| `quality` | `reviewing-code-quality` | 2 |
-| `dedupe` | — | 1 |
-| `skeptic` | `refuting-review-findings` | `"assessed"` |
+| Этап | Скилл метода | Уровень по умолчанию | Файлы по умолчанию |
+|---|---|---|---|
+| `assess` | `assessing-review-scope` | 1 | — |
+| `threads` | — | 1 | — |
+| `logic` | `reviewing-business-logic` | `"assessed"` | все |
+| `quality` | `reviewing-code-quality` | 2 | все |
+| `comments` | — | 1 | все, разбираются добавленные комментарии |
+| `tests` | — | 1 | `**/tests/**` |
+| `dedupe` | — | 1 | — |
+| `skeptic` | `refuting-review-findings` | `"assessed"` | — |
 
-Мандат у встроенных этапов зашит в движок: `logic` — что реквест делает, делает ли то, что
-просили в задаче, и что ломает (доменные правила, полнота случаев, деньги, целостность
-данных, доступ); `quality` — каждый файл реквеста проходит каталог скилла, сработавший пункт
-— находка на своей строке.
+Задание встроенного этапа — его шаблон в движке, по-английски: `logic` разбирает, делает ли
+реквест то, что просили в задаче, и что он ломает, и закрывает разбор сводкой; `quality` проходит
+каждый файл по каталогу своего скилла; `comments` — добавленные комментарии и докблоки с кодом под
+ними; `tests` — поймает ли каждый тестовый кейс дефект. Метод `comments` и `tests` задаёт проект
+своими скиллами в `skills.always`. Свой этап идёт общим шаблоном, в который подставляется его
+`task`, и тоже закрывает разбор сводкой.
 
 Ключи этапа:
 
 | Ключ | Что задаёт | Встроенный | Свой | По умолчанию |
 |---|---|---|---|---|
-| `mandate` | мандат: что этап разбирает и что не его | ошибка | обязателен | — |
-| `skills` | `{ "always": [...], "onDemand": [...] }`, оба списка необязательны. `always` — задание велит загрузить скилл до начала работы; `onDemand` — задание перечисляет скиллы с `description` из frontmatter их `SKILL.md`, и этап грузит те, чьё описание подходит к файлам реквеста. Встроенному этапу скиллы добавляются к его скиллам метода, убрать их нельзя. Один скилл в обоих списках — ошибка | да | да | `{}` |
+| `task` | задача этапа: кто он, что проверить и где ставить находку — первый абзац задания | ошибка | обязателен | — |
+| `skills` | `{ "always": [...], "onDemand": [...] }`, оба списка необязательны. `always` — задание велит загрузить скилл до начала работы; `onDemand` — скилл доступен этапу, но в задании не называется: claude и codex сами видят скиллы прогона с `description` из frontmatter и берут подходящие к реквесту. Встроенному этапу скиллы добавляются к его скиллам метода, убрать их нельзя. Один скилл в обоих списках — ошибка | да | да | `{}` |
 | `level` | `"assessed"` — уровень от оценщика, или число 1–5. У `assess` и `threads` — только число: они идут до вердикта | да | да | встроенный — свой уровень, свой этап — `"assessed"` |
 | `allow` | команды сверх общего `allow` — только этому этапу | да | да | `[]` |
-| `paths` | маски файлов (`src/**`, `**/*.php`); этап разбирает только их и не поднимается без них. Маска с `!` исключает, как в `.gitignore`: файл подходит, если подходит хотя бы под одну маску без `!` и ни под одну с `!` (`["tests/**", "!tests/e2e/**"]`); без масок без `!` подходят все файлы | ошибка | да | все файлы |
+| `prompt` | как общий `prompt`, только этому этапу; перекрывает общий по ключам | да | да | общий `prompt` |
+| `paths` | маски файлов (`src/**`, `**/*.php`); этап разбирает только их и не поднимается без них. Маска с `!` исключает, как в `.gitignore`: файл подходит, если подходит хотя бы под одну маску без `!` и ни под одну с `!` (`["**/tests/**", "!tests/e2e/**"]`); без масок без `!` подходят все файлы | у `logic`, `quality`, `comments`, `tests` | да | см. таблицу встроенных, свой — все файлы |
 
 Имя своего этапа — `[a-z][a-z0-9-]*`.
 
@@ -182,7 +188,11 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 {
   "version": 1,
   "skillPaths": ["${AGENT_TOOLS}/plugins/review/skills", "skills"],
-  "allow": ["rg"],
+  "allow": ["rg", "nav def", "nav ref"],
+  "prompt": {
+    "protocol": "`nav` is up and its index is current: its answers need no checking.",
+    "plan": "Present a plan before your first search: the questions this stage has to answer, and where each answer comes from — the diff, a file to open, `nav def` for a declaration or `nav ref` for its callers."
+  },
   "tracker": { "type": "youtrack", "issuePattern": "\\bPROJ-\\d+\\b" },
   "sharedBranches": ["develop", "main"],
   "drivers": { "codex": { "bin": "codex" } },
@@ -196,10 +206,10 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
   "stages": {
     "logic": { "skills": { "always": ["project-knowledge"], "onDemand": ["developing-backend", "developing-frontend"] } },
     "quality": { "level": 4 },
-    "tests": {
-      "mandate": "Тесты: ловит ли каждый кейс дефект.",
-      "skills": { "always": ["reviewing-tests"] },
-      "paths": ["tests/**", "!tests/e2e/**"],
+    "tests": { "skills": { "always": ["reviewing-tests"] }, "paths": ["**/tests/**", "!tests/e2e/**"] },
+    "docs": {
+      "task": "You review the documentation this merge request changed: does it still match the code.",
+      "paths": ["docs/**"],
       "level": 1
     }
   }
@@ -215,9 +225,9 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 |---|---|---|
 | запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin |
 | песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
-| изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json`, `--ignore-user-config` |
-| скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | каталог скиллов прогона — `$HOME/.agents/skills` этапа, встроенные скиллы codex отключены; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком, `onDemand` — именем с описанием |
-| общий пакет | `--append-system-prompt-file` | начало stdin |
+| изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json` и своим `config.toml` |
+| скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | каталог скиллов прогона — `$HOME/.agents/skills` этапа, встроенные скиллы codex отключены; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком |
+| общий пакет | системным промптом: `--append-system-prompt-file` | developer-сообщением поверх базового промпта: `developer_instructions` в `config.toml` этапа (аргументом `-c` пакет не пройдёт — один аргумент ограничен 128 КиБ) |
 | цена | из потока | по ценам OpenAI API (Standard, промпт длиннее 272K дороже) и usage каждого запроса из журнала сессии в `CODEX_HOME` этапа; известны `gpt-6.1-sol` и `gpt-6.1-terra`, у остальных моделей `$?` |
 | размер контекста | пик по `usage` запросов в потоке | пик по журналу сессии |
 | вход | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` или креды в конфиге | `CODEX_API_KEY`, `OPENAI_API_KEY` или `$CODEX_HOME/auth.json` |

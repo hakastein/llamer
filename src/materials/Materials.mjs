@@ -48,5 +48,5 @@ export class Materials {
   get sharedPack() { return this.#data.pack.shared(); }
 
   /** Часть пакета, своя у этапа: задача, со ссылкой на общую часть. */
-  renderPack() { return this.#data.pack.forStage(); }
+  renderPack(options) { return this.#data.pack.forStage(options); }
 }

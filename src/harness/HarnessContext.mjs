@@ -19,6 +19,8 @@ export class HarnessContext {
 
   get commands() { return this.#brief.commands; }
 
+  get relatedRequired() { return this.#brief.relatedRequired; }
+
   get journal() { return this.#journal; }
 
   get state() {

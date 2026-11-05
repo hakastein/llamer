@@ -19,6 +19,7 @@ const prompt = Buffer.concat(chunks).toString('utf-8');
 const brief = JSON.parse(readFileSync(process.env.LLAMER_BRIEF, 'utf-8'));
 const rules = join(process.env.CODEX_HOME ?? '', 'rules', 'llamer.rules');
 const skills = join(process.env.HOME ?? '', '.agents', 'skills');
+const config = join(process.env.CODEX_HOME ?? '', 'config.toml');
 
 appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   driver: 'codex',
@@ -31,6 +32,7 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   auth: existsSync(join(process.env.CODEX_HOME ?? '', 'auth.json')),
   rules: existsSync(rules) ? readFileSync(rules, 'utf-8') : null,
   skills: existsSync(skills) ? readdirSync(skills).sort() : null,
+  config: existsSync(config) ? readFileSync(config, 'utf-8') : null,
 })}\n`);
 
 // Журнал сессии, как у codex: по записи на запрос, сумма — в turn.completed ниже.

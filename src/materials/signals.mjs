@@ -1,3 +1,6 @@
+// Конфиги инструментов массовой автоправки: их правка в реквесте — признак механики.
+const MECHANICAL_CONFIGS = ['rector.php', '.php-cs-fixer.dist.php', '.php-cs-fixer.php'];
+
 // 300 файлов с одним паттерном — одна правка, повторённая 300 раз, а не 300
 // разных. Вход обязан быть `git diff -U0`: на широком контексте соседние
 // правки объединяются в один ханк, и функция теряет точность.
@@ -24,8 +27,10 @@ export function mechanicalShare(diff) {
 }
 
 export function formatSignalsSummary(signals) {
-  return `Файлов ${signals.size.files}, изменённых строк ${signals.size.changedLines}.\n`
+  return `Файлов ${signals.size.files}, изменённых строк ${signals.size.changedLines}.`
+    + ` Тесты в реквесте: ${signals.hasTests ? 'есть' : 'нет'}.\n`
     + `Признаки механической правки: доля однотипных ханков ${signals.mechanical.share.toFixed(2)}`
+    + `, конфиги ${signals.mechanical.configs.join(', ') || 'нет'}`
     + `, маркеров @generated ${signals.mechanical.generatedMarkers}.`;
 }
 
@@ -42,13 +47,17 @@ function generatedMarkers(diff) {
 }
 
 export function collectRiskSignals(diff) {
+  const { files } = diff;
   return {
-    size: { files: diff.files.length, changedLines: diff.changedLineCount },
+    size: { files: files.length, changedLines: diff.changedLineCount },
     mechanical: {
       // Узкий дифф: mechanicalShare считает ханки, и ширина контекста меняет их
       // границы, а с ними и результат.
       share: mechanicalShare(diff.text({ context: 0 })),
+      configs: files.filter((file) => MECHANICAL_CONFIGS.includes(file.split('/').pop())),
       generatedMarkers: generatedMarkers(diff),
     },
+    // Сегмент пути, а не префикс от корня: тесты лежат и не под корневым tests/.
+    hasTests: files.some((file) => file.split('/').includes('tests')),
   };
 }

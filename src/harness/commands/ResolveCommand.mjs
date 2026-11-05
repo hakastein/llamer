@@ -7,18 +7,19 @@ export class ResolveCommand extends Command {
   }
 
   get summary() {
-    return 'закрыть наш открытый тред, который текущий код снял';
+    return 'close an open review thread the current code has settled';
   }
 
   get manual() {
-    return 'Закрывает наш тред, оставленный открытым прошлыми прогонами. Читай замечание как'
-      + ' ТРЕБОВАНИЕ: оно снято, когда текущий код ему отвечает, где бы этот код теперь ни жил.';
+    return 'Closes a thread of ours that earlier runs left open. Treat the remark as a'
+      + ' REQUIREMENT: it is settled once the current code satisfies it, wherever that'
+      + ' code now lives.';
   }
 
   get options() {
     return [
-      { flags: '--id <id>', hint: 'id треда из списка в твоём задании', required: true },
-      { flags: '--reason <text>', hint: 'что именно в этой ревизии сняло замечание', required: true },
+      { flags: '--id <id>', hint: 'the thread id from the list in your task', required: true },
+      { flags: '--reason <text>', hint: 'what exactly settled the remark in this revision', required: true },
     ];
   }
 

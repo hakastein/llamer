@@ -61,6 +61,8 @@ export class ReviewStage {
 
   get projectMemory() { return false; }
 
+  get relatedRequired() { return true; }
+
   get commands() { return ['stop']; }
 
   values() { throw new Error(`${this.constructor.name}: значения шаблона не объявлены`); }
@@ -83,14 +85,15 @@ export class ReviewStage {
   #shared(driver) {
     const { protocol, library, commands } = this.#toolkit;
     const wanted = this.template.names;
+    const { prompt } = this.settings;
     const shared = {
-      PROTOCOL: protocol.protocol(),
-      HARNESS: protocol.harness(),
+      PROTOCOL: protocol.protocol(prompt.protocol),
+      HARNESS: protocol.harness(driver.quote),
       COMMANDS: describeCommands(commands, this.commands).trimEnd(),
       SKILLS: driver.skillsBlock(library, this.skills),
     };
     if (wanted.has('DIFF_ORIGIN')) shared.DIFF_ORIGIN = protocol.diffOrigin();
-    if (wanted.has('PLAN')) shared.PLAN = protocol.plan(this.allow);
+    if (wanted.has('PLAN')) shared.PLAN = protocol.plan(prompt.plan);
     return shared;
   }
 
@@ -181,6 +184,7 @@ export class ReviewStage {
       journalDir: this.journal.dir,
       baseSha: materials.baseSha,
       diffPath: materials.diffPath,
+      relatedRequired: this.relatedRequired,
       commands: this.commands,
     };
   }

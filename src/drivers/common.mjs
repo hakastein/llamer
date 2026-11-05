@@ -27,7 +27,8 @@ export function binaryGap(name, settings, env) {
 
 /**
  * Общее у драйверов: блок скиллов в задании. Как этап берёт скилл, говорит
- * наследник: `skillsHow`, `onDemandHow`, `skillRef(name)` и `onDemandRef(name)`.
+ * наследник: `skillsHow` и `skillRef(name)`; как пишется одинарная кавычка
+ * внутри текста в вызове — `quote`.
  */
 export class StageDriver {
   #settings;
@@ -38,24 +39,16 @@ export class StageDriver {
 
   get settings() { return this.#settings; }
 
-  onDemandRef(name) { return this.skillRef(name); }
+  get quote() { return "'\\''"; }
 
-  // Скиллы onDemand этап выбирает сам по описанию из frontmatter: грузить все
-  // на каждый дифф стоило бы токенов на скиллах, которым в реквесте нечего делать.
+  // Скиллы onDemand в задании не перечисляются: claude и codex сами видят скиллы
+  // прогона с описаниями из frontmatter и берут подходящие к реквесту.
   skillsBlock(library, { always, onDemand }) {
     library.assertPresent([...always, ...onDemand]);
-    const blocks = [];
-    if (always.length > 0) {
-      blocks.push('## Твой метод\n\n'
-        + `${this.skillsHow} Это твой метод,\n`
-        + 'он обязателен, и ниже его содержание не повторяется.\n\n'
-        + always.map((name) => `- ${this.skillRef(name)}`).join('\n'));
-    }
-    if (onDemand.length > 0) {
-      blocks.push('## Скиллы по файлам\n\n'
-        + `${this.onDemandHow}\n\n`
-        + onDemand.map((name) => `- ${this.onDemandRef(name)} — ${library.description(name)}`).join('\n'));
-    }
-    return blocks.join('\n\n');
+    if (always.length === 0) return '';
+    return '## Your Method\n\n'
+      + `${this.skillsHow} They are your method,\n`
+      + 'they are not optional, and nothing below repeats what is in them.\n\n'
+      + always.map((name) => `- ${this.skillRef(name)}`).join('\n');
   }
 }

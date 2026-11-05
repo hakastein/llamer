@@ -1,8 +1,10 @@
 import { ReviewStage, FINDING_COMMANDS } from './ReviewStage.mjs';
-import { bullets, formatFindings, formatStages } from './prompt.mjs';
+import {
+  bullets, formatFindings, formatStages, packBlock,
+} from './prompt.mjs';
 import { formatSignalsSummary } from '../materials/signals.mjs';
-import { findingContexts } from '../materials/windows.mjs';
-import { analysisStages } from '../config.mjs';
+import { commentsContext, findingContexts } from '../materials/windows.mjs';
+import { analysisStages, BUILTIN_STAGES } from '../config.mjs';
 
 /** Оценщик: природа правки, риск и уровень, на котором пойдёт разбор. */
 export class AssessStage extends ReviewStage {
@@ -49,7 +51,7 @@ export class ThreadsStage extends ReviewStage {
     return {
       THREADS: materials.openThreads
         .map((thread) => `- id ${thread.id} — ${thread.at}\n  ${thread.text}`
-          + (thread.reply ? `\n  ответ автора: ${thread.reply}` : ''))
+          + (thread.reply ? `\n  author's reply: ${thread.reply}` : ''))
         .join('\n'),
       PACK: materials.renderPack(),
     };
@@ -57,8 +59,23 @@ export class ThreadsStage extends ReviewStage {
 }
 
 /**
- * Разбирающий этап — встроенный или свой из конфига: мандат, скиллы, маски
- * путей, уровень и расширение `allow`. Пишет находки и сводку по своему мандату.
+ * Чем встроенные разбирающие этапы отличаются друг от друга, кроме шаблона:
+ * вывод по реквесту (`summary`) пишет только бизнес-логика, память проекта
+ * нужна логике и качеству, задача из трекера качеству кода не нужна. Свой
+ * этап конфига устроен как бизнес-логика.
+ */
+const ANALYSIS_TRAITS = {
+  logic: { summary: true, projectMemory: true, withTask: true },
+  quality: { summary: false, projectMemory: true, withTask: false },
+  comments: { summary: false, projectMemory: false, withTask: true },
+  tests: { summary: false, projectMemory: false, withTask: true },
+};
+const CUSTOM_TRAITS = ANALYSIS_TRAITS.logic;
+
+/**
+ * Разбирающий этап — встроенный или свой из конфига: скиллы, маски путей,
+ * уровень и расширение `allow`. У встроенного свой шаблон, у своего — общий
+ * `analysis` с задачей из конфига.
  */
 export class AnalysisStage extends ReviewStage {
   #settings;
@@ -72,11 +89,20 @@ export class AnalysisStage extends ReviewStage {
 
   get key() { return this.settings.key; }
 
-  get templateKey() { return 'analysis'; }
+  get #builtin() { return this.key in BUILTIN_STAGES; }
 
-  get projectMemory() { return true; }
+  get #traits() { return ANALYSIS_TRAITS[this.key] ?? CUSTOM_TRAITS; }
 
-  get commands() { return [...FINDING_COMMANDS, 'summary', ...super.commands]; }
+  get templateKey() { return this.#builtin ? this.key : 'analysis'; }
+
+  get projectMemory() { return this.#traits.projectMemory; }
+
+  // Комментарий сам и есть место находки: о декларации этап скажет в --related, когда она есть.
+  get relatedRequired() { return this.key !== 'comments'; }
+
+  get commands() {
+    return [...FINDING_COMMANDS, ...(this.#traits.summary ? ['summary'] : []), ...super.commands];
+  }
 
   applies(materials) {
     return materials.filesMatching(this.settings.paths).length > 0;
@@ -87,15 +113,21 @@ export class AnalysisStage extends ReviewStage {
   }
 
   values({ materials }) {
-    return {
-      NAME: this.key,
-      MANDATE: this.settings.mandate.trim(),
-      FILES: bullets(materials.filesMatching(this.settings.paths)),
-      TASK_NOTE: materials.issueId
-        ? `Задача ${materials.issueId} — в пакете ниже: сверь реализацию с тем, что просили.`
-        : '',
-      PACK: materials.renderPack(),
-    };
+    const wanted = this.template.names;
+    const values = {};
+    if (wanted.has('FILES')) values.FILES = bullets(materials.filesMatching(this.settings.paths));
+    if (wanted.has('PACK')) values.PACK = materials.renderPack({ withTask: this.#traits.withTask });
+    if (wanted.has('COMMENTS')) {
+      values.COMMENTS = packBlock(commentsContext(materials.diff, materials.cwd), '(no added comments)');
+    }
+    if (wanted.has('TASK')) values.TASK = this.settings.task.trim();
+    if (wanted.has('TASK_NOTE')) {
+      values.TASK_NOTE = materials.issueId
+        ? `Task ${materials.issueId} is in the pack below — check the implementation `
+          + 'against what was asked for.'
+        : '';
+    }
+    return values;
   }
 }
 

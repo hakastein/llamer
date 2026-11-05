@@ -20,20 +20,41 @@ function parseOptionsOf(command) {
   return options;
 }
 
-export function helpOf(command) {
-  const lines = [`Использование: ${HARNESS} ${command.name} [флаги]`, '', command.summary];
-  if (command.manual) lines.push('', command.manual);
-  if (command.options.length > 0) {
-    lines.push('', 'Флаги:');
-    for (const option of command.options) {
-      const marks = [
-        option.required ? 'обязателен' : null,
-        option.choices ? `одно из: ${option.choices.join(', ')}` : null,
-      ].filter(Boolean);
-      lines.push(`  ${option.flags}  ${option.hint}${marks.length > 0 ? ` [${marks.join('; ')}]` : ''}`);
+// Справка — в раскладке commander, как её печатал харнесс до переноса в LLaMer:
+// этапы и тексты заданий выросли на ней.
+const HELP_WIDTH = 80;
+const MIN_WRAP = 40;
+
+// Перенос по пробелам с сохранением переводов строк (commander Help.boxWrap).
+function boxWrap(text, width) {
+  return text.split('\n').map((line) => {
+    const chunks = line.match(/\s*\S+/g);
+    if (!chunks) return '';
+    const lines = [chunks.shift()];
+    for (const chunk of chunks) {
+      if (lines.at(-1).length + chunk.length <= width) lines[lines.length - 1] += chunk;
+      else lines.push(chunk.trimStart());
     }
-  }
-  return `${lines.join('\n')}\n`;
+    return lines.join('\n');
+  }).join('\n');
+}
+
+function optionText(option) {
+  const text = option.required ? `${option.hint} [required]` : option.hint;
+  return option.choices ? `${text} (choices: ${option.choices.map((choice) => JSON.stringify(choice)).join(', ')})` : text;
+}
+
+export function helpOf(command) {
+  const items = [...command.options.map((option) => [option.flags, optionText(option)]), ['-h, --help', 'display this message']];
+  const termWidth = Math.max(...items.map(([term]) => term.length));
+  const descriptionWidth = HELP_WIDTH - termWidth - 4;
+  const item = ([term, text]) => {
+    const wrapped = descriptionWidth < MIN_WRAP ? text : boxWrap(text, descriptionWidth);
+    return `  ${term.padEnd(termWidth)}  ${wrapped.replace(/\n/g, `\n${' '.repeat(termWidth + 4)}`)}`;
+  };
+  const description = command.manual ? `${command.summary}\n\n${command.manual}` : command.summary;
+  return [`Usage: ${HARNESS} ${command.name} [options]`, '', boxWrap(description, HELP_WIDTH), '', 'Options:',
+    ...items.map(item), ''].join('\n');
 }
 
 export function describeCommands(commands, names) {
@@ -45,9 +66,9 @@ export function describeCommands(commands, names) {
 
 function overview(commands, names) {
   const own = commands.filter((command) => names.includes(command.name));
-  return [`${HARNESS} — запись событий ревью в журнал прогона.`, '', 'Команды этапа:',
+  return [`${HARNESS} — record review events into the run journal.`, '', 'Stage commands:',
     ...own.map((command) => `  ${command.name}  ${command.summary}`),
-    '', `Справка по команде: ${HARNESS} <команда> --help`].join('\n');
+    '', `Command help: ${HARNESS} <command> --help`].join('\n');
 }
 
 /**

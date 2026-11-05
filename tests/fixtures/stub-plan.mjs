@@ -40,7 +40,7 @@ const PLAN = {
   ]),
 };
 
-// Разбирающий этап: находка на первой изменённой строке первого файла и сводка.
+// Разбирающий этап: находка на первой изменённой строке первого файла и сводка, если она у этапа есть.
 // В тексте находки — токен GitLab, как если бы модель вычитала его из дерева:
 // наружу он должен уйти вымаранным.
 // STUB_STOP_STAGE задаётся конфигом теста через drivers.<имя>.env: этап прекращает работу командой stop;
@@ -59,7 +59,7 @@ function analysis({ brief }) {
       '--related', `${file}:${line}`,
     ]);
   }
-  if (process.env.STUB_NO_SUMMARY !== brief.stage) {
+  if (brief.commands.includes('summary') && process.env.STUB_NO_SUMMARY !== brief.stage) {
     commands.push(['summary', '--text', `заглушка этапа ${brief.stage}: разбора кода не было`]);
   }
   return commands;

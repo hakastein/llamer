@@ -7,7 +7,7 @@ export class ThreadCommand extends Command {
   }
 
   get summary() {
-    return 'напечатать тред реквеста целиком, с ответами автора';
+    return 'print a request thread in full, with the author\'s replies';
   }
 
   get prints() {
@@ -15,7 +15,7 @@ export class ThreadCommand extends Command {
   }
 
   get options() {
-    return [{ flags: '--id <id>', hint: 'id треда из списка в твоём задании', required: true }];
+    return [{ flags: '--id <id>', hint: 'the thread id from the pack', required: true }];
   }
 
   build(values, context) {

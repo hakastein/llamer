@@ -5,8 +5,7 @@ import { LEVEL_COUNT } from '../../config.mjs';
 const NATURES = ['mechanical', 'behavioral'];
 const RISKS = ['low', 'medium', 'high'];
 
-const LEVEL_HINT = `глубина разбора: от 1 (дешевле всего, поверхностно) до ${LEVEL_COUNT}`
-  + ' (дороже всего, глубже всего); каждая ступень — модель × усилие драйвера';
+const LEVEL_HINT = `how deep the review goes: 1 (cheapest) to ${LEVEL_COUNT} (priciest)`;
 
 export class AssessCommand extends Command {
   get name() {
@@ -14,19 +13,19 @@ export class AssessCommand extends Command {
   }
 
   get summary() {
-    return 'записать вердикт по реквесту: природа правки, риск и глубина разбора';
+    return 'record the verdict on the request: nature, risk and review depth';
   }
 
   get options() {
     return [
       {
-        flags: '--nature <kind>', hint: 'меняется ли поведение', required: true, choices: NATURES,
+        flags: '--nature <kind>', hint: 'does behaviour change', required: true, choices: NATURES,
       },
       {
-        flags: '--risk <level>', hint: 'та же оценка в три ступени', required: true, choices: RISKS,
+        flags: '--risk <level>', hint: 'the same assessment in three steps', required: true, choices: RISKS,
       },
       { flags: '--level <number>', hint: LEVEL_HINT, required: true },
-      { flags: '--reason <text>', hint: 'чем обоснованы вердикты', required: true },
+      { flags: '--reason <text>', hint: 'what justifies the verdicts', required: true },
     ];
   }
 

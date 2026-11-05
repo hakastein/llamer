@@ -40,7 +40,7 @@ export const CONFIG = {
   stages: {
     logic: { skills: { always: ['reviewing'], onDemand: ['backend'] }, allow: ['git log'] },
     skeptic: { skills: { always: ['refuting'] } },
-    docs: { mandate: 'Документация.', paths: ['docs/**'] },
+    docs: { task: 'Документация.', paths: ['docs/**'] },
   },
 };
 

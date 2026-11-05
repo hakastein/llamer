@@ -9,27 +9,27 @@ export class VerdictCommand extends Command {
   }
 
   get summary() {
-    return 'вынести вердикт по записанной находке: в силе или опровергнута';
+    return 'pass a verdict on a recorded finding: stands or refuted';
   }
 
   get options() {
     return [
-      { flags: '--id <number>', hint: '#N находки из списка в твоём задании', required: true },
+      { flags: '--id <number>', hint: 'the #N of the finding from the list in your task', required: true },
       {
-        flags: '--refuted <bool>', hint: 'падает ли находка', required: true, choices: BOOLEANS,
+        flags: '--refuted <bool>', hint: 'does the finding fall', required: true, choices: BOOLEANS,
       },
       {
         flags: '--reason <text>',
-        hint: 'решающий факт с файлом и строкой: что её опровергает или почему она стоит'
-          + ' и какую ступень веса ты подтвердил',
+        hint: 'the decisive fact with file and line: what refutes it, or why it stands'
+          + ' and which step of the scale you confirmed',
         required: true,
       },
       {
         flags: '--severity <level>',
-        hint: 'пересмотренный вес; идёт только вместе с --severity-reason',
+        hint: 'the revised severity; goes only together with --severity-reason',
         choices: SEVERITIES,
       },
-      { flags: '--severity-reason <text>', hint: 'на чём стоит пересмотренный вес' },
+      { flags: '--severity-reason <text>', hint: 'what the revised severity rests on' },
     ];
   }
 

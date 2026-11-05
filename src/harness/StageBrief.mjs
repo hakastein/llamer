@@ -31,5 +31,8 @@ export class StageBrief {
 
   get commands() { return this.#data.commands ?? []; }
 
+  /** Требовать ли у находки `--related`: этапу комментариев место докажет сам комментарий. */
+  get relatedRequired() { return this.#data.relatedRequired !== false; }
+
   get threads() { return this.#data.threads ?? []; }
 }

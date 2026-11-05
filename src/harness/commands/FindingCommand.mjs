@@ -8,57 +8,69 @@ export class FindingCommand extends Command {
   }
 
   get summary() {
-    return 'записать замечание к реквесту, привязанное к строкам диффа';
+    return 'record a remark on the request, anchored to diff lines';
   }
 
   get manual() {
-    return 'Выдели всё, о чём замечание, — условие, вызов, ветку или метод целиком: туда'
-      + ' встанет тред.\n'
-      + 'Для УДАЛЁННОГО кода — --deleted, привязка к старой стороне; иначе тред встанет на'
-      + ' новую сторону, на то, что пришло на замену.';
+    return 'Highlight everything the remark is about — the whole condition, call, branch or'
+      + ' method; that is where the thread anchors.\n'
+      + 'For DELETED code use --deleted, anchored on the old side; otherwise the thread lands'
+      + ' on the new side, on whatever replaced it.';
   }
 
   get options() {
     return [
-      { flags: '--file <path...>', hint: 'путь от корня репозитория, как в диффе', required: true },
-      { flags: '--line <number>', hint: 'первая строка фрагмента', required: true },
       {
-        flags: '--line-end <number>',
-        hint: 'последняя его строка; умолчания нет, для однострочного замечания повтори --line',
+        flags: '--file <path...>',
+        hint: 'a repo-root-relative path, as in the diff',
         required: true,
       },
-      { flags: '--text <text>', hint: 'что не так и как это решить', required: true },
       {
-        flags: '--severity <level>', hint: 'ступень, на которую находку ставит последствие', required: true, choices: SEVERITIES,
+        flags: '--line <number>',
+        hint: 'first line of the fragment',
+        required: true,
+      },
+      {
+        flags: '--line-end <number>',
+        hint: 'last line of it; no default, so repeat --line for a one-line remark',
+        required: true,
+      },
+      {
+        flags: '--text <text>',
+        hint: 'what is wrong and how to solve it',
+        required: true,
+      },
+      {
+        flags: '--severity <level>', hint: 'the level the consequence puts the finding on', required: true, choices: SEVERITIES,
       },
       {
         flags: '--severity-reason <text>',
-        hint: 'то одно последствие, что ставит её туда, — не то же, что --text',
+        hint: 'the one consequence that puts it there, distinct from --text',
         required: true,
       },
       {
         flags: '--related <list>',
-        hint: 'на чём стоит замечание: «путь», «путь:строка» или «путь:строка-строка»'
-          + ' через запятую; остальное в значении молча отбрасывается. Строки — из новой'
-          + ' версии даже с --deleted',
+        hint: 'what the remark rests on: «path», «path:line» or «path:line-line»,'
+          + ' comma-separated; anything else in the value is dropped silently. Lines are'
+          + ' from the new version even with --deleted',
       },
-      { flags: '--trace <text>', hint: 'цепочка рассуждения для находки о взаимодействии' },
+      { flags: '--trace <text>', hint: 'the chain of reasoning, for a finding about interaction' },
       {
         flags: '--suggestion <code>',
-        hint: 'заменяет ВЕСЬ фрагмент, любой длины; кнопка применяет его не читая, поэтому'
-          + ' предлагай, только когда знаешь правку целиком. Разметку добавят за тебя',
+        hint: 'replaces the WHOLE fragment, any length; the button applies it unread, so'
+          + ' offer one only when you know the whole fix. Markup is added for you',
       },
       {
         flags: '--deleted',
-        hint: 'фрагмент — удалённые строки: --line/--line-end из версии ДО реквеста'
-          + ' (git show <база>:<файл>)',
+        hint: 'the fragment is deleted lines: --line/--line-end are from the version'
+          + ' BEFORE the request (git show <base>:<file>)',
       },
     ];
   }
 
   build(values, context) {
     const related = parseRelated(values.related);
-    if (related.length === 0) {
+    if (context.relatedRequired && related.length === 0) {
       throw new Refusal('нужен --related: куда ты смотрел, устанавливая находку'
         + ' («путь:строка» через запятую). Если находка очевидна по одной строке,'
         + ' назови эту строку.');

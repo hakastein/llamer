@@ -69,7 +69,8 @@ export function sessionTotals(model, requests) {
 
 const codexHomeOf = (env) => env.CODEX_HOME || join(homedir(), '.codex');
 
-const toml = (value) => JSON.stringify(value);
+// Строка TOML в форме JSON: экранирование у них общее, кроме DEL — его TOML в базовой строке не пускает.
+const toml = (value) => JSON.stringify(value).replaceAll('\x7f', '\\u007f');
 
 /**
  * Разрешённая правилом команда исполняется вне песочницы read-only: только так
@@ -190,23 +191,22 @@ export class CodexDriver extends StageDriver {
 
   // Скиллы прогона codex находит сам в `$HOME/.agents/skills` этапа, а упоминание
   // `$имя` в задании подключает скилл целиком ещё до первого хода.
-  get skillsHow() { return 'Эти скиллы подключены упоминанием — их текст уже у тебя, следуй им с начала работы.'; }
-
-  get onDemandHow() {
-    return 'Загрузи те из этих скиллов, чьё описание подходит к файлам реквеста; остальные не загружай.';
-  }
+  get skillsHow() { return 'Each of these is attached by its mention below — its text is already with you, follow it from the start.'; }
 
   skillRef(name) { return `$${name}`; }
 
-  // Без `$`: упоминание подключило бы скилл сразу, а onDemand этап выбирает сам.
-  onDemandRef(name) { return name; }
+  // Не '\'': правило codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
+  get quote() { return "'\"'\"'"; }
 
   /**
    * Свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME — там
    * только скиллы прогона, встроенные отключены; конфиг и правила — из
    * CODEX_HOME, а правила у этапов разные (`allow` этапа). Журнал сессии
    * остаётся в CODEX_HOME этапа: по нему считаются цена и размер контекста.
-   * Общая часть пакета идёт началом stdin: кэш префикса делится между этапами.
+   * Общая часть пакета — `developer_instructions` в config.toml этого CODEX_HOME:
+   * developer-сообщение поверх базового промпта, как системный промпт у claude,
+   * и кэш префикса делится между этапами. Аргументом `-c` пакет не пройдёт:
+   * один аргумент в Linux ограничен 128 килобайтами.
    */
   launch({
     stage, level, projectMemory, allow, shared, prompt, env,
@@ -217,6 +217,7 @@ export class CodexDriver extends StageDriver {
     mkdirSync(join(codexHome, 'rules'), { recursive: true });
     writeFileSync(join(codexHome, 'rules', RULES_FILE), rulesFor(allow));
     if (existsSync(this.#auth)) copyFileSync(this.#auth, join(codexHome, 'auth.json'));
+    writeFileSync(join(codexHome, 'config.toml'), shared ? `developer_instructions = ${toml(shared.text)}\n` : '');
     const skills = join(home, '.agents', 'skills');
     if (this.#runSkills && !existsSync(skills)) {
       mkdirSync(join(home, '.agents'), { recursive: true });
@@ -228,7 +229,6 @@ export class CodexDriver extends StageDriver {
         'exec', '--json',
         '--sandbox', 'read-only',
         '--skip-git-repo-check',
-        '--ignore-user-config',
         '-c', 'skills.bundled.enabled=false',
         '-m', model,
         '-c', `model_reasoning_effort=${toml(effort)}`,
@@ -239,7 +239,7 @@ export class CodexDriver extends StageDriver {
       env: {
         ...this.#env, ...env, HOME: home, CODEX_HOME: codexHome,
       },
-      input: shared ? `${shared.text}\n\n${prompt}` : prompt,
+      input: prompt,
       model,
       effort,
       normalize: codexNormalizer(model),
