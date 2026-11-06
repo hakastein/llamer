@@ -13,7 +13,6 @@ import { TaskChangesError } from './materials/taskChanges.mjs';
 import { prepareStageBin } from './agent/stageBin.mjs';
 import { prepareDriver } from './drivers/index.mjs';
 import { RunProtocol } from './stages/RunProtocol.mjs';
-import { createCommands } from './harness/createCommands.mjs';
 import { ReviewPipeline } from './pipeline.mjs';
 import { ReviewReport } from './report/ReviewReport.mjs';
 import { GitlabDelivery } from './report/GitlabDelivery.mjs';
@@ -80,7 +79,6 @@ async function review({
       config,
       shared,
       protocol: new RunProtocol({ materials }),
-      commands: createCommands(),
     };
     const outcome = await new ReviewPipeline(toolkit).run();
 

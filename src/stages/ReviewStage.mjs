@@ -1,7 +1,7 @@
 import { spawnStage } from '../agent/spawnStage.mjs';
 import { StageTelemetry } from '../agent/StageTelemetry.mjs';
 import { PromptTemplate } from './PromptTemplate.mjs';
-import { describeCommands } from '../harness/program.mjs';
+import { HARNESS } from '../agent/stageBin.mjs';
 import { BRIEF_ENV } from '../harness/StageBrief.mjs';
 import { ASSESSED, instanceName } from '../config.mjs';
 import { log } from '../log.mjs';
@@ -90,13 +90,13 @@ export class ReviewStage {
   }
 
   #shared(driver) {
-    const { protocol, library, commands } = this.#toolkit;
+    const { protocol, library } = this.#toolkit;
     const wanted = this.template.names;
     const { prompt } = this.settings;
     const shared = {
       PROTOCOL: protocol.protocol(prompt.protocol),
       HARNESS: protocol.harness(driver.quote),
-      COMMANDS: describeCommands(commands, this.commands).trimEnd(),
+      COMMANDS: `The recording command is \`${HARNESS}\`; its commands and their formats are in \`${HARNESS} --help\`.`,
       SKILLS: driver.skillsBlock(library, this.skills),
     };
     if (wanted.has('DIFF_ORIGIN')) shared.DIFF_ORIGIN = protocol.diffOrigin();

@@ -318,6 +318,20 @@ test('конфиг из версии и драйверов этапов: вст�
   assert.deepEqual(readdirSync(plugin).sort(), ['assessing-review-scope', 'refuting-review-findings', 'reviewing-business-logic', 'reviewing-code-quality']);
 });
 
+test('справки команд в задании нет — одна строка о `review --help`, а он даёт справку каждой команды этапа', async () => {
+  const result = await run(makeRepo(), ['--local']);
+
+  assert.equal(result.status, 0, result.stderr);
+  for (const { stage, prompt, commands, help } of result.launches) {
+    assert.match(prompt, /## Your Commands\n\nThe recording command is `review`; its commands and their formats are in `review --help`\.\n\n## /, stage);
+    assert.doesNotMatch(prompt, /Usage: review|\$ review/, stage);
+    for (const name of commands) {
+      assert.match(help, new RegExp(`\\n  ${name}  [^\\n]+\\n`), `${stage}: ${name} в перечне`);
+      assert.match(help, new RegExp(`\\n\\\$ review ${name} --help\\nUsage: review ${name} \\[options\\]\\n[^]*?\\nOptions:\\n`), `${stage}: справка ${name}`);
+    }
+  }
+});
+
 test('встроенный разбирающий этап идёт своим шаблоном старого движка, свой этап — общим с его task', async () => {
   const root = makeRepo();
   write(root, 'docs/guide.md', 'Руководство.\n');
@@ -335,9 +349,10 @@ test('встроенный разбирающий этап идёт своим �
   assert.match(prompts.tests, /Files:\n\n- tests\/OrderTest\.php\n\n/, 'тестам — только файлы под их маски');
   assert.match(prompts.docs, /^Документация\.\n\nFindings outside this task are not yours/);
   // Сводку пишут бизнес-логика и свой этап, как reviewer старого движка; остальные разбирающие — без неё.
+  const helps = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.help]));
   const summary = /\$ review summary --help/;
-  for (const stage of ['logic', 'docs']) assert.match(prompts[stage], summary, stage);
-  for (const stage of ['quality', 'comments', 'tests']) assert.doesNotMatch(prompts[stage], summary, stage);
+  for (const stage of ['logic', 'docs']) assert.match(helps[stage], summary, stage);
+  for (const stage of ['quality', 'comments', 'tests']) assert.doesNotMatch(helps[stage], summary, stage);
   assert.match(prompts.skeptic, /written by different stages: the business-logic reviewer, the code-quality reviewer, the comments reviewer, the test reviewer and the docs stage\./);
 });
 

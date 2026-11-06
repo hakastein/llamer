@@ -64,11 +64,12 @@ export function describeCommands(commands, names) {
     .join('\n');
 }
 
+// Справки команд в задании этапа нет: команды, поля и форматы — только здесь.
 function overview(commands, names) {
   const own = commands.filter((command) => names.includes(command.name));
   return [`${HARNESS} — record review events into the run journal.`, '', 'Stage commands:',
     ...own.map((command) => `  ${command.name}  ${command.summary}`),
-    '', `Command help: ${HARNESS} <command> --help`].join('\n');
+    '', describeCommands(commands, names), `Command help: ${HARNESS} <command> --help`].join('\n');
 }
 
 /**
