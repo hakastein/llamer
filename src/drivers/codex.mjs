@@ -11,6 +11,7 @@ import { log } from '../log.mjs';
 export const CODEX_DEFAULTS = {
   bin: 'codex',
   env: {},
+  levels: ['medium', 'high', 'xhigh', 'max', 'ultra'].map((effort) => ({ model: 'gpt-6.1-sol', effort })),
 };
 
 export const CODEX_AUTH = ['CODEX_API_KEY', 'OPENAI_API_KEY'];

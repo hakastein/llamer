@@ -7,7 +7,8 @@ import { log } from './log.mjs';
 
 /**
  * Протокол прогона: волна оценки (оценщик и треды) → проверка вердикта →
- * волна разбирающих этапов на глубине от оценщика → дедупликация → скептик,
+ * волна разбирающих этапов на глубине от оценщика, экземпляр на каждый драйвер
+ * этапа → дедупликация → скептик,
  * каждому — свёртка предыдущих журналов. В каждой волне первым идёт ведущий
  * этап, остальные — с началом его ответа (`runWave`).
  */
@@ -36,7 +37,8 @@ export class ReviewPipeline {
     log(`оценка: ${assessment.nature}, риск ${assessment.risk}, уровень ${assessment.level}`);
 
     const deep = { assessed: assessment.level };
-    const review = analysisStages(toolkit.config).map((settings) => new AnalysisStage(toolkit, settings));
+    const review = analysisStages(toolkit.config)
+      .flatMap((settings) => settings.drivers.map((driver) => new AnalysisStage(toolkit, settings, driver)));
     const leader = review.find((stage) => stage.applies(toolkit.materials)) ?? review[0];
     await runWave(leader, review, deep);
 

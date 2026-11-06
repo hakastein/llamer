@@ -7,7 +7,7 @@ export const CONFIG_FILE = '.llamer.json';
 
 export const CONFIG_VERSION = 1;
 
-/** Уровней глубины пять: оценщик выбирает номер, этап идёт моделью этого уровня. */
+/** Уровней глубины пять: оценщик выбирает номер, этап идёт моделью этого уровня на лестнице своего драйвера. */
 export const LEVEL_COUNT = 5;
 
 export const ASSESSED = 'assessed';
@@ -34,22 +34,14 @@ export const BUILTIN_STAGES = {
 // Оценщик и треды идут до вердикта: уровня от оценщика у них ещё нет.
 const BEFORE_ASSESSMENT = ['assess', 'threads'];
 
-export const DEFAULT_LEVELS = [
-  { driver: 'claude', model: 'claude-sonnet-5-5', effort: 'medium' },
-  { driver: 'claude', model: 'claude-sonnet-5-5', effort: 'high' },
-  { driver: 'claude', model: 'claude-opus-5-5', effort: 'low' },
-  { driver: 'claude', model: 'claude-opus-5-5', effort: 'medium' },
-  { driver: 'claude', model: 'claude-opus-5-5', effort: 'high' },
-];
-
-const ROOT_KEYS = ['version', 'skillPaths', 'allow', 'prompt', 'drivers', 'levels', 'tracker', 'sharedBranches', 'stages'];
-const BUILTIN_KEYS = ['skills', 'level', 'allow', 'prompt'];
+const ROOT_KEYS = ['version', 'skillPaths', 'allow', 'prompt', 'drivers', 'tracker', 'sharedBranches', 'stages'];
+const BUILTIN_KEYS = ['drivers', 'skills', 'level', 'allow', 'prompt'];
 const BUILTIN_ANALYSIS_KEYS = [...BUILTIN_KEYS, 'paths'];
-const STAGE_KEYS = ['task', 'skills', 'level', 'paths', 'allow', 'prompt'];
+const STAGE_KEYS = ['task', 'drivers', 'skills', 'level', 'paths', 'allow', 'prompt'];
 const PROMPT_KEYS = ['protocol', 'plan'];
 const SKILLS_KEYS = ['always', 'onDemand'];
-const DRIVER_KEYS = ['bin', 'env'];
-const LEVEL_KEYS = ['driver', 'model', 'effort'];
+const DRIVER_KEYS = ['bin', 'env', 'levels'];
+const LEVEL_KEYS = ['model', 'effort'];
 const TRACKER_KEYS = ['type', 'issuePattern'];
 const TRACKERS = ['youtrack', 'none'];
 
@@ -122,23 +114,42 @@ function parseDriver(read, name, raw, processEnv) {
   return {
     bin: value.bin === undefined ? defaults.bin : read.string(value.bin, `drivers.${name}.bin`),
     env: { ...defaults.env, ...env },
+    levels: parseLevels(read, value.levels, `drivers.${name}.levels`, defaults.levels),
   };
 }
 
-function parseLevels(read, raw) {
-  if (raw === undefined) return DEFAULT_LEVELS;
+// Лестница своя у каждого драйвера: номер уровня один, модели у драйверов разные.
+function parseLevels(read, raw, path, fallback) {
+  if (raw === undefined) return fallback;
   if (!Array.isArray(raw) || raw.length !== LEVEL_COUNT) {
-    read.fail('levels', `должен быть списком из ${LEVEL_COUNT} уровней`);
+    read.fail(path, `должен быть списком из ${LEVEL_COUNT} уровней`);
   }
   return raw.map((level, index) => {
-    const path = `levels[${index}]`;
-    read.object(level, path, LEVEL_KEYS);
+    const at = `${path}[${index}]`;
+    read.object(level, at, LEVEL_KEYS);
     return {
-      driver: read.oneOf(level.driver, `${path}.driver`, Object.keys(DRIVER_DEFAULTS)),
-      model: read.string(level.model, `${path}.model`),
-      effort: read.string(level.effort, `${path}.effort`),
+      model: read.string(level.model, `${at}.model`),
+      effort: read.string(level.effort, `${at}.effort`),
     };
   });
+}
+
+/**
+ * Драйверы этапа — явно у каждого, у встроенного тоже: умолчание выбрало бы
+ * за проект, на чьи деньги идёт этап. Служебный этап — один на прогон.
+ */
+function parseStageDrivers(read, raw, path, key) {
+  const names = Object.keys(DRIVER_DEFAULTS);
+  if (!Array.isArray(raw) || raw.length === 0) {
+    read.fail(path, `не задан — у каждого этапа, и у встроенного, драйверы задаются явно: непустой список из ${names.join(', ')}`);
+  }
+  const drivers = raw.map((name, index) => read.oneOf(name, `${path}[${index}]`, names));
+  const repeated = drivers.filter((name, index) => drivers.indexOf(name) !== index);
+  if (repeated.length > 0) read.fail(path, `драйвер повторяется: ${repeated.join(', ')}`);
+  if (SERVICE_STAGES.includes(key) && drivers.length !== 1) {
+    read.fail(path, `${key} — служебный этап, он идёт одним экземпляром: ровно один драйвер`);
+  }
+  return drivers;
 }
 
 function parseLevel(read, value, path, fallback) {
@@ -191,6 +202,7 @@ function parseStage(read, key, raw, prompt) {
     key,
     title: builtin ? builtin.title ?? null : `the ${key} stage`,
     task: builtin ? null : read.string(stage.task, `${path}.task`),
+    drivers: parseStageDrivers(read, stage.drivers, `${path}.drivers`, key),
     skills: parseSkills(read, stage.skills ?? {}, `${path}.skills`, builtin?.skills ?? []),
     paths: stage.paths === undefined ? builtin?.paths ?? [] : read.strings(stage.paths, `${path}.paths`),
     level,
@@ -244,7 +256,6 @@ export function parseConfig(raw, { file, env = process.env }) {
       })),
     allow: read.strings(config.allow, 'allow', COMMAND),
     drivers,
-    levels: parseLevels(read, config.levels),
     tracker: parseTracker(read, config.tracker),
     sharedBranches: read.strings(config.sharedBranches, 'sharedBranches'),
     stages,
@@ -267,9 +278,14 @@ export function analysisStages(config) {
   return Object.values(config.stages).filter((stage) => !SERVICE_STAGES.includes(stage.key));
 }
 
-/** Драйверы уровней: этап идёт драйвером своего уровня, а уровень от оценщика известен только в прогоне. */
+/** Драйверы всех этапов конфига. */
 export function driversInUse(config) {
-  return [...new Set(config.levels.map((level) => level.driver))];
+  return [...new Set(Object.values(config.stages).flatMap((stage) => stage.drivers))];
+}
+
+/** Имя экземпляра этапа: этап на нескольких драйверах идёт экземпляром на каждый, `logic·codex`. */
+export function instanceName(stage, driver) {
+  return stage.drivers.length > 1 ? `${stage.key}·${driver}` : stage.key;
 }
 
 /** Скиллы всех этапов конфига, обоих списков. */

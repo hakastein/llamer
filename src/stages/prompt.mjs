@@ -1,4 +1,5 @@
 import { tagged } from '../materials/ContextPack.mjs';
+import { instanceName } from '../config.mjs';
 
 export function bullets(items) {
   return items.map((item) => `- ${item}`).join('\n');
@@ -39,7 +40,12 @@ export function listed(items) {
   return items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.at(-1)}` : items.join('');
 }
 
-/** Разбирающие этапы прогона одной фразой — служебным этапам, судящим их находки. */
+/**
+ * Разбирающие этапы прогона одной фразой — служебным этапам, судящим их находки.
+ * Этап на нескольких драйверах назван каждым экземпляром.
+ */
 export function formatStages(stages) {
-  return listed(stages.map((stage) => stage.title));
+  return listed(stages.flatMap((stage) => (stage.drivers.length > 1
+    ? stage.drivers.map((driver) => `${stage.title} (${instanceName(stage, driver)})`)
+    : [stage.title])));
 }

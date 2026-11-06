@@ -11,6 +11,13 @@ import { log } from '../log.mjs';
 export const CLAUDE_DEFAULTS = {
   bin: 'claude',
   env: {},
+  levels: [
+    { model: 'claude-sonnet-5-5', effort: 'medium' },
+    { model: 'claude-sonnet-5-5', effort: 'high' },
+    { model: 'claude-opus-5-5', effort: 'low' },
+    { model: 'claude-opus-5-5', effort: 'medium' },
+    { model: 'claude-opus-5-5', effort: 'high' },
+  ],
 };
 
 export const CLAUDE_AUTH = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];

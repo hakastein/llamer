@@ -28,7 +28,7 @@ export class Finding {
   constructor({
     id = null, file, line, lineEnd, deleted = false, text,
     severity, severityReason = null, suggestion = null, related = [], trace = null,
-    stage = null,
+    stage = null, driver = null,
   }) {
     this.id = id;
     this.file = file;
@@ -42,6 +42,7 @@ export class Finding {
     this.related = Array.isArray(related) ? related : [];
     this.trace = trace;
     this.stage = stage;
+    this.driver = driver;
 
     // `refuted: false` одинаков у проверенной находки и у той, до которой
     // скептик не дошёл: эти два случая разводит `verdicted`.
@@ -165,6 +166,7 @@ export class Finding {
     return {
       id: this.id,
       stage: this.stage,
+      driver: this.driver,
       file: this.file,
       line: this.line,
       lineEnd: this.lineEnd,

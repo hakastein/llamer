@@ -21,7 +21,7 @@ function main(argv) {
     console.log(result.print);
     return;
   }
-  for (const event of result.events) context.journal.append({ ...event, stage: context.stage });
+  for (const event of result.events) context.journal.append({ ...event, stage: context.stage, driver: brief.driver });
   console.log(`записано: ${command.name}${result.confirmation}`);
 }
 

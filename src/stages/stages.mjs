@@ -80,8 +80,8 @@ const CUSTOM_TRAITS = ANALYSIS_TRAITS.logic;
 export class AnalysisStage extends ReviewStage {
   #settings;
 
-  constructor(toolkit, settings) {
-    super(toolkit);
+  constructor(toolkit, settings, driver) {
+    super(toolkit, driver);
     this.#settings = settings;
   }
 

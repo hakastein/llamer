@@ -2,19 +2,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import {
-  ConfigError, DEFAULT_LEVELS, analysisStages, driversInUse, parseConfig, skillsInUse,
+  ConfigError, analysisStages, driversInUse, parseConfig, skillsInUse,
 } from '../src/config.mjs';
-import { ClaudeDriver } from '../src/drivers/claude.mjs';
+import { CLAUDE_DEFAULTS, ClaudeDriver } from '../src/drivers/claude.mjs';
 import { CodexDriver } from '../src/drivers/codex.mjs';
+import { formatStages } from '../src/stages/prompt.mjs';
 import { BUILTIN_SKILLS, SkillLibrary } from '../src/stages/SkillLibrary.mjs';
-import { tempDir, write } from './fixtures/repo.mjs';
+import {
+  BUILTIN, levels, stages, tempDir, write,
+} from './fixtures/repo.mjs';
 
 const FILE = '/repo/.llamer.json';
-const minimal = (extra = {}) => ({ version: 1, ...extra });
+// Встроенные этапы на claude, `stages` — поверх них.
+const minimal = (extra = {}) => ({ version: 1, ...extra, stages: stages(extra.stages) });
 const parse = (raw, env = {}) => parseConfig(raw, { file: FILE, env });
-const levels = (driver = 'claude') => [1, 2, 3, 4, 5].map((n) => ({ driver, model: `model-${n}`, effort: `effort-${n}` }));
+const without = (key) => ({ version: 1, stages: Object.fromEntries(Object.entries(stages()).filter(([name]) => name !== key)) });
 
-test('умолчания: встроенные этапы со своими скиллами и уровнями, пять уровней claude, трекера нет', () => {
+test('умолчания: встроенные этапы со своими скиллами и уровнями, лестницы claude и codex, трекера нет', () => {
   const config = parse(minimal());
 
   assert.deepEqual(Object.keys(config.stages), ['assess', 'threads', 'logic', 'quality', 'comments', 'tests', 'dedupe', 'skeptic']);
@@ -33,7 +37,13 @@ test('умолчания: встроенные этапы со своими ск
     'the business-logic reviewer', 'the code-quality reviewer', 'the comments reviewer', 'the test reviewer',
   ]);
   assert.ok(Object.values(config.stages).every((stage) => stage.task === null && Object.keys(stage.prompt).length === 0));
-  assert.deepEqual(config.levels, DEFAULT_LEVELS);
+  assert.deepEqual(config.drivers.claude.levels, CLAUDE_DEFAULTS.levels);
+  assert.deepEqual(config.drivers.claude.levels.map((level) => `${level.model}/${level.effort}`), [
+    'claude-sonnet-5-5/medium', 'claude-sonnet-5-5/high', 'claude-opus-5-5/low', 'claude-opus-5-5/medium', 'claude-opus-5-5/high',
+  ]);
+  assert.deepEqual(config.drivers.codex.levels.map((level) => `${level.model}/${level.effort}`), [
+    'gpt-6.1-sol/medium', 'gpt-6.1-sol/high', 'gpt-6.1-sol/xhigh', 'gpt-6.1-sol/max', 'gpt-6.1-sol/ultra',
+  ]);
   assert.deepEqual(driversInUse(config), ['claude']);
   assert.deepEqual(config.tracker, { type: 'none', issuePattern: null });
 });
@@ -56,6 +66,7 @@ test('встроенному этапу конфиг добавляет скил
     key: 'docs',
     title: 'the docs stage',
     task: 'Docs.',
+    drivers: ['claude'],
     skills: { always: ['writing-docs'], onDemand: [] },
     paths: ['docs/**'],
     level: 'assessed',
@@ -79,13 +90,41 @@ test('prompt: общий идёт всем этапам, prompt этапа пе�
   assert.deepEqual(config.stages.docs.prompt, { protocol: 'docs nav.', plan: 'Plan with nav.' });
 });
 
-test('levels из конфига заменяют встроенные; драйверы прогона — те, что в levels', () => {
-  const mixed = [...levels('claude').slice(0, 4), { driver: 'codex', model: 'gpt', effort: 'high' }];
-  const config = parse(minimal({ levels: mixed }));
+test('лестница у каждого драйвера своя: drivers.<имя>.levels заменяет умолчание только этого драйвера', () => {
+  const config = parse(minimal({ drivers: { codex: { levels: levels('gpt') } } }));
 
-  assert.deepEqual(config.levels, mixed);
+  assert.deepEqual(config.drivers.codex.levels, levels('gpt'));
+  assert.deepEqual(config.drivers.claude.levels, CLAUDE_DEFAULTS.levels);
+});
+
+test('драйверы этапа — явный список; драйверы прогона — драйверы всех этапов', () => {
+  const config = parseConfig({ version: 1, stages: stages({}, { logic: ['claude', 'codex'] }) }, { file: FILE, env: {} });
+
+  assert.deepEqual(config.stages.logic.drivers, ['claude', 'codex']);
+  assert.deepEqual(config.stages.quality.drivers, ['claude']);
   assert.deepEqual(driversInUse(config), ['claude', 'codex']);
-  assert.deepEqual(driversInUse(parse(minimal({ levels: levels('codex') }))), ['codex']);
+  assert.deepEqual(driversInUse(parse({ version: 1, stages: stages({}, { all: ['codex'] }) })), ['codex']);
+  // Служебные этапы видят каждый экземпляр этапа на нескольких драйверах, одиночный — как прежде.
+  assert.equal(formatStages(analysisStages(config)),
+    'the business-logic reviewer (logic·claude), the business-logic reviewer (logic·codex), the code-quality reviewer,'
+    + ' the comments reviewer and the test reviewer');
+});
+
+test('встроенный этап без drivers или без записи в конфиге — ошибка с именем этапа', () => {
+  for (const key of BUILTIN) {
+    const message = new RegExp(`stages\\.${key}\\.drivers: не задан — у каждого этапа, и у встроенного, драйверы задаются явно`);
+    assert.throws(() => parse(without(key)), (error) => error instanceof ConfigError && message.test(error.message), key);
+    assert.throws(() => parse(minimal({ stages: { [key]: { drivers: [] } } })), message, key);
+  }
+  assert.throws(() => parse({ version: 1 }), /stages\.assess\.drivers: не задан/);
+});
+
+test('служебный этап на двух драйверах — ошибка; разбирающий на двух — нет', () => {
+  for (const key of ['assess', 'threads', 'dedupe', 'skeptic']) {
+    assert.throws(() => parse({ version: 1, stages: stages({}, { [key]: ['claude', 'codex'] }) }),
+      new RegExp(`stages\\.${key}\\.drivers: ${key} — служебный этап, он идёт одним экземпляром: ровно один драйвер`), key);
+  }
+  assert.deepEqual(parse({ version: 1, stages: stages({}, { tests: ['codex', 'claude'] }) }).stages.tests.drivers, ['codex', 'claude']);
 });
 
 test('незнакомое в конфиге останавливает разбор с путём до ключа', () => {
@@ -93,7 +132,7 @@ test('незнакомое в конфиге останавливает разб
     [{ ...minimal(), version: 2 }, /version: поддерживается 1/],
     [minimal({ extra: true }), /неизвестные ключи: extra/],
     [minimal({ service: {} }), /неизвестные ключи: service/],
-    [minimal({ stages: [] }), /stages: должен быть объектом/],
+    [{ ...minimal(), stages: [] }, /stages: должен быть объектом/],
     [minimal({ stages: { logic: { task: 'x' } } }), /stages\.logic: неизвестные ключи: task/],
     [minimal({ stages: { docs: { mandate: 'x', paths: ['docs/**'] } } }), /stages\.docs: неизвестные ключи: mandate/],
     [minimal({ stages: { assess: { paths: ['src/**'] } } }), /stages\.assess: неизвестные ключи: paths/],
@@ -112,10 +151,13 @@ test('незнакомое в конфиге останавливает разб
     [minimal({ stages: { assess: { level: 'assessed' } } }), /stages\.assess\.level: у assess — только число/],
     [minimal({ stages: { threads: { level: 'assessed' } } }), /stages\.threads\.level: у threads — только число/],
     [minimal({ drivers: { gemini: {} } }), /drivers: неизвестные ключи: gemini/],
-    [minimal({ drivers: { claude: { levels: levels() } } }), /drivers\.claude: неизвестные ключи: levels/],
-    [minimal({ levels: levels().slice(1) }), /levels: должен быть списком из 5/],
-    [minimal({ levels: [...levels().slice(1), { driver: 'gemini', model: 'm', effort: 'e' }] }), /levels\[4\]\.driver: одно из claude, codex/],
-    [minimal({ levels: [...levels().slice(1), { model: 'm', effort: 'e' }] }), /levels\[4\]\.driver: одно из claude, codex/],
+    [minimal({ levels: levels() }), /неизвестные ключи: levels/],
+    [minimal({ drivers: { claude: { levels: levels().slice(1) } } }), /drivers\.claude\.levels: должен быть списком из 5/],
+    [minimal({ drivers: { codex: { levels: [...levels().slice(1), { driver: 'codex', model: 'm', effort: 'e' }] } } }), /drivers\.codex\.levels\[4\]: неизвестные ключи: driver/],
+    [minimal({ drivers: { codex: { levels: [...levels().slice(1), { model: 'm' }] } } }), /drivers\.codex\.levels\[4\]\.effort: должен быть непустой строкой/],
+    [minimal({ stages: { logic: { drivers: 'claude' } } }), /stages\.logic\.drivers: не задан/],
+    [minimal({ stages: { logic: { drivers: ['gemini'] } } }), /stages\.logic\.drivers\[0\]: одно из claude, codex/],
+    [minimal({ stages: { docs: { task: 'x', drivers: ['codex', 'claude', 'codex'] } } }), /stages\.docs\.drivers: драйвер повторяется: codex/],
     [minimal({ allow: ['rg; rm -rf /'] }), /allow\[0\]: «rg; rm -rf \/» не подходит/],
     [minimal({ stages: { skeptic: { allow: ['rg | sh'] } } }), /stages\.skeptic\.allow\[0\]: «rg \| sh» не подходит/],
     [minimal({ tracker: { type: 'youtrack' } }), /tracker\.issuePattern: должен быть непустой строкой/],

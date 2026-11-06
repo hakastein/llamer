@@ -5,8 +5,9 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CONFIG, SECRETS, git, levels, makeRepo, run, write,
+  CONFIG, SECRETS, git, levels, makeRepo, run, stages, write,
 } from './fixtures/repo.mjs';
+import { readRunState } from '../src/domain/journal.mjs';
 
 const stagesOf = (launches) => launches.map((launch) => launch.stage).sort();
 
@@ -83,7 +84,7 @@ test('--local: правка той же длины в секунду запис�
 });
 
 test('этап claude изолирован: свои разрешения, окружение — белый список, общий пакет один на все этапы', async () => {
-  const root = makeRepo({ config: { ...CONFIG, levels: levels() } });
+  const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { levels: levels() } } } });
 
   const { launches, status, stderr } = await run(root, ['--local'], {
     CI_REGISTRY_PASSWORD: 'registry-password-value', HTTPS_PROXY: 'http://proxy.example.com:3128',
@@ -126,9 +127,8 @@ test('--local на драйвере codex: read-only, временные HOME и
   const root = makeRepo({
     config: {
       ...CONFIG,
-      levels: levels({
-        1: 'codex', 2: 'codex', 3: 'codex', 4: 'codex', 5: 'codex',
-      }).map((level) => ({ ...level, model: 'gpt-6.1-terra' })),
+      drivers: { codex: { levels: levels().map((level) => ({ ...level, model: 'gpt-6.1-terra' })) } },
+      stages: Object.fromEntries(Object.entries(CONFIG.stages).map(([key, stage]) => [key, { ...stage, drivers: ['codex'] }])),
     },
   });
 
@@ -230,7 +230,7 @@ test('нет токена трекера — preflight сообщает проб
 
 test('--preflight: пробелы окружения JSON-ом, без флага прогон не стартует', async () => {
   const config = { ...CONFIG, tracker: { type: 'youtrack', issuePattern: 'PROJ-\\d+' } };
-  config.stages = { ...CONFIG.stages, extra: { skills: { always: ['missing-skill'] }, task: 'Что-то ещё.' } };
+  config.stages = { ...CONFIG.stages, extra: { skills: { always: ['missing-skill'] }, task: 'Что-то ещё.', drivers: ['claude'] } };
   const root = makeRepo({ config });
 
   const preflight = await run(root, ['--local', '--preflight'], { YOUTRACK_URL: '' });
@@ -246,17 +246,19 @@ test('--preflight: пробелы окружения JSON-ом, без флаг�
   assert.equal(existsSync(join(root, '.llamer')), false, 'до проверки окружения артефактов нет');
 });
 
-test('preflight проверяет драйверы из levels: неработающий бинарь и отсутствие входа', async () => {
+test('preflight проверяет драйверы всех этапов: неработающий бинарь и отсутствие входа', async () => {
   const drivers = { codex: { bin: 'codex-нет-такого' } };
   const gapsOf = async (config) => JSON.parse((await run(makeRepo({ config }), ['--local', '--preflight'], { CLAUDE_CODE_OAUTH_TOKEN: '' })).stdout)
     .gaps.map((gap) => gap.id).sort();
 
-  assert.deepEqual(await gapsOf({ ...CONFIG, drivers }), ['auth-claude'], 'codex нет в levels — не проверяется');
-  assert.deepEqual(await gapsOf({ ...CONFIG, drivers, levels: levels({ 5: 'codex' }) }), ['auth-claude', 'driver-codex']);
+  assert.deepEqual(await gapsOf({ ...CONFIG, drivers }), ['auth-claude'], 'codex нет ни у одного этапа — не проверяется');
+  // Этап тестов в этом прогоне не поднимется (файлов под маски нет), но его драйвер проверяется до прогона.
+  const tests = { ...CONFIG, drivers, stages: stages(CONFIG.stages, { tests: ['claude', 'codex'] }) };
+  assert.deepEqual(await gapsOf(tests), ['auth-claude', 'driver-codex']);
 });
 
-test('конфиг из одной версии: встроенные этапы идут со встроенными скиллами', async () => {
-  const root = makeRepo({ config: { version: 1 } });
+test('конфиг из версии и драйверов этапов: встроенные этапы идут со встроенными скиллами', async () => {
+  const root = makeRepo({ config: { version: 1, stages: stages() } });
 
   const preflight = await run(root, ['--local', '--preflight']);
   assert.equal(preflight.status, 0, preflight.stderr);
@@ -302,7 +304,7 @@ test('prompt конфига: строка протокола — в «How This R
   const config = {
     ...CONFIG,
     prompt: { protocol: '`nav` is up.', plan: 'Plan with `nav def`.' },
-    stages: { ...CONFIG.stages, quality: { prompt: { plan: 'Quality plan.' } } },
+    stages: { ...CONFIG.stages, quality: { ...CONFIG.stages.quality, prompt: { plan: 'Quality plan.' } } },
   };
   const prompts = Object.fromEntries((await run(makeRepo({ config }), ['--local'])).launches
     .map((launch) => [launch.stage, launch.prompt]));
@@ -318,17 +320,55 @@ test('prompt конфига: строка протокола — в «How This R
   assert.match(plain.logic, /## Your Plan\n\nPresent a plan before your first search: [^\n]*, or a text search\./);
 });
 
-test('этап идёт драйвером своего уровня', async () => {
-  // Уровень 1 — codex: оценщик, комментарии и дедупликация на нём; logic и скептик — на уровне оценщика (2), quality — на 2.
-  const root = makeRepo({ config: { ...CONFIG, levels: levels({ 1: 'codex' }) } });
+test('этап на двух драйверах — два экземпляра, каждый на уровне своей лестницы, находки помечены драйвером', async () => {
+  // logic — на уровне оценщика (2), quality — на 2, comments — на 1; оценщик и дедупликация — codex, скептик — claude.
+  const config = {
+    ...CONFIG,
+    drivers: { claude: { levels: levels('claude') }, codex: { levels: levels('codex') } },
+    stages: stages(CONFIG.stages, {
+      assess: ['codex'], comments: ['codex'], dedupe: ['codex'], logic: ['claude', 'codex'], quality: ['codex', 'claude'],
+      skeptic: ['claude'],
+    }),
+  };
 
-  const result = await run(root, ['--local']);
+  const result = await run(makeRepo({ config }), ['--local']);
 
   assert.equal(result.status, 0, result.stderr);
-  const driverOf = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.driver]));
-  assert.deepEqual(driverOf, {
-    assess: 'codex', comments: 'codex', dedupe: 'codex', logic: 'claude', quality: 'claude', skeptic: 'claude',
+  const after = (argv, flag) => argv[argv.indexOf(flag) + 1];
+  const modelOf = ({ driver, argv }) => (driver === 'codex' ? after(argv, '-m') : `${after(argv, '--model')}/${after(argv, '--effort')}`);
+  const launched = Object.fromEntries(result.launches.map((launch) => [launch.stage, `${launch.driver} ${modelOf(launch)}`]));
+  assert.deepEqual(launched, {
+    assess: 'codex codex-1',
+    comments: 'codex codex-1',
+    dedupe: 'codex codex-1',
+    'logic·claude': 'claude claude-2/effort-2',
+    'logic·codex': 'codex codex-2',
+    'quality·claude': 'claude claude-2/effort-2',
+    'quality·codex': 'codex codex-2',
+    skeptic: 'claude claude-2/effort-2',
   });
+  assert.match(result.stderr, /этап «logic·codex» пошёл: codex, уровень 2 \(codex-2\/effort-2\)/);
+
+  const answer = JSON.parse(result.stdout);
+  const written = readRunState(join(answer.artifacts, 'journal')).findings.map((finding) => `${finding.stage} ${finding.driver}`);
+  assert.deepEqual(written.sort(), [
+    'comments codex', 'logic·claude claude', 'logic·codex codex', 'quality·claude claude', 'quality·codex codex',
+  ]);
+  assert.deepEqual(answer.findings.map((finding) => Boolean(finding.driver)), [true], 'находка в отчёте — с драйвером');
+  assert.deepEqual(answer.summaries.map((summary) => summary.stage).sort(), ['logic·claude', 'logic·codex']);
+  const cost = JSON.parse(readFileSync(join(answer.artifacts, 'cost.json'), 'utf-8'));
+  assert.deepEqual(cost.stages.map((stage) => stage.name).filter((name) => name.includes('·')).sort(),
+    ['logic·claude', 'logic·codex', 'quality·claude', 'quality·codex']);
+
+  const prompts = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.prompt]));
+  const listedStages = 'the business-logic reviewer (logic·claude), the business-logic reviewer (logic·codex),'
+    + ' the code-quality reviewer (quality·codex), the code-quality reviewer (quality·claude), the comments reviewer,'
+    + ' the test reviewer and the docs stage';
+  assert.ok(prompts.skeptic.includes(`written by different stages: ${listedStages}.`), 'скептик называет экземпляры');
+  assert.ok(prompts.dedupe.includes(`findings from ${listedStages}.`), 'дедупликация называет экземпляры');
+  for (const name of ['logic·claude', 'logic·codex']) {
+    assert.match(prompts[name], /^You are a Senior Software Engineer with expertise in domain logic/, `${name}: задание этапа общее`);
+  }
 });
 
 test('неизвестный ключ или версия конфига останавливают прогон', async () => {

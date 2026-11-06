@@ -33,20 +33,32 @@ export function write(root, path, text) {
   writeFileSync(join(root, path), text);
 }
 
+export const BUILTIN = ['assess', 'threads', 'logic', 'quality', 'comments', 'tests', 'dedupe', 'skeptic'];
+
+/**
+ * Этапы конфига: все встроенные и `own` поверх них. Драйверы этапа — из
+ * `drivers` по ключу, иначе свои из `own`, иначе `drivers.all` (claude).
+ */
+export function stages(own = {}, { all = ['claude'], ...byKey } = {}) {
+  const merged = { ...Object.fromEntries(BUILTIN.map((key) => [key, {}])), ...own };
+  return Object.fromEntries(Object.entries(merged)
+    .map(([key, stage]) => [key, { ...stage, drivers: byKey[key] ?? stage.drivers ?? all }]));
+}
+
 export const CONFIG = {
   version: 1,
   skillPaths: ['skills'],
   allow: ['rg'],
-  stages: {
+  stages: stages({
     logic: { skills: { always: ['reviewing'], onDemand: ['backend'] }, allow: ['git log'] },
     skeptic: { skills: { always: ['refuting'] } },
     docs: { task: 'Документация.', paths: ['docs/**'] },
-  },
+  }),
 };
 
-/** Пять уровней на моделях `model-<номер>`; драйвер уровня — из `drivers` по номеру, иначе claude. */
-export function levels(drivers = {}) {
-  return [1, 2, 3, 4, 5].map((n) => ({ driver: drivers[n] ?? 'claude', model: `model-${n}`, effort: `effort-${n}` }));
+/** Лестница из пяти уровней на моделях `<prefix>-<номер>`. */
+export function levels(prefix = 'model') {
+  return [1, 2, 3, 4, 5].map((n) => ({ model: `${prefix}-${n}`, effort: `effort-${n}` }));
 }
 
 /**

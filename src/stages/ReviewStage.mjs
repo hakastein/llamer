@@ -3,21 +3,23 @@ import { StageTelemetry } from '../agent/StageTelemetry.mjs';
 import { PromptTemplate } from './PromptTemplate.mjs';
 import { describeCommands } from '../harness/program.mjs';
 import { BRIEF_ENV } from '../harness/StageBrief.mjs';
-import { ASSESSED } from '../config.mjs';
+import { ASSESSED, instanceName } from '../config.mjs';
 import { log } from '../log.mjs';
 
 // Пять команд записи находок нужны одинаково всем, кто их пишет.
 export const FINDING_COMMANDS = ['finding', 'amend', 'batch', 'list', 'blame'];
 
 /**
- * Этап прогона: свой промпт, уровень и набор команд харнесса; драйвер — тот,
- * которым идёт уровень. Общаются этапы только журналом прогона.
+ * Экземпляр этапа прогона на одном драйвере: свой промпт, уровень на лестнице
+ * драйвера и набор команд харнесса. Служебный этап идёт единственным драйвером
+ * из конфига. Общаются этапы только журналом прогона.
  */
 export class ReviewStage {
-  #toolkit; #journal; #record = null; #template = null; #responding; #markResponding;
+  #toolkit; #driver; #journal; #record = null; #template = null; #responding; #markResponding;
 
-  constructor(toolkit) {
+  constructor(toolkit, driver = null) {
     this.#toolkit = toolkit;
+    this.#driver = driver;
     this.#responding = new Promise((resolve) => { this.#markResponding = resolve; });
   }
 
@@ -33,7 +35,7 @@ export class ReviewStage {
   // Журнал открывается по первому обращению: ключ разбирающего этапа задаёт
   // его конструктор, и к работе конструктора базы он ещё не известен.
   get journal() {
-    this.#journal ??= this.#toolkit.artifacts.openJournal(this.key);
+    this.#journal ??= this.#toolkit.artifacts.openJournal(this.id);
     return this.#journal;
   }
 
@@ -46,7 +48,12 @@ export class ReviewStage {
   // собирается, и падение при конструировании лучше тихого '' в промпте.
   get key() { throw new Error(`${this.constructor.name}: ключ этапа не объявлен`); }
 
-  get name() { return this.key; }
+  get driverName() { return this.#driver ?? this.settings.drivers[0]; }
+
+  /** Имя экземпляра: ключ этапа, у этапа на нескольких драйверах — с драйвером. */
+  get id() { return instanceName(this.settings, this.driverName); }
+
+  get name() { return this.id; }
 
   get templateKey() { return this.key; }
 
@@ -118,14 +125,14 @@ export class ReviewStage {
       return this.state();
     }
 
-    const briefPath = artifacts.saveBrief(this.key, this.brief(materials));
+    const briefPath = artifacts.saveBrief(this.id, this.brief(materials));
     const level = this.level === ASSESSED ? assessed : this.level;
-    const settings = this.#toolkit.config.levels[level - 1];
-    const driver = this.#toolkit.drivers.get(settings.driver);
+    const settings = this.#toolkit.config.drivers[this.driverName].levels[level - 1];
+    const driver = this.#toolkit.drivers.get(this.driverName);
     const prompt = this.prompt(driver, journal);
     const promptPath = artifacts.savePrompt(this.name, prompt);
     const launch = driver.launch({
-      stage: this.key,
+      stage: this.id,
       level: settings,
       projectMemory: this.projectMemory,
       commands: this.commands,
@@ -152,7 +159,7 @@ export class ReviewStage {
     this.#record = this.#judged(telemetry.finish(record));
     if (!this.#record.ok) {
       this.journal.recordFailure({
-        stage: this.key, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
+        stage: this.id, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
       });
     }
     return this.state();
@@ -179,7 +186,8 @@ export class ReviewStage {
   // а не уезжает в реквест замечанием к коду, которого автор не писал.
   brief(materials) {
     return {
-      stage: this.key,
+      stage: this.id,
+      driver: this.driverName,
       name: this.name,
       journalDir: this.journal.dir,
       baseSha: materials.baseSha,

@@ -77,9 +77,11 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
    разбирать. При GitLab-входе в той же волне идёт этап **тредов** (`threads`): сверяет
    наши открытые треды прошлых прогонов с текущим кодом и закрывает снятые.
 2. **Волна разбирающих этапов** — встроенные `logic` (бизнес-логика) и `quality`
-   (качество кода) и свои этапы из `stages` конфига, параллельно. Этап с масками `paths`
-   поднимается, только если в изменениях есть файлы под них.
-3. **Дедупликация** (`dedupe`) — помечает находки разных этапов про одно место и одну
+   (качество кода) и свои этапы из `stages` конфига, параллельно. Этап на нескольких
+   драйверах идёт экземпляром на каждый драйвер; экземпляры называются `<этап>·<драйвер>`
+   (`logic·claude`, `logic·codex`) в логе, таблице цены, отчёте и журнале, задание у них
+   общее. Этап с масками `paths` поднимается, только если в изменениях есть файлы под них.
+3. **Дедупликация** (`dedupe`) — помечает находки разных этапов и экземпляров про одно место и одну
    причину; помеченные не публикуются и до скептика не доходят.
 4. **Скептик** (`skeptic`) — вердикт по каждой уцелевшей находке, вес в обе стороны.
 5. **Публикация** — в GitLab или отчётом.
@@ -143,13 +145,12 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | `skillPaths` | каталоги скиллов: скилл — подкаталог с `SKILL.md`. Путь — от каталога конфига, `~` и `${VAR}` раскрываются. Одноимённые скиллы в разных каталогах — ошибка; одноимённый со встроенным скилл ошибкой не считается, этап получает встроенный | `[]` |
 | `allow` | команды, разрешённые всем этапам, — префиксы из слов без метасимволов оболочки (`"rg"`, `"git log"`). Команды харнесса разрешены всегда | `[]` |
 | `prompt` | строки задания, которые знает проект: `protocol` дописывается в раздел «How This Run Works» после строк о поиске, `plan` заменяет план по умолчанию в «Your Plan» (поиск по тексту). Так проект говорит этапам о навигации, которую сам поднял и разрешил в `allow`, — пример ниже | `{}` |
-| `drivers.<claude\|codex>` | `bin` — бинарь, `env` — переменные окружения этапов этого драйвера, `${VAR}` в значениях раскрывается из окружения движка, как в `skillPaths` | `bin` — `claude` / `codex` |
-| `levels` | ровно пять уровней глубины `{ "driver", "model", "effort" }`, `driver` — `claude` или `codex`. Этап идёт драйвером и моделью своего уровня | пять уровней `claude`, см. «Драйверы» |
+| `drivers.<claude\|codex>` | `bin` — бинарь, `env` — переменные окружения этапов этого драйвера, `${VAR}` в значениях раскрывается из окружения движка, как в `skillPaths`; `levels` — лестница драйвера: ровно пять уровней глубины `{ "model", "effort" }`, этап на этом драйвере идёт моделью своего уровня | `bin` — `claude` / `codex`, `levels` — см. «Драйверы» |
 | `tracker` | `{ "type": "youtrack", "issuePattern": "<регулярка>" }` — номер задачи ищется регуляркой в имени ветки, текст задачи идёт этапам. `{ "type": "none" }` — без трекера | `none` |
 | `sharedBranches` | общие ветки, чьё содержимое уже прошло ревью: в изменения задачи оно не попадает | `[]` |
-| `stages` | объект: ключ — имя этапа, значение — настройка встроенного или свой этап (ниже) | `{}` |
+| `stages` | объект: ключ — имя этапа, значение — настройка встроенного или свой этап (ниже). Каждый встроенный этап в нём обязателен: у него задаются драйверы | обязателен |
 
-Встроенные этапы идут всегда, даже без записи в `stages`:
+Встроенные этапы идут всегда; запись в `stages` с `drivers` нужна каждому из них — без неё конфиг не читается:
 
 | Этап | Скилл метода | Уровень по умолчанию | Файлы по умолчанию |
 |---|---|---|---|
@@ -174,6 +175,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | Ключ | Что задаёт | Встроенный | Свой | По умолчанию |
 |---|---|---|---|---|
 | `task` | задача этапа: кто он, что проверить и где ставить находку — первый абзац задания | ошибка | обязателен | — |
+| `drivers` | непустой список драйверов этапа, `claude` и/или `codex`, без повторов. На каждый драйвер идёт свой экземпляр этапа, уровень этапа берётся на лестнице каждого. У служебных `assess`, `threads`, `dedupe`, `skeptic` — ровно один драйвер | обязателен | обязателен | — |
 | `skills` | `{ "always": [...], "onDemand": [...] }`, оба списка необязательны. `always` — задание велит загрузить скилл до начала работы; `onDemand` — скилл доступен этапу, но в задании не называется: claude и codex сами видят скиллы прогона с `description` из frontmatter и берут подходящие к реквесту. Встроенному этапу скиллы добавляются к его скиллам метода, убрать их нельзя. Один скилл в обоих списках — ошибка | да | да | `{}` |
 | `level` | `"assessed"` — уровень от оценщика, или число 1–5. У `assess` и `threads` — только число: они идут до вердикта | да | да | встроенный — свой уровень, свой этап — `"assessed"` |
 | `allow` | команды сверх общего `allow` — только этому этапу | да | да | `[]` |
@@ -195,20 +197,32 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
   },
   "tracker": { "type": "youtrack", "issuePattern": "\\bPROJ-\\d+\\b" },
   "sharedBranches": ["develop", "main"],
-  "drivers": { "codex": { "bin": "codex" } },
-  "levels": [
-    { "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium" },
-    { "driver": "claude", "model": "claude-sonnet-5-5", "effort": "high" },
-    { "driver": "claude", "model": "claude-opus-5-5", "effort": "low" },
-    { "driver": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
-    { "driver": "claude", "model": "claude-opus-5-5", "effort": "high" }
-  ],
+  "drivers": {
+    "codex": {
+      "levels": [
+        { "model": "gpt-6.1-terra", "effort": "medium" },
+        { "model": "gpt-6.1-terra", "effort": "high" },
+        { "model": "gpt-6.1-sol", "effort": "medium" },
+        { "model": "gpt-6.1-sol", "effort": "high" },
+        { "model": "gpt-6.1-sol", "effort": "xhigh" }
+      ]
+    }
+  },
   "stages": {
-    "logic": { "skills": { "always": ["project-knowledge"], "onDemand": ["developing-backend", "developing-frontend"] } },
-    "quality": { "level": 4 },
-    "tests": { "skills": { "always": ["reviewing-tests"] }, "paths": ["**/tests/**", "!tests/e2e/**"] },
+    "assess": { "drivers": ["claude"] },
+    "threads": { "drivers": ["claude"] },
+    "logic": {
+      "drivers": ["claude", "codex"],
+      "skills": { "always": ["project-knowledge"], "onDemand": ["developing-backend", "developing-frontend"] }
+    },
+    "quality": { "drivers": ["codex"], "level": 4 },
+    "comments": { "drivers": ["claude"] },
+    "tests": { "drivers": ["claude"], "skills": { "always": ["reviewing-tests"] }, "paths": ["**/tests/**", "!tests/e2e/**"] },
+    "dedupe": { "drivers": ["claude"] },
+    "skeptic": { "drivers": ["claude"] },
     "docs": {
       "task": "You review the documentation this merge request changed: does it still match the code.",
+      "drivers": ["codex"],
       "paths": ["docs/**"],
       "level": 1
     }
@@ -232,15 +246,15 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | размер контекста | пик по `usage` запросов в потоке | пик по журналу сессии |
 | вход | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` или креды в конфиге | `CODEX_API_KEY`, `OPENAI_API_KEY` или `$CODEX_HOME/auth.json` |
 
-Уровни по умолчанию — все на `claude`:
+Лестницы по умолчанию (`drivers.<имя>.levels` заменяет лестницу своего драйвера целиком):
 
-| Уровень | Модель / усилие |
-|---|---|
-| 1 | `claude-sonnet-5-5` / medium |
-| 2 | `claude-sonnet-5-5` / high |
-| 3 | `claude-opus-5-5` / low |
-| 4 | `claude-opus-5-5` / medium |
-| 5 | `claude-opus-5-5` / high |
+| Уровень | `claude` | `codex` |
+|---|---|---|
+| 1 | `claude-sonnet-5-5` / medium | `gpt-6.1-sol` / medium |
+| 2 | `claude-sonnet-5-5` / high | `gpt-6.1-sol` / high |
+| 3 | `claude-opus-5-5` / low | `gpt-6.1-sol` / xhigh |
+| 4 | `claude-opus-5-5` / medium | `gpt-6.1-sol` / max |
+| 5 | `claude-opus-5-5` / high | `gpt-6.1-sol` / ultra |
 
 ## Окружение и preflight
 
@@ -250,7 +264,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | `GITLAB_URL` | `--mr project!iid` (ссылка на MR целиком несёт адрес сама) |
 | `YOUTRACK_URL`, `YOUTRACK_TOKEN` | `tracker.type: youtrack` |
 
-`--preflight` проверяет только своё: git, бинарь и вход каждого драйвера из `levels`,
+`--preflight` проверяет только своё: git, бинарь и вход каждого драйвера из `drivers` этапов,
 токен GitLab при GitLab-входе, токен трекера, наличие скиллов. Без флага та же
 проверка идёт перед каждым прогоном, и пробел его останавливает. Исключение — трекер:
 без его переменных прогон идёт без текста задачи, с предупреждением в логе и строкой в
@@ -281,7 +295,7 @@ JSON в stdout:
   "base": "<sha>",
   "assessment": { "nature": "behavioral", "risk": "medium", "level": 2, "reason": "…" },
   "findings": [{
-    "id": 1, "stage": "logic", "file": "src/Order.php", "line": 4, "lineEnd": 4, "deleted": false,
+    "id": 1, "stage": "logic", "driver": "claude", "file": "src/Order.php", "line": 4, "lineEnd": 4, "deleted": false,
     "severity": "major", "severityReason": "…", "text": "…", "suggestion": null,
     "related": [{ "file": "src/Order.php", "line": 4, "lineEnd": 4 }], "trace": null
   }],
@@ -304,7 +318,8 @@ JSON в stdout:
 | Поле | Что значит |
 |---|---|
 | `id` | номер находки в журнале прогона |
-| `stage` | имя этапа, который её записал |
+| `stage` | имя экземпляра этапа, который её записал: `logic` или, у этапа на нескольких драйверах, `logic·codex` |
+| `driver` | драйвер, на котором шёл этот экземпляр |
 | `file`, `line`, `lineEnd` | файл от корня репозитория и строки фрагмента, включительно |
 | `deleted` | `true` — строки удалённые, номера из версии до изменений; иначе — из головы |
 | `severity` | `minor`, `major` или `critical` (с учётом пересмотра скептиком) |

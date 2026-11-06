@@ -23,6 +23,8 @@ export class StageBrief {
 
   get name() { return this.#data.name; }
 
+  get driver() { return this.#data.driver; }
+
   get journalDir() { return this.#data.journalDir; }
 
   get baseSha() { return this.#data.baseSha; }
