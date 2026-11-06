@@ -114,6 +114,8 @@ export function writeCostJson({ path, stages }) {
       turns: stage.turns ?? 0,
       tokens: tokensOf(stage.usage),
       contextTokens: stage.contextTokens ?? 0,
+      // usage запросов как в журнале сессии codex: вход, кэш, выход, reasoning
+      ...(stage.requests ? { requests: stage.requests } : {}),
       ok: stage.ok,
     })),
     total: costSummary(stages),

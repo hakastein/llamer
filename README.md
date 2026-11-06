@@ -80,7 +80,9 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
    (качество кода) и свои этапы из `stages` конфига, параллельно. Этап на нескольких
    драйверах идёт экземпляром на каждый драйвер; экземпляры называются `<этап>·<драйвер>`
    (`logic·claude`, `logic·codex`) в логе, таблице цены, отчёте и журнале, задание у них
-   общее. Этап с масками `paths` поднимается, только если в изменениях есть файлы под них.
+   общее. Экземпляры независимы: в `list` и `amend` экземпляр не видит находок других
+   экземпляров своего этапа, сводит их дедупликация. Этап с масками `paths` поднимается,
+   только если в изменениях есть файлы под них.
 3. **Дедупликация** (`dedupe`) — помечает находки разных этапов и экземпляров про одно место и одну
    причину; помеченные не публикуются и до скептика не доходят.
 4. **Скептик** (`skeptic`) — вердикт по каждой уцелевшей находке, вес в обе стороны.
@@ -130,7 +132,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 и трекера, `CI_*` и всё прочее в этап не попадают — адрес API и подобное драйверу задаются
 в `drivers.<имя>.env`. Значения секретов, которые держит
 движок (переменные `*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`), вымарываются из всего,
-что уходит в GitLab, в `report.md`, JSON отчёта, журналы этапов и лог движка в stderr.
+что уходит в GitLab, в `report.md`, JSON отчёта, журналы этапов, журналы сессий и лог движка в stderr.
 
 ## Конфиг `.llamer.json`
 
@@ -176,7 +178,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 |---|---|---|---|---|
 | `task` | задача этапа: кто он, что проверить и где ставить находку — первый абзац задания | ошибка | обязателен | — |
 | `drivers` | непустой список драйверов этапа, `claude` и/или `codex`, без повторов. На каждый драйвер идёт свой экземпляр этапа, уровень этапа берётся на лестнице каждого. У служебных `assess`, `threads`, `dedupe`, `skeptic` — ровно один драйвер | обязателен | обязателен | — |
-| `skills` | `{ "always": [...], "onDemand": [...] }`, оба списка необязательны. `always` — задание велит загрузить скилл до начала работы; `onDemand` — скилл доступен этапу, но в задании не называется: claude и codex сами видят скиллы прогона с `description` из frontmatter и берут подходящие к реквесту. Встроенному этапу скиллы добавляются к его скиллам метода, убрать их нельзя. Один скилл в обоих списках — ошибка | да | да | `{}` |
+| `skills` | `{ "always": [...], "onDemand": [...] }`, оба списка необязательны. `always` — задание велит загрузить скилл до начала работы; `onDemand` — скилл доступен этапу, но в задании не называется: claude и codex сами видят скиллы этапа с `description` из frontmatter и берут подходящие к реквесту. Встроенному этапу скиллы добавляются к его скиллам метода, убрать их нельзя. Один скилл в обоих списках — ошибка | да | да | `{}` |
 | `level` | `"assessed"` — уровень от оценщика, или число 1–5. У `assess` и `threads` — только число: они идут до вердикта | да | да | встроенный — свой уровень, свой этап — `"assessed"` |
 | `allow` | команды сверх общего `allow` — только этому этапу | да | да | `[]` |
 | `prompt` | как общий `prompt`, только этому этапу; перекрывает общий по ключам | да | да | общий `prompt` |
@@ -240,10 +242,11 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin |
 | песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
 | изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json` и своим `config.toml` |
-| скиллы | плагином прогона (`--plugin-dir`), имена `stage:<скилл>` | каталог скиллов прогона — `$HOME/.agents/skills` этапа, встроенные скиллы codex отключены; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком |
+| скиллы | ровно `always` и `onDemand` этапа — плагином этапа (`--plugin-dir`), имена `stage:<скилл>`; скиллы `.claude/skills` дерева выключены через `skillOverrides` | ровно `always` и `onDemand` этапа — в `$HOME/.agents/skills` этапа; встроенные скиллы codex и скиллы дерева (`.codex/skills` и `.agents/skills` от рабочего каталога до корня репозитория) выключены в `config.toml` этапа; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком |
 | общий пакет | системным промптом: `--append-system-prompt-file` | developer-сообщением поверх базового промпта: `developer_instructions` в `config.toml` этапа (аргументом `-c` пакет не пройдёт — один аргумент ограничен 128 КиБ) |
 | цена | из потока | по ценам OpenAI API (Standard, промпт длиннее 272K дороже) и usage каждого запроса из журнала сессии в `CODEX_HOME` этапа; известны `gpt-6.1-sol` и `gpt-6.1-terra`, у остальных моделей `$?` |
 | размер контекста | пик по `usage` запросов в потоке | пик по журналу сессии |
+| сессия этапа | `projects/<каталог>/<id>.jsonl` из `CLAUDE_CONFIG_DIR` | `config.toml`, `rules/` и `sessions/` из `CODEX_HOME` этапа, `usage` каждого запроса — в `cost.json` |
 | вход | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` или креды в конфиге | `CODEX_API_KEY`, `OPENAI_API_KEY` или `$CODEX_HOME/auth.json` |
 
 Лестницы по умолчанию (`drivers.<имя>.levels` заменяет лестницу своего драйвера целиком):
@@ -282,7 +285,18 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 
 Артефакты прогона — `.llamer/<дата>_<время>/` в корне репозитория (сам `.llamer/`
 игнорируется git): `report.md`, журналы этапов, задания, промпты, сырые потоки этапов,
-`task.diff`, `cost.json`, плагин скиллов прогона.
+`task.diff`, `cost.json`, плагин скиллов прогона и `sessions/<этап>/` — журнал сессии каждого
+этапа с вымаранными секретами, без кредов. По каждому этапу llamer в конце печатает в лог
+и пишет в `report.md` команду, которой сессию этапа можно продолжить вопросом агенту
+(«зачем ты прочитал X повторно?»): `CODEX_HOME` или `CLAUDE_CONFIG_DIR` — каталог сессии в
+артефактах, модель — та же, вход — ссылкой на обычное место кредов пользователя:
+
+```sh
+ln -sf ~/.codex/auth.json …/sessions/logic-codex/auth.json && CODEX_HOME=…/sessions/logic-codex \
+  codex exec resume --skip-git-repo-check -c 'model="gpt-6.1-sol"' -c 'model_reasoning_effort="high"' <id> '<вопрос>'
+ln -sf ~/.claude/.credentials.json …/sessions/logic-claude/.credentials.json && CLAUDE_CONFIG_DIR=…/sessions/logic-claude \
+  claude -p --resume <id> --model 'claude-sonnet-5-5' --effort 'high' '<вопрос>'
+```
 
 JSON в stdout:
 

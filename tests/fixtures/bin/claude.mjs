@@ -3,9 +3,12 @@
 // окружение этапа — белый список, и TMPDIR в нём есть.
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { appendFileSync, readFileSync } from 'node:fs';
+import {
+  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { stubCommands } from '../stub-plan.mjs';
+import { SECRETS } from '../repo.mjs';
 
 if (process.argv[2] === '--version') {
   console.log('0.0.0 (заглушка claude)');
@@ -19,6 +22,8 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const prompt = Buffer.concat(chunks).toString('utf-8');
 const brief = JSON.parse(readFileSync(process.env.LLAMER_BRIEF, 'utf-8'));
 const sharedAt = argv.indexOf('--append-system-prompt-file');
+const pluginAt = argv.indexOf('--plugin-dir');
+const pluginSkills = pluginAt === -1 ? null : join(argv[pluginAt + 1], 'skills');
 
 appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   driver: 'claude',
@@ -28,9 +33,17 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   prompt,
   shared: sharedAt === -1 ? null : readFileSync(argv[sharedAt + 1], 'utf-8'),
   configDir: process.env.CLAUDE_CONFIG_DIR,
+  skills: pluginSkills && existsSync(pluginSkills) ? readdirSync(pluginSkills).sort() : null,
 })}\n`);
 
-emit({ type: 'system', subtype: 'init', model: 'stub' });
+// Сессия, как у Claude Code: projects/<каталог>/<id>.jsonl конфига, в ней — вывод команды с токеном.
+const sessionId = `stub-${brief.stage}`;
+const project = join(process.env.CLAUDE_CONFIG_DIR, 'projects', '-stub-tree');
+mkdirSync(project, { recursive: true });
+writeFileSync(join(project, `${sessionId}.jsonl`), `${JSON.stringify({ type: 'user', text: `токен ${SECRETS.GITLAB_TOKEN}` })}\n`);
+emit({
+  type: 'system', subtype: 'init', model: 'stub', session_id: sessionId,
+});
 
 // STUB_FAIL_STAGE задаётся конфигом теста через drivers.<имя>.env: этап срывается, ничего не записав.
 if (process.env.STUB_FAIL_STAGE === brief.stage) {

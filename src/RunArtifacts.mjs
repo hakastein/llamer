@@ -58,6 +58,11 @@ export class RunArtifacts {
     return path;
   }
 
+  /** Журнал сессии этапа: им разбирают ход этапа и продолжают её вопросом к агенту. */
+  sessionDir(stageName) {
+    return join(this.#path, 'sessions', stageSlug(stageName));
+  }
+
   saveBrief(stageKey, brief) {
     const path = join(this.#briefsDir, `${stageKey}.json`);
     writeFileSync(path, `${JSON.stringify(brief, null, 2)}\n`, 'utf-8');
@@ -95,6 +100,9 @@ export class RunArtifacts {
     const path = join(this.#path, 'cost.json');
     writeCostJson({ path, stages: records });
     log(`стоимость по этапам: ${path}`);
+    for (const record of records.filter((stage) => stage.resume)) {
+      log(`продолжить сессию «${record.name}» вопросом: ${record.resume} '<вопрос>'`);
+    }
   }
 }
 

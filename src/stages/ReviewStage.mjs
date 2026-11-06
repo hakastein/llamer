@@ -140,6 +140,8 @@ export class ReviewStage {
       shared: this.sharesPack ? shared : null,
       prompt,
       env: { [BRIEF_ENV]: briefPath },
+      skills: [...this.skills.always, ...this.skills.onDemand],
+      cwd: materials.cwd,
     });
     log(`этап «${this.name}» пошёл: ${driver.name}, уровень ${level} (${launch.model}/${launch.effort}),`
       + ` промпт ${prompt.length} символов → ${promptPath}`);
@@ -156,13 +158,24 @@ export class ReviewStage {
       name: this.name, launch, cwd: materials.cwd, telemetry,
     });
 
-    this.#record = this.#judged(telemetry.finish(record));
+    this.#record = this.#judged(telemetry.finish({ ...record, resume: this.#keepSession(launch, record.sessionId) }));
     if (!this.#record.ok) {
       this.journal.recordFailure({
         stage: this.id, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
       });
     }
     return this.state();
+  }
+
+  // Без журнала сессии ревью не хуже: сбой копирования не роняет этап.
+  #keepSession(launch, sessionId) {
+    if (!sessionId || !launch.keepSession) return null;
+    try {
+      return launch.keepSession(this.#toolkit.artifacts.sessionDir(this.id), sessionId);
+    } catch (error) {
+      log(`этап «${this.name}»: журнал сессии не сохранён (${error.message})`);
+      return null;
+    }
   }
 
   /**
@@ -184,11 +197,15 @@ export class ReviewStage {
 
   // diffPath — изменения задачи: находка на чужой строке отбивается сразу,
   // а не уезжает в реквест замечанием к коду, которого автор не писал.
+  // siblings — экземпляры этого же этапа на других драйверах. Их находок этап не
+  // видит: увидев чужие, он не записал бы своих на тех же местах. Сводит экземпляры дедупликация.
   brief(materials) {
     return {
       stage: this.id,
       driver: this.driverName,
       name: this.name,
+      siblings: this.settings.drivers.filter((driver) => driver !== this.driverName)
+        .map((driver) => instanceName(this.settings, driver)),
       journalDir: this.journal.dir,
       baseSha: materials.baseSha,
       diffPath: materials.diffPath,

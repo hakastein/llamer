@@ -6,6 +6,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { stubCommands } from '../stub-plan.mjs';
+import { SECRETS } from '../repo.mjs';
 
 if (process.argv[2] === '--version') {
   console.log('codex-cli 0.0.0-stub');
@@ -35,17 +36,19 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   config: existsSync(config) ? readFileSync(config, 'utf-8') : null,
 })}\n`);
 
-// Журнал сессии, как у codex: по записи на запрос, сумма — в turn.completed ниже.
+// Журнал сессии, как у codex: по записи на запрос, сумма — в turn.completed ниже;
+// между ними вывод команды с токеном, как если бы агент вычитал его из дерева.
 if (!process.argv.includes('--ephemeral')) {
   const sessions = join(process.env.CODEX_HOME, 'sessions', '2026', '11', '05');
   mkdirSync(sessions, { recursive: true });
   writeFileSync(join(sessions, 'rollout-stub.jsonl'), [
-    { input_tokens: 2000, cached_input_tokens: 1500, output_tokens: 100 },
-    { input_tokens: 3000, cached_input_tokens: 2500, output_tokens: 200 },
-  ].map((usage) => JSON.stringify({ type: 'token_usage_record', payload: { usage } })).join('\n'));
+    { type: 'token_usage_record', payload: { usage: { input_tokens: 2000, cached_input_tokens: 1500, output_tokens: 100 } } },
+    { type: 'response_item', payload: { type: 'function_call_output', output: `токен ${SECRETS.GITLAB_TOKEN}` } },
+    { type: 'token_usage_record', payload: { usage: { input_tokens: 3000, cached_input_tokens: 2500, output_tokens: 200, reasoning_output_tokens: 50 } } },
+  ].map((record) => JSON.stringify(record)).join('\n'));
 }
 
-emit({ type: 'thread.started', thread_id: 'stub' });
+emit({ type: 'thread.started', thread_id: `stub-${brief.stage}` });
 emit({ type: 'turn.started' });
 emit({ type: 'item.completed', item: { id: 'm0', type: 'agent_message', text: `заглушка этапа ${brief.stage}` } });
 

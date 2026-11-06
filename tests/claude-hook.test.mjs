@@ -7,7 +7,7 @@ import { isHarnessCall } from '../src/drivers/claudeHook.mjs';
 // Хук — ровно тот, что драйвер кладёт в --settings этапа.
 function hookCommand() {
   const { argv } = new ClaudeDriver({ settings: { bin: 'claude', env: {} }, env: {}, runSkills: null }).launch({
-    level: { model: 'm', effort: 'e' }, projectMemory: false, commands: ['batch'], allow: [], shared: null, prompt: '', env: {},
+    level: { model: 'm', effort: 'e' }, projectMemory: false, commands: ['batch'], allow: [], shared: null, prompt: '', env: {}, skills: [], cwd: process.cwd(),
   });
   const { hooks } = JSON.parse(argv[argv.indexOf('--settings') + 1]);
   return hooks.PreToolUse[0].hooks[0].command;

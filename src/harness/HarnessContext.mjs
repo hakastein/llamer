@@ -24,7 +24,7 @@ export class HarnessContext {
   get journal() { return this.#journal; }
 
   get state() {
-    return this.#once('state', () => readRunState(this.#brief.journalDir));
+    return this.#once('state', () => readRunState(this.#brief.journalDir).hideStages(this.#brief.siblings));
   }
 
   get diff() {

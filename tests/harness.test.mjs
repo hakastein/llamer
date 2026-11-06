@@ -21,7 +21,7 @@ const DIFF = [
 
 // Несколько этапов одного прогона — общий `journalDir`, у каждого свой файл журнала.
 function stage(commands, {
-  name = 'logic', journalDir = null, threads = [], relatedRequired = true,
+  name = 'logic', journalDir = null, threads = [], relatedRequired = true, siblings = [],
 } = {}) {
   const dir = tempDir('llamer-harness-');
   const journal = journalDir ?? join(dir, 'journal');
@@ -29,7 +29,7 @@ function stage(commands, {
   write(dir, 'src/A.php', 'one\nnew\nnewer\n');
   writeFileSync(join(dir, 'task.diff'), DIFF);
   writeFileSync(join(dir, 'brief.json'), JSON.stringify({
-    stage: name, name, journalDir: journal, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands, threads, relatedRequired,
+    stage: name, name, journalDir: journal, baseSha: 'a'.repeat(40), diffPath: join(dir, 'task.diff'), commands, threads, relatedRequired, siblings,
   }));
   const call = (...args) => spawnSync(process.execPath, [HARNESS, ...args], {
     cwd: dir, encoding: 'utf-8', env: { ...process.env, LLAMER_BRIEF: join(dir, 'brief.json') },
@@ -144,4 +144,20 @@ test('закрытый тред не ломает порядок свёртки:
   const state = tests.state();
   assert.equal(state.findings[1].duplicateOf, 1);
   assert.deepEqual(state.resolved, [{ id: 't1', reason: 'снято', place: 'src/Order.php:4' }]);
+});
+
+test('экземпляр этапа не видит находок другого экземпляра этого же этапа; другой этап видит все', () => {
+  const claude = stage(['finding', 'list'], { name: 'logic·claude', siblings: ['logic·codex'] });
+  assert.equal(claude.call(...finding('3')).status, 0);
+  const codex = stage(['finding', 'amend', 'list'], { name: 'logic·codex', journalDir: claude.journalDir, siblings: ['logic·claude'] });
+
+  assert.equal(codex.call('list').stdout.trim(), 'находок пока нет');
+  assert.match(codex.call('amend', '--id', '1', '--text', 'чужая').stderr, /находки #1 в журнале нет/);
+  assert.equal(codex.call(...finding('3')).status, 0);
+  assert.match(codex.call('list').stdout, /^2\. \[major\] src\/A\.php:3/, 'номер сквозной по прогону');
+  assert.equal(codex.call('amend', '--id', '2', '--text', 'своя').status, 0);
+
+  const quality = stage(['list'], { name: 'quality', journalDir: claude.journalDir });
+  assert.equal(quality.call('list').stdout.trim().split('\n').length, 2);
+  assert.deepEqual(claude.state().findings.map((item) => [item.stage, item.text]), [['logic·claude', 'текст'], ['logic·codex', 'своя']]);
 });

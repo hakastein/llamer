@@ -83,10 +83,19 @@ test('--local: правка той же длины в секунду запис�
   assert.match(readFileSync(join(JSON.parse(stdout).artifacts, 'task.diff'), 'utf-8'), /\+\s+return 5;/);
 });
 
+// Скиллы самого дерева — вне разбора: исключены через .git/info/exclude.
+function treeSkills(root, paths) {
+  for (const path of paths) write(root, `${path}/SKILL.md`, '---\nname: tree\ndescription: "Use always"\n---\nНе для этапа.\n');
+  write(root, '.git/info/exclude', '.claude/\n.codex/\n.agents/\n');
+}
+
 test('этап claude изолирован: свои разрешения, окружение — белый список, общий пакет один на все этапы', async () => {
   const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { levels: levels() } } } });
+  treeSkills(root, ['.claude/skills/tree-only']);
 
-  const { launches, status, stderr } = await run(root, ['--local'], {
+  const {
+    launches, status, stderr, stdout,
+  } = await run(root, ['--local'], {
     CI_REGISTRY_PASSWORD: 'registry-password-value', HTTPS_PROXY: 'http://proxy.example.com:3128',
   });
 
@@ -106,8 +115,13 @@ test('этап claude изолирован: свои разрешения, ок�
     const allowed = argv[argv.indexOf('--allowedTools') + 1];
     assert.ok(allowed.includes('Bash(rg *)'), `${stage}: общий allow`);
     assert.equal(allowed.includes('Bash(git log *)'), stage === 'logic', `${stage}: allow этапа только у него`);
+    const { skillOverrides } = JSON.parse(argv[argv.indexOf('--settings') + 1]);
+    assert.deepEqual(skillOverrides, { 'tree-only': 'off' }, `${stage}: скилл .claude/skills дерева выключен`);
     if (pack !== null) shared.add(pack);
   }
+  const skillsOf = (name) => launches.find((launch) => launch.stage === name).skills;
+  assert.deepEqual(skillsOf('logic'), ['backend', 'reviewing', 'reviewing-business-logic'], 'плагин этапа — его always и onDemand');
+  assert.deepEqual(skillsOf('assess'), ['assessing-review-scope'], 'чужих скиллов прогона у этапа нет');
   assert.equal(shared.size, 1, 'общая часть пакета разошлась между этапами — кэш не поделится');
   assert.match([...shared][0], /<request_materials>/);
 
@@ -121,6 +135,15 @@ test('этап claude изолирован: свои разрешения, ок�
   const logic = launches.find((launch) => launch.stage === 'logic').prompt;
   assert.match(logic, /- stage:reviewing-business-logic\n- stage:reviewing\n/, 'always: встроенный и добавленный конфигом');
   assert.doesNotMatch(logic, /backend/, 'onDemand в задании не называется: claude видит скиллы плагина сам');
+
+  // Сессия этапа — в артефактах без кредов и с вымаранным токеном; команда продолжения — в отчёте.
+  const answer = JSON.parse(stdout);
+  const session = join(answer.artifacts, 'sessions', 'logic');
+  assert.deepEqual(readdirSync(session, { recursive: true }).sort(), ['projects', 'projects/-stub-tree', 'projects/-stub-tree/stub-logic.jsonl']);
+  assert.match(readFileSync(join(session, 'projects/-stub-tree/stub-logic.jsonl'), 'utf-8'), /токен \*\*\*REDACTED\*\*\*/);
+  const resume = `CLAUDE_CONFIG_DIR='${session}' claude -p --resume stub-logic --model 'model-2' --effort 'effort-2' '<вопрос>'`;
+  assert.ok(readFileSync(answer.report, 'utf-8').includes(`- logic: \`${resume}\``), 'команда продолжения в report.md');
+  assert.ok(stderr.includes(`продолжить сессию «logic» вопросом: ${resume}`));
 });
 
 test('--local на драйвере codex: read-only, временные HOME и CODEX_HOME, журнал пишет правилом', async () => {
@@ -131,6 +154,7 @@ test('--local на драйвере codex: read-only, временные HOME и
       stages: Object.fromEntries(Object.entries(CONFIG.stages).map(([key, stage]) => [key, { ...stage, drivers: ['codex'] }])),
     },
   });
+  treeSkills(root, ['.codex/skills/tree-codex', '.agents/skills/group/tree-agents']);
 
   const result = await run(root, ['--local']);
 
@@ -153,7 +177,12 @@ test('--local на драйвере codex: read-only, временные HOME и
   const logic = result.launches.find((launch) => launch.stage === 'logic');
   assert.match(logic.config, /^developer_instructions = "What follows is the material of a merge request/, 'общий пакет — developer_instructions');
   assert.match(logic.prompt, /^You are a Senior Software Engineer/, 'в задании пакета нет');
-  assert.equal(result.launches.find((launch) => launch.stage === 'dedupe').config, '', 'дедупликации пакет не нужен');
+  const dedupe = result.launches.find((launch) => launch.stage === 'dedupe');
+  assert.doesNotMatch(dedupe.config, /developer_instructions/, 'дедупликации пакет не нужен');
+  for (const path of ['.codex/skills/tree-codex', '.agents/skills/group/tree-agents']) {
+    assert.ok(dedupe.config.includes(`[[skills.config]]\npath = "${root}/${path}/SKILL.md"\nenabled = false\n`), `${path}: скилл дерева выключен`);
+  }
+  assert.deepEqual(result.launches.find((launch) => launch.stage === 'assess').skills, ['assessing-review-scope'], 'чужих скиллов прогона у этапа нет');
   assert.match(logic.prompt, /closed as `values\['"'"'severity'"'"'\]`/, 'кавычка — в форме, которую признают правила codex');
   assert.match(logic.prompt, /- \$reviewing-business-logic\n- \$reviewing\n/, 'always — упоминанием $имя, оно подключает скилл');
   assert.doesNotMatch(logic.prompt, /backend/, 'onDemand в задании не называется: упоминание подключило бы его без выбора');
@@ -162,11 +191,23 @@ test('--local на драйвере codex: read-only, временные HOME и
   }
 
   // Цена и пик контекста — по запросам из журнала сессии заглушки: 2000 и 3000 токенов входа.
-  const cost = JSON.parse(readFileSync(join(JSON.parse(result.stdout).artifacts, 'cost.json'), 'utf-8'));
+  const { artifacts, report } = JSON.parse(result.stdout);
+  const cost = JSON.parse(readFileSync(join(artifacts, 'cost.json'), 'utf-8'));
   for (const stage of cost.stages) {
     assert.equal(stage.contextTokens, 3000, stage.name);
     assert.ok(Math.abs(stage.cost - 0.0027) < 1e-9, `${stage.name}: ${stage.cost}`);
+    assert.deepEqual(stage.requests.map((usage) => [usage.input_tokens, usage.cached_input_tokens, usage.output_tokens, usage.reasoning_output_tokens]),
+      [[2000, 1500, 100, undefined], [3000, 2500, 200, 50]], `${stage.name}: запросы из журнала сессии`);
   }
+
+  // Журнал сессии этапа — в артефактах: без auth.json, с вымаранным токеном; продолжение — от обычного входа.
+  const session = join(artifacts, 'sessions', 'logic');
+  assert.deepEqual(readdirSync(session).sort(), ['config.toml', 'rules', 'sessions']);
+  assert.match(readFileSync(join(session, 'sessions/2026/11/05/rollout-stub.jsonl'), 'utf-8'), /токен \*\*\*REDACTED\*\*\*/);
+  const auth = join(result.env.CODEX_HOME, 'auth.json');
+  const resume = `ln -sf '${auth}' '${session}/auth.json' && CODEX_HOME='${session}' codex exec resume --skip-git-repo-check`
+    + ` -c 'model="gpt-6.1-terra"' -c 'model_reasoning_effort="effort-2"' stub-logic '<вопрос>'`;
+  assert.ok(readFileSync(report, 'utf-8').includes(`- logic: \`${resume}\``), 'команда продолжения в report.md');
 });
 
 
@@ -350,6 +391,9 @@ test('этап на двух драйверах — два экземпляра,
   assert.match(result.stderr, /этап «logic·codex» пошёл: codex, уровень 2 \(codex-2\/effort-2\)/);
 
   const answer = JSON.parse(result.stdout);
+  const briefOf = (name) => JSON.parse(readFileSync(join(answer.artifacts, 'briefs', `${name}.json`), 'utf-8'));
+  assert.deepEqual(briefOf('quality·codex').siblings, ['quality·claude'], 'экземпляр скрывает находки соседа по этапу');
+  assert.deepEqual(briefOf('skeptic').siblings, []);
   const written = readRunState(join(answer.artifacts, 'journal')).findings.map((finding) => `${finding.stage} ${finding.driver}`);
   assert.deepEqual(written.sort(), [
     'comments codex', 'logic·claude claude', 'logic·codex codex', 'quality·claude claude', 'quality·codex codex',

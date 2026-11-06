@@ -171,6 +171,13 @@ export class JournalState {
     return this.#byId.get(Number(id)) ?? null;
   }
 
+  /** Состояние без находок этих этапов; номера остальных — сквозные по прогону, как были. */
+  hideStages(stages) {
+    this.#findings = this.#findings.filter((finding) => !stages.includes(finding.stage));
+    this.#byId = new Map(this.#findings.map((finding) => [finding.id, finding]));
+    return this;
+  }
+
   #recordFinding(event) {
     const finding = new Finding({ ...event, id: this.#findings.length + 1 });
     this.#findings.push(finding);

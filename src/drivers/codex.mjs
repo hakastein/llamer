@@ -1,11 +1,13 @@
 import {
-  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { HARNESS } from '../agent/stageBin.mjs';
+import { HARNESS, quoted } from '../agent/stageBin.mjs';
 import { parseStreamLine } from '../agent/stream.mjs';
-import { StageDriver, binaryGap, stageEnvOf } from './common.mjs';
+import {
+  StageDriver, binaryGap, keepRedacted, linkSkills, stageEnvOf, upToRepoRoot,
+} from './common.mjs';
 import { log } from '../log.mjs';
 
 export const CODEX_DEFAULTS = {
@@ -105,6 +107,8 @@ export function codexNormalizer(model) {
   return (event) => {
     const { item } = event;
     switch (event.type) {
+      case 'thread.started':
+        return [{ type: 'system', subtype: 'init', session_id: event.thread_id }];
       case 'item.started':
         if (item?.type === 'command_execution') {
           return [assistant([{ type: 'tool_use', id: item.id, name: 'Bash', input: { command: item.command } }])];
@@ -153,6 +157,22 @@ export function codexNormalizer(model) {
   };
 }
 
+function skillFiles(dir, depth = 0) {
+  if (existsSync(join(dir, 'SKILL.md'))) return [join(dir, 'SKILL.md')];
+  // shortcut: глубже четырёх уровней скиллы дерева не ищутся — поднять, если codex найдёт там скилл.
+  if (depth > 3 || !statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return [];
+  return readdirSync(dir).flatMap((name) => skillFiles(join(dir, name), depth + 1));
+}
+
+/**
+ * Скиллы дерева: codex сам берёт их из `.codex/skills` и `.agents/skills` каждого
+ * каталога от cwd до корня репозитория, с вложенными, и выключаются они только
+ * поштучно, путём до SKILL.md.
+ */
+function treeSkills(cwd) {
+  return ['.codex/skills', '.agents/skills'].flatMap((rel) => upToRepoRoot(cwd, rel)).flatMap((root) => skillFiles(root));
+}
+
 export function codexGaps(settings, env) {
   const missing = binaryGap('codex', settings, env);
   if (missing.length > 0) return missing;
@@ -190,7 +210,7 @@ export class CodexDriver extends StageDriver {
 
   get name() { return 'codex'; }
 
-  // Скиллы прогона codex находит сам в `$HOME/.agents/skills` этапа, а упоминание
+  // Скиллы этапа codex находит сам в `$HOME/.agents/skills` этапа, а упоминание
   // `$имя` в задании подключает скилл целиком ещё до первого хода.
   get skillsHow() { return 'Each of these is attached by its mention below — its text is already with you, follow it from the start.'; }
 
@@ -201,16 +221,17 @@ export class CodexDriver extends StageDriver {
 
   /**
    * Свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME — там
-   * только скиллы прогона, встроенные отключены; конфиг и правила — из
-   * CODEX_HOME, а правила у этапов разные (`allow` этапа). Журнал сессии
-   * остаётся в CODEX_HOME этапа: по нему считаются цена и размер контекста.
+   * только скиллы этапа, встроенные и скиллы дерева выключены; конфиг и правила —
+   * из CODEX_HOME, а правила у этапов разные (`allow` этапа). Журнал сессии
+   * остаётся в CODEX_HOME этапа: по нему считаются цена и размер контекста, а
+   * `keepSession` кладёт его в артефакты без auth.json.
    * Общая часть пакета — `developer_instructions` в config.toml этого CODEX_HOME:
    * developer-сообщение поверх базового промпта, как системный промпт у claude,
    * и кэш префикса делится между этапами. Аргументом `-c` пакет не пройдёт:
    * один аргумент в Linux ограничен 128 килобайтами.
    */
   launch({
-    stage, level, projectMemory, allow, shared, prompt, env,
+    stage, level, projectMemory, allow, shared, prompt, env, skills, cwd,
   }) {
     const { model, effort } = level;
     const home = join(this.#tmp, `codex-${stage}`);
@@ -218,12 +239,12 @@ export class CodexDriver extends StageDriver {
     mkdirSync(join(codexHome, 'rules'), { recursive: true });
     writeFileSync(join(codexHome, 'rules', RULES_FILE), rulesFor(allow));
     if (existsSync(this.#auth)) copyFileSync(this.#auth, join(codexHome, 'auth.json'));
-    writeFileSync(join(codexHome, 'config.toml'), shared ? `developer_instructions = ${toml(shared.text)}\n` : '');
-    const skills = join(home, '.agents', 'skills');
-    if (this.#runSkills && !existsSync(skills)) {
-      mkdirSync(join(home, '.agents'), { recursive: true });
-      symlinkSync(join(this.#runSkills, 'skills'), skills);
-    }
+    const config = [
+      ...(shared ? [`developer_instructions = ${toml(shared.text)}`] : []),
+      ...treeSkills(cwd).map((path) => `[[skills.config]]\npath = ${toml(path)}\nenabled = false`),
+    ];
+    writeFileSync(join(codexHome, 'config.toml'), config.map((entry) => `${entry}\n`).join('\n'));
+    if (this.#runSkills) linkSkills(join(home, '.agents', 'skills'), this.#runSkills, skills);
     return {
       command: this.settings.bin,
       argv: [
@@ -244,7 +265,17 @@ export class CodexDriver extends StageDriver {
       model,
       effort,
       normalize: codexNormalizer(model),
-      afterExit: () => sessionTotals(model, sessionRequests(codexHome)),
+      afterExit: () => {
+        const requests = sessionRequests(codexHome);
+        return { ...sessionTotals(model, requests), requests };
+      },
+      keepSession: (dir, sessionId) => {
+        for (const name of ['config.toml', 'rules', 'sessions']) keepRedacted(join(codexHome, name), join(dir, name));
+        // Вход — из обычного места пользователя ссылкой: копия кредов в артефактах не лежит.
+        const auth = existsSync(this.#auth) ? `ln -sf ${quoted(this.#auth)} ${quoted(join(dir, 'auth.json'))} && ` : '';
+        return `${auth}CODEX_HOME=${quoted(dir)} ${this.settings.bin} exec resume --skip-git-repo-check`
+          + ` -c ${quoted(`model=${toml(model)}`)} -c ${quoted(`model_reasoning_effort=${toml(effort)}`)} ${sessionId}`;
+      },
     };
   }
 }

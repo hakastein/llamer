@@ -1,11 +1,13 @@
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HARNESS, quoted } from '../agent/stageBin.mjs';
-import { StageDriver, binaryGap, stageEnvOf } from './common.mjs';
+import {
+  StageDriver, binaryGap, keepRedacted, linkSkills, stageEnvOf, upToRepoRoot,
+} from './common.mjs';
 import { log } from '../log.mjs';
 
 export const CLAUDE_DEFAULTS = {
@@ -45,9 +47,21 @@ const NO_MCP = ['--mcp-config', JSON.stringify({ mcpServers: {} }), '--strict-mc
 // CLAUDE.md, поэтому исключать для тощих этапов нужно оба.
 const PROJECT_MEMORY_FILES = ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/AGENTS.md'];
 
-// Имя плагина прогона — пространство имён скиллов в Skill: одноимённый скилл
+// Имя плагина этапа — пространство имён скиллов в Skill: одноимённый скилл
 // из `.claude/skills` дерева иначе перехватил бы голое имя.
 const STAGE_PLUGIN = 'stage';
+
+/**
+ * Скиллы дерева из `.claude/skills` Claude Code грузит вместе с памятью проекта
+ * (`--setting-sources project`), и выключаются они только поштучно, по имени.
+ * shortcut: `.claude/skills` во вложенных каталогах дерева, которые Claude Code
+ * подхватывает по ходу чтения, не выключаются — выключать, если такие появятся.
+ */
+function treeSkillsOff(cwd) {
+  const names = upToRepoRoot(cwd, '.claude/skills')
+    .flatMap((root) => readdirSync(root).filter((name) => existsSync(join(root, name, 'SKILL.md'))));
+  return Object.fromEntries(names.map((name) => [name, 'off']));
+}
 
 // Вызов харнесса длиннее предела разбора Claude Code разрешает хук — см. claudeHook.mjs.
 const HARNESS_HOOK = {
@@ -85,43 +99,39 @@ export function claudeGaps(settings, env) {
 }
 
 export class ClaudeDriver extends StageDriver {
-  #env; #runSkills;
+  #env; #runSkills; #tmp; #configDir; #credentials;
 
-  constructor({ settings, env, runSkills }) {
+  constructor({
+    settings, env, runSkills, tmp, credentials,
+  }) {
     super(settings);
     this.#env = env;
     this.#runSkills = runSkills;
+    this.#tmp = tmp;
+    this.#configDir = env.CLAUDE_CONFIG_DIR;
+    this.#credentials = credentials;
   }
 
   /**
    * Приватный CLAUDE_CONFIG_DIR с копией кредов: личные настройки, хуки и
    * плагины разработчика в этап не попадают. Заданный снаружи каталог берётся
-   * как есть — его готовил запускающий. Каталог скиллов прогона становится
-   * плагином `stage`.
+   * как есть — его готовил запускающий.
    */
   static prepare({
     settings, env, stageBin, runSkills, tmp,
   }) {
+    const credentials = join(configDirOf(env), '.credentials.json');
     let configDir = env.CLAUDE_CONFIG_DIR;
     if (!configDir) {
       configDir = mkdtempSync(join(tmp, 'claude-'));
-      const source = join(homedir(), '.claude', '.credentials.json');
-      if (existsSync(source)) {
-        mkdirSync(configDir, { recursive: true });
-        copyFileSync(source, join(configDir, '.credentials.json'));
-      }
-    }
-    if (runSkills) {
-      mkdirSync(join(runSkills, '.claude-plugin'), { recursive: true });
-      writeFileSync(
-        join(runSkills, '.claude-plugin', 'plugin.json'),
-        `${JSON.stringify({ name: STAGE_PLUGIN, description: 'Скиллы этапов прогона LLaMer' }, null, 2)}\n`,
-      );
+      if (existsSync(credentials)) copyFileSync(credentials, join(configDir, '.credentials.json'));
     }
     log(`драйвер claude: ${settings.bin}, CLAUDE_CONFIG_DIR=${configDir}`);
     return new ClaudeDriver({
       settings,
       runSkills,
+      tmp,
+      credentials,
       env: {
         ...stageEnvOf(env, stageBin, CLAUDE_AUTH),
         ...settings.env,
@@ -153,13 +163,23 @@ export class ClaudeDriver extends StageDriver {
    * командной строки в Linux ограничен 128 килобайтами, и пакет контекста ронял
    * бы запуск на `spawn E2BIG`. Общая часть пакета — в системном промпте: он у
    * этапов одной модели одинаковый, и кэш, записанный первым этапом, читают
-   * остальные.
+   * остальные. Скиллы этапа — его плагин `stage`, скиллы дерева выключены.
    */
   launch({
-    level, projectMemory, commands, allow, shared, prompt, env,
+    stage, level, projectMemory, commands, allow, shared, prompt, env, skills, cwd,
   }) {
     const { model, effort } = level;
-    const settings = { hooks: HARNESS_HOOK, ...(projectMemory ? {} : { claudeMdExcludes: PROJECT_MEMORY_FILES }) };
+    const settings = {
+      hooks: HARNESS_HOOK,
+      skillOverrides: treeSkillsOff(cwd),
+      ...(projectMemory ? {} : { claudeMdExcludes: PROJECT_MEMORY_FILES }),
+    };
+    const plugin = this.#runSkills ? join(this.#tmp, `claude-plugin-${stage}`) : null;
+    if (plugin) {
+      mkdirSync(join(plugin, '.claude-plugin'), { recursive: true });
+      writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), `${JSON.stringify({ name: STAGE_PLUGIN })}\n`);
+      linkSkills(join(plugin, 'skills'), this.#runSkills, skills);
+    }
     return {
       command: this.settings.bin,
       argv: [
@@ -174,7 +194,7 @@ export class ClaudeDriver extends StageDriver {
         '--allowedTools', [...ALLOWED_TOOLS, ...bashRules(commands, allow)].join(' '),
         '--disallowedTools', DISALLOWED_TOOLS.join(' '),
         ...NO_MCP,
-        ...(this.#runSkills ? ['--plugin-dir', this.#runSkills] : []),
+        ...(plugin ? ['--plugin-dir', plugin] : []),
         // Состояние git и окружения Claude Code иначе пишет в системный промпт,
         // и запись артефактов прогона меняла бы его между этапами.
         '--exclude-dynamic-system-prompt-sections',
@@ -188,6 +208,21 @@ export class ClaudeDriver extends StageDriver {
       model,
       effort,
       normalize: (event) => [event],
+      keepSession: (dir, sessionId) => this.#keepSession(dir, sessionId, level),
     };
+  }
+
+  // Сессия лежит в projects/<каталог>/<id>.jsonl конфига; по ней же Claude Code её и продолжает.
+  #keepSession(dir, sessionId, { model, effort }) {
+    const projects = join(this.#configDir, 'projects');
+    const file = `${sessionId}.jsonl`;
+    const project = existsSync(projects) && readdirSync(projects).find((name) => existsSync(join(projects, name, file)));
+    if (!project) return null;
+    keepRedacted(join(projects, project, file), join(dir, 'projects', project, file));
+    // Вход — из обычного места пользователя ссылкой: копия кредов в артефактах не лежит.
+    const auth = existsSync(this.#credentials)
+      ? `ln -sf ${quoted(this.#credentials)} ${quoted(join(dir, '.credentials.json'))} && ` : '';
+    return `${auth}CLAUDE_CONFIG_DIR=${quoted(dir)} ${this.settings.bin} -p --resume ${sessionId}`
+      + ` --model ${quoted(model)} --effort ${quoted(effort)}`;
   }
 }

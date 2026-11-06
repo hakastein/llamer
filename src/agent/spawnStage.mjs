@@ -99,12 +99,14 @@ export function spawnStage({
     let sawUsage = false;
     let contextTokens = 0;
     let turns = 0;
+    let sessionId = null;
 
     const handle = (event) => {
       traffic.events += 1;
       traffic.lastEventType = event.subtype ? `${event.type}/${event.subtype}` : event.type;
       onEvent(event);
       if (isResultEvent(event)) result = event;
+      if (event.type === 'system' && event.subtype === 'init') sessionId = event.session_id ?? sessionId;
       if (event.type === 'assistant') turns += 1;
       const usage = event.type === 'assistant' ? event.message?.usage : null;
       if (!usage) return;
@@ -175,7 +177,10 @@ export function spawnStage({
         usage: result?.modelUsage ?? (sawUsage ? { stream: streamUsage } : null),
         usageApprox: result?.modelUsage == null && sawUsage,
         contextTokens: Math.max(contextTokens, late.contextTokens ?? 0),
+        // usage каждого запроса — у драйвера, что считает их сам (codex); у claude они в сыром потоке.
+        requests: late.requests ?? null,
         turns,
+        sessionId,
       });
     });
   });

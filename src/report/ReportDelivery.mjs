@@ -64,6 +64,11 @@ export class ReportDelivery {
     const summary = report.summary([]);
     if (summary) parts.push(`## Сводка\n\n${summary}`);
     if (gaps.length > 0) parts.push(`## Недостача\n\n${gaps.map((line) => `- ${line}`).join('\n')}`);
+    const sessions = report.stages.filter((stage) => stage.resume);
+    if (sessions.length > 0) {
+      parts.push(`## Сессии этапов\n\nПродолжить сессию этапа вопросом к агенту:\n\n${sessions
+        .map((stage) => `- ${stage.name}: \`${stage.resume} '<вопрос>'\``).join('\n')}`);
+    }
     if (report.stages.length > 0) {
       parts.push(`## Цена\n\n\`\`\`\n${formatCostTable(report.stages, { elapsedMs: report.elapsedMs })}\n\`\`\``);
     }

@@ -1,4 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import {
+  existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { redactSecrets } from '../redact.mjs';
 
 // Окружение этапа — белый список: токены GitLab и трекера, переменные CI и всё
 // прочее, чего здесь нет, в процесс модели не попадает. Нужное сверх этого
@@ -14,6 +19,35 @@ export function stageEnvOf(env, stageBin, auth) {
     || name.startsWith('LC_') || auth.includes(name)));
   stageEnv.PATH = `${stageBin}:${env.PATH ?? ''}`;
   return stageEnv;
+}
+
+/** Каталог `dir` со ссылками на скиллы этапа из каталога скиллов прогона — и ни на какие больше. */
+export function linkSkills(dir, runSkills, names) {
+  mkdirSync(dir, { recursive: true });
+  for (const name of names) symlinkSync(join(runSkills, 'skills', name), join(dir, name));
+}
+
+/** Существующие каталоги `rel` в cwd и выше до корня репозитория: там драйверы сами ищут скиллы дерева. */
+export function upToRepoRoot(cwd, rel) {
+  const found = [];
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    found.push(join(dir, rel));
+    if (existsSync(join(dir, '.git')) || dirname(dir) === dir) return found.filter((path) => existsSync(path));
+  }
+}
+
+/**
+ * Копия файла или каталога с вымаранными секретами: журнал сессии этапа уходит в
+ * артефакты, а в нём вывод команд агента. Файлы читаются текстом.
+ */
+export function keepRedacted(from, to) {
+  if (!existsSync(from)) return;
+  if (statSync(from).isDirectory()) {
+    for (const name of readdirSync(from)) keepRedacted(join(from, name), join(to, name));
+    return;
+  }
+  mkdirSync(dirname(to), { recursive: true });
+  writeFileSync(to, redactSecrets(readFileSync(from, 'utf-8')));
 }
 
 export function binaryGap(name, settings, env) {
@@ -42,7 +76,7 @@ export class StageDriver {
   get quote() { return "'\\''"; }
 
   // Скиллы onDemand в задании не перечисляются: claude и codex сами видят скиллы
-  // прогона с описаниями из frontmatter и берут подходящие к реквесту.
+  // этапа с описаниями из frontmatter и берут подходящие к реквесту.
   skillsBlock(library, { always, onDemand }) {
     library.assertPresent([...always, ...onDemand]);
     if (always.length === 0) return '';
