@@ -241,6 +241,8 @@ export class CodexDriver extends StageDriver {
     if (existsSync(this.#auth)) copyFileSync(this.#auth, join(codexHome, 'auth.json'));
     const config = [
       ...(shared ? [`developer_instructions = ${toml(shared.text)}`] : []),
+      // Login-шелл читает /etc/profile образа и сбрасывает PATH — команда review из него пропадает.
+      'allow_login_shell = false',
       ...treeSkills(cwd).map((path) => `[[skills.config]]\npath = ${toml(path)}\nenabled = false`),
     ];
     writeFileSync(join(codexHome, 'config.toml'), config.map((entry) => `${entry}\n`).join('\n'));

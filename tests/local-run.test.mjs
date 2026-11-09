@@ -166,6 +166,7 @@ test('--local на драйвере codex: read-only, временные HOME и
     assert.deepEqual(launch.argv.slice(0, 4), ['exec', '--json', '--sandbox', 'read-only'], launch.stage);
     assert.ok(!launch.argv.includes('--ignore-user-config'), `${launch.stage}: config.toml этапа — свой, его надо читать`);
     assert.ok(launch.argv.includes('skills.bundled.enabled=false'), `${launch.stage}: встроенные скиллы codex отключены`);
+    assert.match(launch.config.split('\n[[')[0], /^allow_login_shell = false$/m, `${launch.stage}: команды — без login-шелла, до таблиц config.toml`);
     assert.notEqual(launch.home, result.env.HOME, `${launch.stage}: личный HOME`);
     assert.notEqual(launch.codexHome, result.env.CODEX_HOME, `${launch.stage}: личный CODEX_HOME`);
     assert.ok(launch.auth, `${launch.stage}: вход codex не скопирован`);

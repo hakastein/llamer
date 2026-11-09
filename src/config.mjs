@@ -94,8 +94,10 @@ class Reader {
 
 // `${VAR}` и `~` раскрываются: каталог скиллов у CI и у разработчика разный,
 // а конфиг один на репозиторий. `${VAR}` — и в значениях drivers.<имя>.env.
+const VAR = /\$\{(\w+)\}/g;
+
 function expandVars(raw, { env, read, path }) {
-  return raw.replace(/\$\{(\w+)\}/g, (_, name) => env[name] ?? read.fail(path, `переменная ${name} не задана`));
+  return raw.replace(VAR, (_, name) => env[name] ?? read.fail(path, `переменная ${name} не задана`));
 }
 
 function expandPath(raw, { env, base, read, path }) {
@@ -109,7 +111,10 @@ function parseDriver(read, name, raw, processEnv) {
   const env = {};
   for (const [key, text] of Object.entries(vars)) {
     const path = `drivers.${name}.env.${key}`;
-    env[key] = expandVars(read.string(text, path), { env: processEnv, read, path });
+    const raw = read.string(text, path);
+    // Пробрасываем, только если есть: DOCKER_HOST и подобные заданы в CI, а локально нет.
+    if ([...raw.matchAll(VAR)].some(([, name]) => processEnv[name] === undefined)) continue;
+    env[key] = expandVars(raw, { env: processEnv, read, path });
   }
   return {
     bin: value.bin === undefined ? defaults.bin : read.string(value.bin, `drivers.${name}.bin`),

@@ -174,12 +174,15 @@ test('skillPaths раскрывают переменные окружения и
   assert.deepEqual(config.skillPaths, ['/opt/tools/skills', '/repo/local']);
 });
 
-test('drivers.<имя>.env раскрывают переменные окружения, как skillPaths', () => {
+test('drivers.<имя>.env раскрывают переменные окружения; значение с незаданной не передаётся', () => {
   const config = parse(minimal({ drivers: { claude: { env: { CLAUDE_HOME_HINT: '${TOOLS}/claude', PLAIN: 'x' } } } }), { TOOLS: '/opt/tools' });
 
   assert.equal(config.drivers.claude.env.CLAUDE_HOME_HINT, '/opt/tools/claude');
   assert.equal(config.drivers.claude.env.PLAIN, 'x');
-  assert.throws(() => parse(minimal({ drivers: { codex: { env: { A: '${NOPE}' } } } })), /drivers\.codex\.env\.A: переменная NOPE не задана/);
+  const partial = parse(minimal({ drivers: { codex: { env: { A: '${NOPE}', B: '${TOOLS}:${NOPE}', C: '${TOOLS}' } } } }), { TOOLS: '/opt/tools' });
+  assert.equal(partial.drivers.codex.env.C, '/opt/tools');
+  assert.ok(!('A' in partial.drivers.codex.env), 'A с незаданной NOPE не передаётся');
+  assert.ok(!('B' in partial.drivers.codex.env), 'B с одной незаданной из двух не передаётся');
 });
 
 test('одноимённые скиллы в двух каталогах — ошибка', () => {
