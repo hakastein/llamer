@@ -122,7 +122,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 
 `review diff <путь>...` печатает изменения задачи по файлам в виде секции `diff` пакета с полным
 контекстом — так этап дочитывает файлы, не вошедшие в обрезанный пакет; без путей — изменённые
-файлы со статусом и числом строк.
+файлы со статусом и числом строк. Переименованный файл — парой `rename from/to` с правками.
 
 В задании этапа справки команд нет — одна строка, что команды и форматы в `review --help`:
 он печатает перечень команд этапа и справку каждой; справка одной команды — `review <команда> --help`.
@@ -245,7 +245,7 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 | | `claude` | `codex` |
 |---|---|---|
 | запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin; команды — `bash -c`, не login-шелл (`allow_login_shell = false` в `config.toml` этапа): профиль образа сбросил бы `PATH`, и `review` пропал бы |
-| песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
+| песочница | `--permission-mode dontAsk`, `--allowedTools` — чтение, `Skill`, команды харнесса этапа и `allow`; вызов харнесса длиннее 10 000 символов, которого Claude Code не разбирает, и цикл `for f in <пути>; do review diff "$f"; done` по литеральным путям пропускает хук `PreToolUse`; запись, веб, агенты и MCP запрещены | `--sandbox read-only`; харнесс и `allow` — правилами `prefix_rule` |
 | изоляция | приватный `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | свои `HOME` и `CODEX_HOME` на этап с копией `auth.json` и своим `config.toml` |
 | скиллы | ровно `always` и `onDemand` этапа — плагином этапа (`--plugin-dir`), имена `stage:<скилл>`; скиллы `.claude/skills` дерева выключены через `skillOverrides` | ровно `always` и `onDemand` этапа — в `$HOME/.agents/skills` этапа; встроенные скиллы codex и скиллы дерева (`.codex/skills` и `.agents/skills` от рабочего каталога до корня репозитория) выключены в `config.toml` этапа; `always` — упоминанием `$<скилл>`, оно подключает скилл целиком |
 | общий пакет | системным промптом: `--append-system-prompt-file` | developer-сообщением поверх базового промпта: `developer_instructions` в `config.toml` этапа (аргументом `-c` пакет не пройдёт — один аргумент ограничен 128 КиБ) |

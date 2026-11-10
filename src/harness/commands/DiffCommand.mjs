@@ -8,7 +8,7 @@ const STATUS = {
   A: 'добавлен', M: 'изменён', D: 'удалён', R: 'переименован',
 };
 
-/** Файлы изменений задачи по ревизиям задания: путь → строка перечня. */
+/** Файлы изменений задачи по ревизиям задания: путь → строка перечня и путь до переименования. */
 function changedFiles({ revs, cwd }) {
   const lines = (args) => git(['diff', ...args, ...revs], cwd).split('\n').filter(Boolean);
   // Обе выдачи — из одной очереди git diff, порядок файлов в них один.
@@ -19,7 +19,7 @@ function changedFiles({ revs, cwd }) {
     const kind = STATUS[status[0]] ?? status;
     const lineCount = plus === '-' ? 'бинарный' : `+${plus} −${minus}`;
     const file = renamedTo ?? path;
-    return [file, `${file} — ${kind}${renamedTo ? ` из ${path}` : ''}, ${lineCount}`];
+    return [file, { line: `${file} — ${kind}${renamedTo ? ` из ${path}` : ''}, ${lineCount}`, from: path }];
   }));
 }
 
@@ -47,11 +47,13 @@ export class DiffCommand extends Command {
   build(values, context) {
     const files = changedFiles(context);
     const paths = values.positionals ?? [];
-    if (paths.length === 0) return { print: [...files.values()].join('\n') || 'изменений задачи нет' };
+    if (paths.length === 0) return { print: [...files.values()].map(({ line }) => line).join('\n') || 'изменений задачи нет' };
     return {
       print: paths.map((path) => (files.has(path)
         // Тот же вызов, что строит дифф пакета, с первой — полной — шириной контекста.
-        ? numberDiffLines(new Diff({ baseRef: context.revs[0], files: [path], revs: context.revs, cwd: context.cwd })
+        ? numberDiffLines(new Diff({
+          baseRef: context.revs[0], files: [path], revs: context.revs, cwd: context.cwd, renamedFrom: new Map([[path, files.get(path).from]]),
+        })
           .text({ context: DIFF_WIDTHS[0] })).trimEnd()
         : `${path}: среди изменений задачи такого файла нет; перечень — review diff без аргументов`)).join('\n'),
     };

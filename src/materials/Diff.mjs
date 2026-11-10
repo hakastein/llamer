@@ -84,7 +84,7 @@ export class Diff {
 
   // Путь до переименования: GitLab не принимает позицию, где old_path равен
   // new_path у переименованного файла, и вешает тред на реквест целиком.
-  #renamedFrom = new Map();
+  #renamedFrom;
 
   #sourceText = null;
 
@@ -93,7 +93,7 @@ export class Diff {
    * служит ещё и pathspec'ом для широкого диффа — без них он по таким файлам пуст.
    */
   constructor({
-    baseRef, files, added, removed, revs = null, cwd = null,
+    baseRef, files, added, removed, revs = null, cwd = null, renamedFrom = new Map(),
   }) {
     this.baseRef = baseRef;
     this.files = files;
@@ -101,16 +101,23 @@ export class Diff {
     this.removed = removed;
     this.revs = revs ?? [baseRef, 'HEAD'];
     this.#cwd = cwd;
+    this.#renamedFrom = renamedFrom;
   }
 
   static overRange({ baseRef, revs, cwd }) {
-    const files = git(['diff', '--name-only', ...revs], cwd)
+    const renamedFrom = new Map();
+    const files = git(['diff', '--name-status', ...revs], cwd)
       .split('\n')
-      .filter((line) => line.trim() !== '');
+      .filter((line) => line.trim() !== '')
+      .map((line) => {
+        const [, path, renamedTo] = line.split('\t');
+        if (renamedTo) renamedFrom.set(renamedTo, path);
+        return renamedTo ?? path;
+      });
     const narrow = git(['diff', '-U0', ...revs], cwd);
     const { added, removed } = parseUnifiedDiff(narrow);
     const diff = new Diff({
-      baseRef, files, added, removed, revs, cwd,
+      baseRef, files, added, removed, revs, cwd, renamedFrom,
     });
     // Узкий дифф уже посчитан — кладём в кэш ширин, чтобы `text({ context: 0 })`
     // не звал git второй раз за тем же самым.
@@ -204,7 +211,8 @@ export class Diff {
           files: this.files, added: this.added, removed: this.removed, read: this.#read, context,
         })
         // git() срезает перевод строки в конце вывода — дифф отдаётся таким, каким его печатает git.
-        : `${git(['diff', `-U${context}`, ...this.revs, '--', ...this.files], this.#cwd)}\n`);
+        // Старый путь в pathspec — иначе git не видит пару и показывает переименование добавлением файла.
+        : `${git(['diff', `-U${context}`, ...this.revs, '--', ...new Set(this.files.flatMap((file) => [this.oldPathOf(file), file]))], this.#cwd)}\n`);
     }
     return this.#widened.get(context);
   }

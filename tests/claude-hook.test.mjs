@@ -51,3 +51,37 @@ test('хук молчит обо всём, что не одна простая �
   }
   assert.equal(ask("review batch --json 'x'; rm -rf ~").stdout, '');
 });
+
+test('хук разрешает цикл review diff по литеральным путям', () => {
+  for (const command of [
+    'for f in src/A.php src/B.php; do review diff "$f"; done',
+    'for file in src/A.php\ndo\n  review diff $file\ndone\n',
+    'for f in a b; do review diff "$f" src/C.php "$f"; done | head -50',
+    'for f in @x/y+z_1.mjs -a; do review diff "$f"; done | tail -20',
+  ]) {
+    const answer = ask(command);
+    assert.equal(answer.status, 0, answer.stderr);
+    assert.equal(JSON.parse(answer.stdout || '{}').hookSpecificOutput?.permissionDecision, 'allow', command);
+  }
+});
+
+test('хук молчит о цикле, где что-то кроме review diff по литеральным путям', () => {
+  const words = ['$HOME', '"a"', "'a'", '`id`', '*.php', 'a?', '(a)', 'a;id', 'a|id', 'a&id', 'a<b', 'a>b'];
+  for (const command of [
+    'for f in a; do review diff "$f"; rm x; done',
+    'for f in $(ls); do review diff "$f"; done',
+    'for f in a; do cat "$f"; done',
+    ...words.map((word) => `for f in a ${word}; do review diff "$f"; done`),
+    'for f in a; do review diff "$g"; done',
+    'for f in a; do review diff "$f$(id)"; done',
+    'for f in a; do review diff "$f" > /tmp/x; done',
+    'for f in a; do review diff "$f"; done | sh',
+    'for f in a; do review diff "$f"; done | head -5; id',
+    'for f in a; do review diff "$f"; done; id',
+    'for f in a; do review diff "$f"; done && id',
+    'id; for f in a; do review diff "$f"; done',
+    'for f in a; do review batch "$f"; done',
+  ]) {
+    assert.equal(ask(command).stdout, '', command);
+  }
+});

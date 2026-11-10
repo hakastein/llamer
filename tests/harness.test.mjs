@@ -190,9 +190,12 @@ function diffStage() {
     cwd: root, encoding: 'utf-8', env: { ...process.env, LLAMER_BRIEF: join(root, '.git', 'brief.json') },
   });
   // Секция diff пакета для тех же ревизий, разрезанная по файлам.
-  const pack = widestFittingDiff(Diff.overRange({ baseRef: base, revs, cwd: root }), Infinity);
-  const section = (file) => pack.text.split(/(?=^diff --git )/m).find((chunk) => chunk.startsWith(`diff --git a/${file} `)).trimEnd();
-  return { call, pack, section };
+  const diff = Diff.overRange({ baseRef: base, revs, cwd: root });
+  const pack = widestFittingDiff(diff, Infinity);
+  const section = (file) => pack.text.split(/(?=^diff --git )/m).find((chunk) => chunk.split('\n')[0].endsWith(` b/${file}`)).trimEnd();
+  return {
+    call, diff, pack, section,
+  };
 }
 
 test('review diff: файл — как в секции diff пакета, несколько путей за вызов, путь вне изменений — строка, а не отказ', () => {
@@ -209,6 +212,16 @@ test('review diff: файл — как в секции diff пакета, нес
   assert.equal(several.stdout, [section('src/Gone.php'),
     'src/Missing.php: среди изменений задачи такого файла нет; перечень — review diff без аргументов',
     section('src/New.php'), ''].join('\n'));
+});
+
+test('переименование с правкой: в пакете и review diff — rename и только изменённая строка, тред — по новому пути со старым', () => {
+  const { call, diff, section } = diffStage();
+  const renamed = section('src/New.php');
+  assert.match(renamed, /^diff --git a\/src\/Old\.php b\/src\/New\.php\nsimilarity index \d+%\nrename from src\/Old\.php\nrename to src\/New\.php\n/);
+  assert.deepEqual(renamed.split('\n').filter((row) => /^ *\d* [+-]/.test(row)), ['   21 +21']);
+  assert.equal(call('diff', 'src/New.php').stdout, `${renamed}\n`);
+  assert.deepEqual(diff.linesOf('src/New.php'), [21]);
+  assert.equal(diff.oldPathOf('src/New.php'), 'src/Old.php');
 });
 
 test('review diff без путей — изменённые файлы со статусом и числом строк; справка — одной строкой с путями', () => {
