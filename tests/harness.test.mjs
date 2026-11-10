@@ -5,7 +5,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRunState } from '../src/domain/journal.mjs';
 import { Diff } from '../src/materials/Diff.mjs';
-import { widestFittingDiff } from '../src/materials/gather.mjs';
+import { foldDeleted, widestFittingDiff } from '../src/materials/gather.mjs';
+import { ContextPack } from '../src/materials/ContextPack.mjs';
+import { numberDiffLines } from '../src/materials/numberedDiff.mjs';
 import { git, tempDir, write } from './fixtures/repo.mjs';
 
 const HARNESS = new URL('../src/harness/main.mjs', import.meta.url).pathname;
@@ -170,7 +172,7 @@ function diffStage() {
   const numbers = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => `${from + index}`).join('\n').concat('\n');
   git(root, 'init', '-q');
   write(root, 'src/Kept.php', numbers(1, 30));
-  write(root, 'src/Gone.php', numbers(1, 3));
+  write(root, 'src/Gone.php', numbers(1, 30));
   write(root, 'src/Old.php', numbers(1, 20));
   git(root, 'add', '-A');
   git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'base');
@@ -192,7 +194,7 @@ function diffStage() {
   // Секция diff пакета для тех же ревизий, разрезанная по файлам.
   const diff = Diff.overRange({ baseRef: base, revs, cwd: root });
   const pack = widestFittingDiff(diff, Infinity);
-  const section = (file) => pack.text.split(/(?=^diff --git )/m).find((chunk) => chunk.split('\n')[0].endsWith(` b/${file}`)).trimEnd();
+  const section = (file, text = pack.text) => text.split(/(?=^diff --git )/m).find((chunk) => chunk.split('\n')[0].endsWith(` b/${file}`)).trimEnd();
   return {
     call, diff, pack, section,
   };
@@ -229,11 +231,56 @@ test('review diff без путей — изменённые файлы со с�
 
   assert.equal(call('diff').stdout, [
     'src/Fresh.php — добавлен, +2 −0',
-    'src/Gone.php — удалён, +0 −3',
+    'src/Gone.php — удалён, +0 −30',
     'src/Kept.php — изменён, +1 −1',
     'src/New.php — переименован из src/Old.php, +1 −0',
     '',
   ].join('\n'));
   assert.match(call('diff', '--help').stdout, /^Usage: review diff \[options\] \[path\.\.\.\]\n\nthe task's diff of the given files/);
   assert.match(call('--help').stdout, /\n {2}diff {2}the task's diff of the given files/);
+});
+
+test('пакет: полный дифф влезает — удалённый файл целиком, дифф байт в байт как самый широкий', () => {
+  const { diff, pack, section } = diffStage();
+  const full = numberDiffLines(diff.text({ context: 10 }));
+
+  assert.equal(pack.text, full);
+  assert.equal(widestFittingDiff(diff, full.length).text, full, 'ровно в бюджет — тоже целиком');
+  assert.match(section('src/Gone.php'), /\n {6}-1\n {6}-2\n[^]*\n {6}-30$/);
+  assert.equal(pack.folded, 0);
+  assert.doesNotMatch(new ContextPack({ diff: pack.text, folded: pack.folded }).shared(), /deleted files/);
+});
+
+test('пакет: полный дифф не влезает — удалённые свёрнуты в заглушку, остальные целиком, этапу сказано', () => {
+  const { diff, section } = diffStage();
+  const full = numberDiffLines(diff.text({ context: 10 }));
+  const pack = widestFittingDiff(diff, full.length - 1);
+
+  assert.equal(pack.context, 10);
+  assert.equal(pack.folded, 1);
+  assert.equal(pack.saved, full.length - pack.text.length);
+  assert.equal(
+    section('src/Gone.php', pack.text),
+    section('src/Gone.php').replace(/^@@[^]*/m, '@@ -1,30 +0,0 @@ deleted file, 30 lines removed; the content: review diff src/Gone.php'),
+  );
+  assert.match(section('src/Gone.php', pack.text), /\ndeleted file mode 100644\n/);
+  for (const file of ['src/Fresh.php', 'src/Kept.php', 'src/New.php']) assert.equal(section(file, pack.text), section(file));
+  assert.deepEqual([widestFittingDiff(diff, 0).context, widestFittingDiff(diff, 0).folded], [0, 1], 'не влезает и свёрнутым — самый узкий, его режет пакет');
+  const short = 'diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n      -1\n';
+  assert.deepEqual(foldDeleted(short), { text: short, folded: 0 }, 'короткий файл заглушка не удлиняет');
+  assert.match(
+    new ContextPack({ diff: pack.text, folded: pack.folded }).shared(),
+    /<attention>\nThe content of 1 deleted files is folded to one line each — the whole diff does not fit\. Read a deleted file with `review diff <path>`\./,
+  );
+});
+
+test('review diff удалённого файла при свёрнутом пакете — всё удалённое содержимое', () => {
+  const { diff, call, section } = diffStage();
+  const folded = widestFittingDiff(diff, numberDiffLines(diff.text({ context: 10 })).length - 1);
+  assert.doesNotMatch(section('src/Gone.php', folded.text), /-1\n/);
+
+  const gone = call('diff', 'src/Gone.php');
+  assert.equal(gone.status, 0, gone.stderr);
+  assert.equal(gone.stdout, `${section('src/Gone.php')}\n`);
+  assert.match(gone.stdout, /\n {6}-1\n {6}-2\n[^]*\n {6}-30\n$/);
 });

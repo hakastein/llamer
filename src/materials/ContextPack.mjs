@@ -58,14 +58,20 @@ export function formatThreads(threads) {
 export class ContextPack {
   #diff;
 
+  #folded;
+
   #issue;
 
   #threads;
 
   #shared = null;
 
-  constructor({ diff = '', issue = '', threads = [] } = {}) {
+  /** `folded` — сколько удалённых файлов в диффе свёрнуто в заглушки. */
+  constructor({
+    diff = '', folded = 0, issue = '', threads = [],
+  } = {}) {
     this.#diff = diff;
+    this.#folded = folded;
     this.#issue = issue;
     this.#threads = threads;
   }
@@ -94,8 +100,12 @@ export class ContextPack {
     if (diffText.length < this.#diff.length) {
       notes.push(
         `The diff is cut off at ${PACK_LIMIT} characters — it does not fit whole.`
-        + ' Read the missing changes yourself, in the files of your task.',
+        + ' Read the missing changes of your task\'s files with `review diff <path>...`.',
       );
+    }
+    if (this.#folded > 0) {
+      notes.push(`The content of ${this.#folded} deleted files is folded to one line each — the whole diff`
+        + ' does not fit. Read a deleted file with `review diff <path>`.');
     }
 
     const fittedThreads = this.#fittedThreads();

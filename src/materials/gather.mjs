@@ -19,13 +19,42 @@ const DIFF_BUDGET = PACK_LIMIT - PACK_RESERVE;
  * Фиксированная ширина тратит бюджет на окружение, а режется дифф с конца:
  * последние файлы до этапа не доезжают вовсе. В бюджет меряется дифф уже с
  * номерами строк — таким он и уходит в пакет.
+ *
+ * Полный дифф, когда влезает, идёт как есть. Иначе первыми место уступают
+ * удалённые файлы: их содержимое — сплошь минусы, и этап берёт его через
+ * `review diff`, а ширина подбирается уже по свёрнутому диффу.
  */
 export function widestFittingDiff(diff, budget) {
+  const full = numberDiffLines(diff.text({ context: DIFF_WIDTHS[0] }));
+  if (full.length <= budget) return { text: full, context: DIFF_WIDTHS[0], folded: 0, saved: 0 };
   for (const context of DIFF_WIDTHS) {
-    const text = numberDiffLines(diff.text({ context }));
-    if (text.length <= budget) return { text, context };
+    const numbered = numberDiffLines(diff.text({ context }));
+    const { text, folded } = foldDeleted(numbered);
+    if (text.length <= budget || context === DIFF_WIDTHS.at(-1)) {
+      return {
+        text, context, folded, saved: numbered.length - text.length,
+      };
+    }
   }
-  return { text: numberDiffLines(diff.text({ context: 0 })), context: 0 };
+}
+
+/** Удалённый файл — его заголовки и одна строка-заглушка вместо содержимого. */
+export function foldDeleted(text) {
+  let folded = 0;
+  const chunks = text.split(/(?=^diff --git )/m).map((chunk) => {
+    // Строки ханка в пакете начинаются с отступа номера: с начала строки идут только заголовки.
+    const hunk = chunk.search(/^@@ /m);
+    const head = chunk.slice(0, hunk);
+    if (hunk < 0 || !/^\+\+\+ \/dev\/null$/m.test(head)) return chunk;
+    const path = /^--- "?a\/(.*?)"?$/m.exec(head)?.[1];
+    const lines = /^@@ -1(?:,(\d+))? /m.exec(chunk.slice(hunk))?.[1] ?? 1;
+    const stub = `${head}@@ -1,${lines} +0,0 @@ deleted file, ${lines} lines removed; the content: review diff ${path}\n`;
+    // Короткий файл заглушка только удлинила бы.
+    if (stub.length >= chunk.length) return chunk;
+    folded += 1;
+    return stub;
+  });
+  return { text: chunks.join(''), folded };
 }
 
 async function collectIssueText(tracker, issueId) {
@@ -109,7 +138,10 @@ export async function gatherMaterials({
   const signals = collectRiskSignals(diff);
   log(`размер изменений: ${signals.size.files} файлов, ${signals.size.changedLines} изменённых строк`);
 
-  const { text: diffText, context: diffWidth } = widestFittingDiff(diff, DIFF_BUDGET);
+  const {
+    text: diffText, context: diffWidth, folded, saved,
+  } = widestFittingDiff(diff, DIFF_BUDGET);
+  if (folded > 0) log(`удалённые файлы свёрнуты в заглушки: ${folded}, сэкономлено ${saved} символов`);
   log(`дифф в пакет: ${diffText.length} символов, контекст ${diffWidth} строк`);
 
   const threads = await collectThreads(request);
@@ -134,6 +166,7 @@ export async function gatherMaterials({
     cwd: tree.path,
     pack: new ContextPack({
       diff: diffText,
+      folded,
       issue,
       threads,
     }),
