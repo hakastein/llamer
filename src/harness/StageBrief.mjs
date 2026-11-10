@@ -31,6 +31,8 @@ export class StageBrief {
 
   get diffPath() { return this.#data.diffPath; }
 
+  get revs() { return this.#data.revs; }
+
   get commands() { return this.#data.commands ?? []; }
 
   get siblings() { return this.#data.siblings ?? []; }

@@ -33,6 +33,11 @@ export class HarnessContext {
 
   get openThreads() { return this.#brief.threads; }
 
+  /** Ревизии изменений задачи, по которым собран дифф пакета. */
+  get revs() { return this.#brief.revs; }
+
+  get cwd() { return this.#cwd; }
+
   readFileLines(file) {
     return readFileSync(join(this.#cwd, file), 'utf-8').split('\n');
   }

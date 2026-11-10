@@ -36,6 +36,11 @@ export class Command {
     return false;
   }
 
+  /** Подсказка позиционных аргументов в Usage; null — команда их не берёт. */
+  get positionals() {
+    return null;
+  }
+
   run(values, context) {
     this.assertValues(values);
     return this.build(values, context);

@@ -9,7 +9,7 @@ import { Diff } from './Diff.mjs';
 import { Materials } from './Materials.mjs';
 import { log } from '../log.mjs';
 
-const DIFF_WIDTHS = [10, 6, 3, 0];
+export const DIFF_WIDTHS = [10, 6, 3, 0];
 
 /** Остаток пакета под задачу и треды. */
 const PACK_RESERVE = 60_000;

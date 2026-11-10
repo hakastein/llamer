@@ -115,6 +115,7 @@ test('этап claude изолирован: свои разрешения, ок�
     const allowed = argv[argv.indexOf('--allowedTools') + 1];
     assert.ok(allowed.includes('Bash(rg *)'), `${stage}: общий allow`);
     assert.equal(allowed.includes('Bash(git log *)'), stage === 'logic', `${stage}: allow этапа только у него`);
+    assert.ok(allowed.includes('Bash(review diff) Bash(review diff *)'), `${stage}: review diff разрешена`);
     const { skillOverrides } = JSON.parse(argv[argv.indexOf('--settings') + 1]);
     assert.deepEqual(skillOverrides, { 'tree-only': 'off' }, `${stage}: скилл .claude/skills дерева выключен`);
     if (pack !== null) shared.add(pack);
@@ -124,6 +125,10 @@ test('этап claude изолирован: свои разрешения, ок�
   assert.deepEqual(skillsOf('assess'), ['assessing-review-scope'], 'чужих скиллов прогона у этапа нет');
   assert.equal(shared.size, 1, 'общая часть пакета разошлась между этапами — кэш не поделится');
   assert.match([...shared][0], /<request_materials>/);
+  // Голова локального прогона — снимок рабочего дерева: незакоммиченная правка в выводе, как в пакете.
+  const { diff } = launches.find((launch) => launch.stage === 'logic');
+  assert.match(diff, /^diff --git a\/src\/Order\.php b\/src\/Order\.php\n[^]*\n {4}4 \+    return 3;\n/);
+  assert.ok([...shared][0].includes(diff.trimEnd()), 'review diff — та же секция, что в пакете');
 
   const byStage = Object.fromEntries(launches.map((launch) => [launch.stage, launch.argv]));
   const modelOf = (argv) => `${argv[argv.indexOf('--model') + 1]}/${argv[argv.indexOf('--effort') + 1]}`;
@@ -328,7 +333,7 @@ test('справки команд в задании нет — одна стро
     assert.doesNotMatch(prompt, /Usage: review|\$ review/, stage);
     for (const name of commands) {
       assert.match(help, new RegExp(`\\n  ${name}  [^\\n]+\\n`), `${stage}: ${name} в перечне`);
-      assert.match(help, new RegExp(`\\n\\\$ review ${name} --help\\nUsage: review ${name} \\[options\\]\\n[^]*?\\nOptions:\\n`), `${stage}: справка ${name}`);
+      assert.match(help, new RegExp(`\\n\\\$ review ${name} --help\\nUsage: review ${name} \\[options\\][^\\n]*\\n[^]*?\\nOptions:\\n`), `${stage}: справка ${name}`);
     }
   }
 });

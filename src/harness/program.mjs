@@ -53,7 +53,8 @@ export function helpOf(command) {
     return `  ${term.padEnd(termWidth)}  ${wrapped.replace(/\n/g, `\n${' '.repeat(termWidth + 4)}`)}`;
   };
   const description = command.manual ? `${command.summary}\n\n${command.manual}` : command.summary;
-  return [`Usage: ${HARNESS} ${command.name} [options]`, '', boxWrap(description, HELP_WIDTH), '', 'Options:',
+  const usage = [HARNESS, command.name, '[options]', command.positionals].filter(Boolean).join(' ');
+  return [`Usage: ${usage}`, '', boxWrap(description, HELP_WIDTH), '', 'Options:',
     ...items.map(item), ''].join('\n');
 }
 
@@ -90,7 +91,7 @@ export function runHarness({ argv, commands, context }) {
   let parsed;
   try {
     parsed = parseArgs({
-      args: rest, options: parseOptionsOf(command), strict: true, allowPositionals: false,
+      args: rest, options: parseOptionsOf(command), strict: true, allowPositionals: command.positionals !== null,
     });
   } catch (error) {
     throw new Refusal(`${PARSE_ERRORS[error.code] ?? 'аргументы не разобраны'}: ${error.message}`);
@@ -102,5 +103,6 @@ export function runHarness({ argv, commands, context }) {
     const value = parsed.values[longFlag(option.flags).slice(2)];
     if (value !== undefined) values[optionKey(option.flags)] = value;
   }
+  if (command.positionals !== null) values.positionals = parsed.positionals;
   return { command, result: command.run(values, context) };
 }

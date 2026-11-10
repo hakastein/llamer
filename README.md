@@ -114,11 +114,15 @@ llamer --mr https://gitlab.example.com/group/project/-/merge_requests/123 --publ
 
 | Этап | Команды |
 |---|---|
-| разбирающий | `finding`, `amend`, `batch`, `list`, `blame`, `summary`, `stop` |
-| `assess` | `assess`, `stop` |
-| `threads` | `resolve`, `thread`, `list`, `batch`, `blame`, `stop` |
-| `dedupe` | `dupe`, `list`, `batch`, `blame`, `stop` |
-| `skeptic` | `verdict`, `list`, `blame`, `batch`, `stop` |
+| разбирающий | `finding`, `amend`, `batch`, `list`, `blame`, `summary`, `diff`, `stop` |
+| `assess` | `assess`, `diff`, `stop` |
+| `threads` | `resolve`, `thread`, `list`, `batch`, `blame`, `diff`, `stop` |
+| `dedupe` | `dupe`, `list`, `batch`, `blame`, `diff`, `stop` |
+| `skeptic` | `verdict`, `list`, `blame`, `batch`, `diff`, `stop` |
+
+`review diff <путь>...` печатает изменения задачи по файлам в виде секции `diff` пакета с полным
+контекстом — так этап дочитывает файлы, не вошедшие в обрезанный пакет; без путей — изменённые
+файлы со статусом и числом строк.
 
 В задании этапа справки команд нет — одна строка, что команды и форматы в `review --help`:
 он печатает перечень команд этапа и справку каждой; справка одной команды — `review <команда> --help`.

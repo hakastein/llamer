@@ -33,6 +33,7 @@ appendFileSync(join(tmpdir(), 'launches.jsonl'), `${JSON.stringify({
   prompt,
   commands: brief.commands,
   help: spawnSync('review', ['--help'], { encoding: 'utf-8', env: process.env }).stdout,
+  diff: spawnSync('review', ['diff', 'src/Order.php'], { encoding: 'utf-8', env: process.env }).stdout,
   shared: sharedAt === -1 ? null : readFileSync(argv[sharedAt + 1], 'utf-8'),
   configDir: process.env.CLAUDE_CONFIG_DIR,
   skills: pluginSkills && existsSync(pluginSkills) ? readdirSync(pluginSkills).sort() : null,

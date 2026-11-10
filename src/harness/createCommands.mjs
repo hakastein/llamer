@@ -9,6 +9,7 @@ import { ThreadCommand } from './commands/ThreadCommand.mjs';
 import { BlameCommand } from './commands/BlameCommand.mjs';
 import { SummaryCommand, StopCommand } from './commands/NoteCommands.mjs';
 import { ListCommand } from './commands/ListCommand.mjs';
+import { DiffCommand } from './commands/DiffCommand.mjs';
 
 export function createCommands() {
   const commands = [];
@@ -27,6 +28,7 @@ export function createCommands() {
     new SummaryCommand(),
     new StopCommand(),
     new ListCommand(),
+    new DiffCommand(),
   );
 
   return commands;

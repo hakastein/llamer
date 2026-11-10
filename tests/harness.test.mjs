@@ -4,7 +4,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRunState } from '../src/domain/journal.mjs';
-import { tempDir, write } from './fixtures/repo.mjs';
+import { Diff } from '../src/materials/Diff.mjs';
+import { widestFittingDiff } from '../src/materials/gather.mjs';
+import { git, tempDir, write } from './fixtures/repo.mjs';
 
 const HARNESS = new URL('../src/harness/main.mjs', import.meta.url).pathname;
 
@@ -160,4 +162,65 @@ test('экземпляр этапа не видит находок другог�
   const quality = stage(['list'], { name: 'quality', journalDir: claude.journalDir });
   assert.equal(quality.call('list').stdout.trim().split('\n').length, 2);
   assert.deepEqual(claude.state().findings.map((item) => [item.stage, item.text]), [['logic·claude', 'текст'], ['logic·codex', 'своя']]);
+});
+
+// База и голова с файлами всех статусов; изменение в середине длинного файла — ширина контекста видна.
+function diffStage() {
+  const root = tempDir('llamer-diff-');
+  const numbers = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => `${from + index}`).join('\n').concat('\n');
+  git(root, 'init', '-q');
+  write(root, 'src/Kept.php', numbers(1, 30));
+  write(root, 'src/Gone.php', numbers(1, 3));
+  write(root, 'src/Old.php', numbers(1, 20));
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'base');
+  const base = git(root, 'rev-parse', 'HEAD');
+  write(root, 'src/Kept.php', numbers(1, 30).replace('\n15\n', '\nfifteen\n'));
+  git(root, 'rm', '-q', 'src/Gone.php');
+  git(root, 'mv', 'src/Old.php', 'src/New.php');
+  write(root, 'src/New.php', numbers(1, 21));
+  write(root, 'src/Fresh.php', 'a\nb\n');
+  git(root, 'add', '-A');
+  git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'head');
+  const revs = [base, git(root, 'rev-parse', 'HEAD')];
+  writeFileSync(join(root, '.git', 'brief.json'), JSON.stringify({
+    stage: 'logic', journalDir: join(root, '.git'), baseSha: base, revs, diffPath: join(root, '.git', 'HEAD'), commands: ['diff'],
+  }));
+  const call = (...args) => spawnSync(process.execPath, [HARNESS, ...args], {
+    cwd: root, encoding: 'utf-8', env: { ...process.env, LLAMER_BRIEF: join(root, '.git', 'brief.json') },
+  });
+  // Секция diff пакета для тех же ревизий, разрезанная по файлам.
+  const pack = widestFittingDiff(Diff.overRange({ baseRef: base, revs, cwd: root }), Infinity);
+  const section = (file) => pack.text.split(/(?=^diff --git )/m).find((chunk) => chunk.startsWith(`diff --git a/${file} `)).trimEnd();
+  return { call, pack, section };
+}
+
+test('review diff: файл — как в секции diff пакета, несколько путей за вызов, путь вне изменений — строка, а не отказ', () => {
+  const { call, pack, section } = diffStage();
+  assert.equal(pack.context, 10);
+  assert.match(section('src/Kept.php'), /\n {4}5  5\n[^]*\n {5} -15\n {3}15 \+fifteen\n[^]*\n {3}25  25$/, 'контекст пакета — десять строк');
+
+  const one = call('diff', 'src/Kept.php');
+  assert.equal(one.status, 0, one.stderr);
+  assert.equal(one.stdout, `${section('src/Kept.php')}\n`);
+
+  const several = call('diff', 'src/Gone.php', 'src/Missing.php', 'src/New.php');
+  assert.equal(several.status, 0, several.stderr);
+  assert.equal(several.stdout, [section('src/Gone.php'),
+    'src/Missing.php: среди изменений задачи такого файла нет; перечень — review diff без аргументов',
+    section('src/New.php'), ''].join('\n'));
+});
+
+test('review diff без путей — изменённые файлы со статусом и числом строк; справка — одной строкой с путями', () => {
+  const { call } = diffStage();
+
+  assert.equal(call('diff').stdout, [
+    'src/Fresh.php — добавлен, +2 −0',
+    'src/Gone.php — удалён, +0 −3',
+    'src/Kept.php — изменён, +1 −1',
+    'src/New.php — переименован из src/Old.php, +1 −0',
+    '',
+  ].join('\n'));
+  assert.match(call('diff', '--help').stdout, /^Usage: review diff \[options\] \[path\.\.\.\]\n\nthe task's diff of the given files/);
+  assert.match(call('--help').stdout, /\n {2}diff {2}the task's diff of the given files/);
 });

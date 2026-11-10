@@ -70,7 +70,7 @@ export class ReviewStage {
 
   get relatedRequired() { return true; }
 
-  get commands() { return ['stop']; }
+  get commands() { return ['diff', 'stop']; }
 
   values() { throw new Error(`${this.constructor.name}: значения шаблона не объявлены`); }
 
@@ -209,6 +209,7 @@ export class ReviewStage {
       journalDir: this.journal.dir,
       baseSha: materials.baseSha,
       diffPath: materials.diffPath,
+      revs: materials.diff.revs,
       relatedRequired: this.relatedRequired,
       commands: this.commands,
     };
