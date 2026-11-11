@@ -101,6 +101,28 @@ test('влитый в ветку release отсеян, а разрешение �
   assert.deepEqual([...task.diff.added.get('shared.php').values()].map(({ text }) => text), ['два задачи и релиза']);
 });
 
+test('перекрёстное слияние: подзадача, уже влитая в целевую ветку, отсеяна', () => {
+  const dir = upstream();
+  branchFrom(dir, 'PROJ-1', 'release');
+  branchFrom(dir, 'PROJ-2', 'release');
+  commit(dir, { 'sub.php': 'подзадача\n' }, 'подзадача');
+  git(dir, 'checkout', '-q', 'PROJ-1');
+  merge(dir, 'PROJ-2');
+  branchFrom(dir, 'PROJ-3', 'PROJ-1');
+  commit(dir, { 'task.php': 'задача\n' }, 'задача');
+  git(dir, 'checkout', '-q', 'release');
+  commit(dir, { 'release-two.php': 'релиз 2\n' }, 'ещё в релизе');
+  git(dir, 'checkout', '-q', 'PROJ-3');
+  merge(dir, 'release');
+  const head = git(dir, 'rev-parse', 'HEAD');
+  git(dir, 'checkout', '-q', 'PROJ-1');
+  merge(dir, 'release');
+
+  const task = scope(dir, { head, target: 'PROJ-1' });
+
+  assert.deepEqual(task.diff.files, ['task.php']);
+});
+
 test('develop, влитый в ветку для release, остаётся в разборе: в release его нет', () => {
   const dir = upstream();
   branchFrom(dir, 'PROJ-10', 'release');

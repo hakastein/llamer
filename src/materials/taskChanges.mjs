@@ -44,12 +44,14 @@ export function branchRef(branch, cwd) {
   return null;
 }
 
-function mergeBaseWith(head, branch, cwd) {
+// На перекрёстных слияниях общих предков несколько, и любой один теряет то, что
+// есть только в других (влитую в целевую ветку подзадачу): берутся все.
+function mergeBasesWith(head, branch, cwd) {
   const ref = branchRef(branch, cwd);
   if (!ref) throw new TaskChangesError(`ветки ${branch} нет ни в ${REMOTE}, ни локально`);
-  const sha = tryGit(['merge-base', head, ref], cwd);
-  if (!sha) throw new TaskChangesError(`у ветки задачи нет общего предка с ${branch}`);
-  return sha;
+  const shas = tryGit(['merge-base', '--all', head, ref], cwd);
+  if (!shas) throw new TaskChangesError(`у ветки задачи нет общего предка с ${branch}`);
+  return shas.split('\n');
 }
 
 /**
@@ -208,7 +210,7 @@ function computeTaskChanges({
     if (!targetBranch) throw new TaskChangesError('целевая ветка неизвестна');
     const branches = [...new Set([targetBranch, ...sharedBranches])];
     if (fetch) fetchBranches(branches, cwd);
-    bases = branches.map((branch) => ({ branch, sha: mergeBaseWith(head, branch, cwd) }));
+    bases = branches.flatMap((branch) => mergeBasesWith(head, branch, cwd).map((sha) => ({ branch, sha })));
     since = sinceMarks ? lastReviewed(sinceMarks, head, requestBase, cwd) : null;
     if (since) bases.push({ branch: 'прошлый прогон', sha: since });
     base = virtualBase(bases, requestBase, cwd);
