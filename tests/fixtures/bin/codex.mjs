@@ -45,7 +45,10 @@ if (!process.argv.includes('--ephemeral')) {
     { type: 'token_usage_record', payload: { usage: { input_tokens: 2000, cached_input_tokens: 1500, output_tokens: 100 } } },
     { type: 'response_item', payload: { type: 'function_call_output', output: `токен ${SECRETS.GITLAB_TOKEN}` } },
     { type: 'token_usage_record', payload: { usage: { input_tokens: 3000, cached_input_tokens: 2500, output_tokens: 200, reasoning_output_tokens: 50 } } },
-  ].map((record) => JSON.stringify(record)).join('\n'));
+  ].map((record) => JSON.stringify(record)).concat(
+    // Лимиты подписки — запись журнала сессии codex 0.166 дословно, без usage хода (`info`).
+    '{"timestamp":"2026-11-06T10:57:40.928Z","ordinal":48,"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":70.0,"window_minutes":10080,"resets_at":1794213888},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":null},"individual_limit":null,"spend_control_reached":null,"plan_type":"self_serve_business_prolite","rate_limit_reached_type":null}}}',
+  ).join('\n'));
 }
 
 emit({ type: 'thread.started', thread_id: `stub-${brief.stage}` });

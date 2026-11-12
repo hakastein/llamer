@@ -47,6 +47,8 @@ writeFileSync(join(project, `${sessionId}.jsonl`), `${JSON.stringify({ type: 'us
 emit({
   type: 'system', subtype: 'init', model: 'stub', session_id: sessionId,
 });
+// Лимиты подписки — дословное событие живого claude 2.1.316.
+emit(JSON.parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794480600,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.45,"resetsAt":1794480600,"status":"allowed"},"seven_day":{"utilization":0.58,"resetsAt":1794787200,"status":"allowed"}}},"uuid":"a7255113-cdfd-4eac-9f94-7a154dcadb53","session_id":"f66bac7e-9b13-4b63-82a4-ae9fce05e825"}'));
 
 // STUB_FAIL_STAGE задаётся конфигом теста через drivers.<имя>.env: этап срывается, ничего не записав.
 if (process.env.STUB_FAIL_STAGE === brief.stage) {

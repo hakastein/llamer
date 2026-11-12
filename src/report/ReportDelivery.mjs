@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { stringify } from 'yaml';
 import { formatCostTable, costSummary } from '../agent/cost.mjs';
+import { driverLimits } from '../agent/limits.mjs';
 import { formatFailureComment } from './failure.mjs';
 import { buildScopeBlock } from './scope.mjs';
 import { nothingOwnText } from './ReviewReport.mjs';
@@ -101,6 +102,7 @@ export class ReportDelivery {
       resolvedThreads: report.resolve,
       gaps,
       cost: costSummary(report.stages),
+      limits: driverLimits(report.stages),
       stages: report.stages.map(stageEntry),
     });
     return { unpublished: [], failures: [] };
@@ -117,10 +119,14 @@ export class ReportDelivery {
     return { failures: [] };
   }
 
-  async deliverFailure(failure) {
+  // Сорванный прогон — тот случай, когда лимиты подписки интереснее всего: они в результате и здесь.
+  async deliverFailure(failure, stages = []) {
     const text = formatFailureComment(failure);
     this.#emit(`${this.#title()}\n\n${text}`, {
-      ok: false, failure: { reason: failure.reason, detail: failure.detail ?? null, text }, findings: [],
+      ok: false,
+      failure: { reason: failure.reason, detail: failure.detail ?? null, text },
+      findings: [],
+      limits: driverLimits(stages),
     });
     return { failures: [] };
   }

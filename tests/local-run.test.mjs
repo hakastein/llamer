@@ -32,7 +32,7 @@ test('--head worktree: конвейер на заглушке claude доход�
   assert.equal(readFileSync(answer.result, 'utf-8'), result.stdout);
   assert.match(result.stdout, /^ {4}text: \|-?\n {6}заглушка этапа \S+ отметила src\/Fresh\.php:1\.\n {6}Вторая строка: токен/m);
   assert.deepEqual(Object.keys(answer), ['version', 'input', 'head', 'ok', 'base', 'assessment', 'findings', 'summaries',
-    'resolvedThreads', 'gaps', 'cost', 'stages', 'report', 'result', 'artifacts']);
+    'resolvedThreads', 'gaps', 'cost', 'limits', 'stages', 'report', 'result', 'artifacts']);
   const { file, line, deleted, severity } = answer.findings[0];
   assert.deepEqual({ file, line, deleted, severity }, { file: 'src/Fresh.php', line: 1, deleted: false, severity: 'major' });
   assert.equal(answer.stages.length, result.launches.length, 'запись на каждый поднятый этап');
@@ -459,6 +459,17 @@ test('этап на двух драйверах — два экземпляра,
   const cost = JSON.parse(readFileSync(join(answer.artifacts, 'cost.json'), 'utf-8'));
   assert.deepEqual(cost.stages.map((stage) => stage.name).filter((name) => name.includes('·')).sort(),
     ['logic·claude', 'logic·codex', 'quality·claude', 'quality·codex']);
+  // Лимиты подписки — по драйверу: claude из rate_limit_event потока, codex из журнала сессии.
+  assert.deepEqual(answer.limits, {
+    codex: { status: 'allowed', reason: null, windows: { seven_day: { usedPercent: 70, resetsAt: 1794213888 } } },
+    claude: {
+      status: 'allowed',
+      reason: null,
+      windows: { five_hour: { usedPercent: 45, resetsAt: 1794480600 }, seven_day: { usedPercent: 58, resetsAt: 1794787200 } },
+    },
+  });
+  assert.match(result.stderr, /лимиты codex: неделя — использовано 70%, осталось 30%, сброс 2026-11-09 08:44 UTC\n/);
+  assert.match(result.stderr, /лимиты claude: 5 часов — использовано 45%, осталось 55%, сброс 2026-11-12 10:50 UTC; неделя — /);
 
   const prompts = Object.fromEntries(result.launches.map((launch) => [launch.stage, launch.prompt]));
   const listedStages = 'the business-logic reviewer (logic·claude), the business-logic reviewer (logic·codex),'
@@ -507,4 +518,14 @@ test('разбирать нечего — этапы не поднимаются
   assert.equal(answer.failure.reason, 'scope');
   assert.match(answer.failure.detail, /и lonely нет общей истории/);
   assert.equal(broken.launches.length, 0);
+});
+
+test('оценщик сорвался — прогон не удался, а лимиты подписки всё равно в результате и в логе', async () => {
+  const result = await run(makeRepo({ config: { ...CONFIG, drivers: { claude: { env: { STUB_FAIL_STAGE: 'assess' } } } } }), WORKTREE);
+
+  assert.equal(result.status, 1, result.stderr);
+  const answer = parse(result.stdout);
+  assert.equal(answer.ok, false);
+  assert.deepEqual(answer.limits.claude.windows.seven_day, { usedPercent: 58, resetsAt: 1794787200 });
+  assert.match(result.stderr, /лимиты claude: 5 часов — использовано 45%/);
 });

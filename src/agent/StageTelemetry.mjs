@@ -2,6 +2,7 @@ import { log, stamped } from '../log.mjs';
 import { StageTraffic, failureReason, collectRateLimit } from './spawnStage.mjs';
 import { formatStreamEvent, StageStats } from './stream.mjs';
 import { formatCost } from './cost.mjs';
+import { limitsOf } from './limits.mjs';
 
 const SILENCE_REPORT_MS = 30_000;
 
@@ -74,8 +75,9 @@ export class StageTelemetry {
       + ` ${Math.round(record.durationMs / 1000)}с, ${formatCost(record)}`);
     if (!record.ok) log(`этап «${this.stage.name}»: ${this.traffic.describe()}`);
 
+    const rateLimit = collectRateLimit(this.events);
     return {
-      ...record, reason, rateLimit: collectRateLimit(this.events), lostWrites: stats.lostWrites,
+      ...record, reason, rateLimit, limits: record.limits ?? limitsOf(rateLimit), lostWrites: stats.lostWrites,
     };
   }
 }

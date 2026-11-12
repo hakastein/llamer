@@ -3,6 +3,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { writeCostJson, formatCostTable } from './agent/cost.mjs';
+import { driverLimits, formatLimits } from './agent/limits.mjs';
 import { redactSecrets } from './redact.mjs';
 import { Journal } from './domain/journal.mjs';
 import { log } from './log.mjs';
@@ -97,6 +98,7 @@ export class RunArtifacts {
   reportCost(records, elapsedMs) {
     if (records.length === 0) return;
     for (const line of formatCostTable(records, { elapsedMs }).split('\n')) log(line);
+    for (const [driver, limits] of Object.entries(driverLimits(records))) log(formatLimits(driver, limits));
     const path = join(this.#path, 'cost.json');
     writeCostJson({ path, stages: records });
     log(`стоимость по этапам: ${path}`);

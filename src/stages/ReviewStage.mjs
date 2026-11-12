@@ -158,7 +158,9 @@ export class ReviewStage {
       name: this.name, launch, cwd: materials.cwd, telemetry,
     });
 
-    this.#record = this.#judged(telemetry.finish({ ...record, resume: this.#keepSession(launch, record.sessionId) }));
+    this.#record = this.#judged(telemetry.finish({
+      ...record, driver: this.driverName, resume: this.#keepSession(launch, record.sessionId),
+    }));
     if (!this.#record.ok) {
       this.journal.recordFailure({
         stage: this.id, reason: this.#record.reason, rateLimit: this.#record.rateLimit,

@@ -11,7 +11,7 @@ const FAILURE_TEXTS = {
   other: 'Ревью не выполнено из-за сбоя прогона.',
 };
 
-function formatResetTime(resetsAt) {
+export function formatResetTime(resetsAt) {
   const iso = new Date(resetsAt * 1000).toISOString();
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }

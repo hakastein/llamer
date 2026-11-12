@@ -7,7 +7,7 @@ import { parseStreamLine, isResultEvent } from './stream.mjs';
 const STAGE_TIMEOUT_MS = 20 * 60 * 1000;
 
 const AUTH_STATUSES = new Set([401, 403]);
-const RATE_LIMIT_TEXT = /usage limit reached|rate limit/i;
+const RATE_LIMIT_TEXT = /usage limit reached|rate limit|out of credits/i;
 
 export function failureReason(stage) {
   const result = stage?.result ?? null;
@@ -179,6 +179,8 @@ export function spawnStage({
         contextTokens: Math.max(contextTokens, late.contextTokens ?? 0),
         // usage каждого запроса — у драйвера, что считает их сам (codex); у claude они в сыром потоке.
         requests: late.requests ?? null,
+        // лимиты подписки — у драйвера, что берёт их не из потока (codex); у claude их читает телеметрия
+        limits: late.limits ?? null,
         turns,
         sessionId,
       });

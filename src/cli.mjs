@@ -106,7 +106,7 @@ async function review({
       if (found > 0) log(`найдено до срыва: ${found} — остались в журнале прогона`);
       await delivery.deliverFailure({
         reason: outcome.failure?.reason ?? 'other', rateLimit: outcome.failure?.rateLimit ?? null, detail,
-      });
+      }, outcome.records);
       artifacts.reportCost(outcome.records, Date.now() - STARTED_AT);
       return false;
     }

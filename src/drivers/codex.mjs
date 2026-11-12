@@ -46,19 +46,42 @@ export function requestCost(model, usage) {
   return ((usage.input_tokens ?? 0) > LONG_PROMPT ? input * 2 + output * 1.5 : input + output) / 1e6;
 }
 
-/**
- * Usage каждого запроса этапа из журнала сессии codex (`token_usage_record`):
- * `--json` отдаёт только сумму за ход, а размер контекста и надбавка за длинный
- * промпт считаются по запросам.
- */
-export function sessionRequests(codexHome) {
+/** Записи журнала сессии codex: в нём то, чего нет в потоке `--json`, — usage запросов и лимиты. */
+function sessionRecords(codexHome) {
   const sessions = join(codexHome, 'sessions');
   if (!existsSync(sessions)) return [];
   return readdirSync(sessions, { recursive: true })
     .filter((file) => /rollout-[^/]*\.jsonl$/.test(file))
-    .flatMap((file) => readFileSync(join(sessions, file), 'utf-8').split('\n').map(parseStreamLine))
-    .filter((record) => record?.type === 'token_usage_record' && record.payload?.usage)
+    .flatMap((file) => readFileSync(join(sessions, file), 'utf-8').split('\n').map(parseStreamLine));
+}
+
+/**
+ * Usage каждого запроса этапа (`token_usage_record`): `--json` отдаёт только
+ * сумму за ход, а размер контекста и надбавка за длинный промпт считаются по запросам.
+ */
+export function sessionRequests(records) {
+  return records.filter((record) => record?.type === 'token_usage_record' && record.payload?.usage)
     .map((record) => record.payload.usage);
+}
+
+const CODEX_WINDOWS = { 300: 'five_hour', 10080: 'seven_day' };
+
+/**
+ * Лимиты подписки — из последней записи `token_count` с `rate_limits`, в той же
+ * форме, что у claude (`limitsOf`): окно названо по своей длине в минутах.
+ */
+export function sessionLimits(records) {
+  const limits = records.findLast((record) => record?.payload?.type === 'token_count' && record.payload.rate_limits)
+    ?.payload.rate_limits;
+  if (!limits) return null;
+  return {
+    status: limits.rate_limit_reached_type ? 'rejected' : 'allowed',
+    reason: limits.rate_limit_reached_type ?? null,
+    windows: Object.fromEntries([limits.primary, limits.secondary].filter(Boolean).map((window) => [
+      CODEX_WINDOWS[window.window_minutes] ?? `${window.window_minutes}_minutes`,
+      { usedPercent: window.used_percent, resetsAt: window.resets_at ?? null },
+    ])),
+  };
 }
 
 /** Пик контекста и цена этапа по его запросам; цена null, если хоть один не оценить. */
@@ -98,8 +121,8 @@ function toolResult(id, isError, content) {
 
 /**
  * События `codex exec --json` в форме потока claude: телеметрия, статистика
- * этапа и разбор срыва читают один формат. Цены и usage отдельных запросов
- * в потоке нет — их после выхода берёт `afterExit` из журнала сессии.
+ * этапа и разбор срыва читают один формат. Цены, usage отдельных запросов и
+ * лимитов подписки в потоке нет — их после выхода берёт `afterExit` из журнала сессии.
  */
 export function codexNormalizer(model) {
   let lastMessage = '';
@@ -268,8 +291,9 @@ export class CodexDriver extends StageDriver {
       effort,
       normalize: codexNormalizer(model),
       afterExit: () => {
-        const requests = sessionRequests(codexHome);
-        return { ...sessionTotals(model, requests), requests };
+        const records = sessionRecords(codexHome);
+        const requests = sessionRequests(records);
+        return { ...sessionTotals(model, requests), requests, limits: sessionLimits(records) };
       },
       keepSession: (dir, sessionId) => {
         for (const name of ['config.toml', 'rules', 'sessions']) keepRedacted(join(codexHome, name), join(dir, name));

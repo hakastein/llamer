@@ -269,6 +269,7 @@ JSON Merge Patch (RFC 7396): объекты сливаются по ключам
 | общий пакет | системным промптом: `--append-system-prompt-file` | developer-сообщением поверх базового промпта: `developer_instructions` в `config.toml` этапа (аргументом `-c` пакет не пройдёт — один аргумент ограничен 128 КиБ) |
 | цена | из потока | по ценам OpenAI API (Standard, промпт длиннее 272K дороже) и usage каждого запроса из журнала сессии в `CODEX_HOME` этапа; известны `gpt-6.1-sol` и `gpt-6.1-terra`, у остальных моделей `$?` |
 | размер контекста | пик по `usage` запросов в потоке | пик по журналу сессии |
+| лимиты подписки | событие `rate_limit_event` потока: окна `unifiedWindows` | запись `token_count` журнала сессии: `rate_limits` (в потоке `--json` их нет) |
 | сессия этапа | `projects/<каталог>/<id>.jsonl` из `CLAUDE_CONFIG_DIR` | `config.toml`, `rules/` и `sessions/` из `CODEX_HOME` этапа, `usage` каждого запроса — в `cost.json` |
 | вход | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` или креды в конфиге | `CODEX_API_KEY`, `OPENAI_API_KEY` или `$CODEX_HOME/auth.json` |
 
@@ -339,6 +340,14 @@ summaries: [{ stage: logic, text: … }]
 resolvedThreads: [{ id: <id треда>, place: src/Order.php:4, reason: … }]
 gaps: []
 cost: { usd: 0.42, usdKnown: true, turns: 31, tokens: 512000, contextTokens: 90000, durationMs: 240000 }
+limits:
+  claude:
+    status: allowed
+    reason: null
+    windows:
+      five_hour: { usedPercent: 45, resetsAt: 1794480600 }
+      seven_day: { usedPercent: 58, resetsAt: 1794787200 }
+  codex: { status: rejected, reason: workspace_member_credits_depleted, windows: {} }
 stages:
   - name: logic
     model: claude-sonnet-5-5
@@ -378,6 +387,19 @@ artifacts: /путь/.llamer/…
 сумма известных). `gaps` — недостача прогона: сорванные и прекращённые этапы, находки без
 вердикта скептика. Разбирать нечего — `findings` пуст, `assessment` — `null`.
 
+`limits` — лимиты подписки по драйверам из последних сведений драйвера за прогон (у claude — событие
+потока, у codex — журнал сессии); драйвера, не приславшего сведений, нет. `windows` — окна:
+`five_hour`, `seven_day`, у codex окно другой длины — `<минуты>_minutes`; `usedPercent` —
+использовано в процентах, `resetsAt` — сброс, unix-секунды. `status` — `allowed`,
+`allowed_warning` (на исходе) или `rejected` (исчерпан), `reason` — причина отказа словами
+драйвера (`credits_required`, `workspace_member_credits_depleted`, …) или `null`. То же — строкой на
+драйвер в логе под таблицей цены:
+
+```text
+лимиты claude: 5 часов — использовано 45%, осталось 55%, сброс 2026-11-12 10:50 UTC; неделя — использовано 58%, осталось 42%, сброс 2026-11-16 00:00 UTC
+лимиты codex: исчерпан (workspace_member_credits_depleted)
+```
+
 `stages` — этапы прогона: модель, усилие, успех, цена и `resume` — команда, которой сессию
 этапа продолжают вопросом агенту («зачем ты прочитал X повторно?»): вопрос дописывается в
 конце в одинарных кавычках. `CODEX_HOME` или `CLAUDE_CONFIG_DIR` в ней — каталог сессии в
@@ -391,7 +413,7 @@ ln -sf ~/.claude/.credentials.json …/sessions/logic-claude/.credentials.json &
   claude -p --resume <id> --model 'claude-sonnet-5-5' --effort 'high' '<вопрос>'
 ```
 
-Срыв — `ok: false`, `failure: { reason, detail, text }` и пустой `findings`: найденное до
+Срыв — `ok: false`, `failure: { reason, detail, text }`, пустой `findings` и `limits`: найденное до
 срыва остаётся в журнале прогона в артефактах. `reason` — одно из:
 
 | `reason` | Что случилось |

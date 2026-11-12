@@ -42,6 +42,7 @@ description: Use when reviewing changes with LLaMer — uncommitted, staged, unp
 | `resolvedThreads[]` | with `--mr`: threads the run would close and why |
 | `gaps[]` | what the run did not cover: failed or stopped stages, findings left unchecked |
 | `cost` | `usd`, tokens, duration |
+| `limits` | subscription limits per driver, also on failure: `windows` (`five_hour`, `seven_day`) with `usedPercent` and `resetsAt` (unix seconds), `status` `allowed`/`allowed_warning`/`rejected`, `reason`; a driver that reported nothing is absent |
 | `stages[]` | `name`, `model`, `ok`, `usd`, `resume` |
 | `report` | `report.md`, the same for a human |
 | `artifacts` | the run directory: prompts, journals, `task.diff`, sessions |
