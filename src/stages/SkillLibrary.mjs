@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const SKILL_FILE = 'SKILL.md';
 
-/** Встроенные скиллы — `skills/` пакета. */
-export const BUILTIN_SKILLS = fileURLToPath(new URL('../../skills', import.meta.url));
+/** Встроенные скиллы — `src/skills/` пакета. */
+export const BUILTIN_SKILLS = fileURLToPath(new URL('../skills', import.meta.url));
 
 /**
  * Скиллы этапов: встроенные и из каталогов `skillPaths`, скилл — подкаталог с

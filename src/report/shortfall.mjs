@@ -1,5 +1,5 @@
-export function collectShortfall({ state, unpublished = [], notices = [] }) {
-  const gaps = [...notices];
+export function collectShortfall({ state, unpublished = [] }) {
+  const gaps = [];
   const author = [];
   const ids = (findings) => findings.map((finding) => `#${finding.id}`).join(', ');
 

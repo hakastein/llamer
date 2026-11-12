@@ -53,7 +53,7 @@ export function formatThreads(threads) {
  * платить за запись пакета заново. Любое различие внутри общей части между
  * этапами разбивает кэш, поэтому всё, что у этапов разное, сюда не попадает.
  *
- * Часть этапа — задача из трекера — идёт в задание этапа.
+ * Часть этапа — текст задачи — идёт в задание этапа.
  */
 export class ContextPack {
   #diff;
@@ -147,7 +147,7 @@ export class ContextPack {
     const parts = [`The request materials — the diff and what is already said in the request — are`
       + ` in your system prompt, inside \`<${PACK_TAG}>\`.`];
     if (withTask && this.#issue) {
-      parts.push('The business task, set in the tracker by the person who asked for the work '
+      parts.push('The business task, set by the person who asked for the work '
         + 'and written before the code existed. The request is checked against it.\n'
         + tagged('business_task', this.#issue));
     }

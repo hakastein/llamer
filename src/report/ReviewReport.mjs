@@ -12,7 +12,7 @@ export const STATUS_MARKER = '<!-- llamer-status -->';
 export function nothingOwnText(task) {
   return task.since
     ? 'Новых своих изменений после прошлого прогона нет. Ревью пропущено.'
-    : 'Своих изменений нет: всё уже есть в целевой и общих ветках. Ревью пропущено.';
+    : 'Разбирать нечего: голова не добавляет изменений к базе разбора. Ревью пропущено.';
 }
 
 /**
@@ -20,7 +20,7 @@ export function nothingOwnText(task) {
  * целевую. Этапы не поднимаются, но молчание ревьюера читалось бы как сбой.
  */
 export function nothingOwnNote({ task, markSha }) {
-  const text = '_Своих изменений нет: всё уже есть в целевой и общих ветках. Ревью пропущено._';
+  const text = `_${nothingOwnText(task)}_`;
   return withRevisionMark(`${STATUS_MARKER}\n${text}\n\n${buildScopeBlock({ task })}`, markSha);
 }
 
@@ -29,13 +29,11 @@ export function nothingOwnNote({ task, markSha }) {
  * одно и то же, поэтому расходиться в текстах им нечем.
  */
 export class ReviewReport {
-  #notices; #journal; #materials; #stages; #markSha; #elapsedMs; #cached = null;
+  #journal; #materials; #stages; #markSha; #elapsedMs; #cached = null;
 
-  /** `notices` — пробелы окружения, с которыми прогон всё же пошёл. */
   constructor({
-    notices = [], journal, materials, stages, markSha, elapsedMs,
+    journal, materials, stages, markSha, elapsedMs,
   }) {
-    this.#notices = notices;
     this.#journal = journal;
     this.#materials = materials;
     this.#stages = stages;
@@ -95,7 +93,7 @@ export class ReviewReport {
   }
 
   shortfall(unpublished) {
-    return collectShortfall({ state: this.#journal, unpublished, notices: this.#notices });
+    return collectShortfall({ state: this.#journal, unpublished });
   }
 
   // Пустая сводка не должна стать пустым комментарием в MR — доставщик решает

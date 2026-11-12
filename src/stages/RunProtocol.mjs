@@ -1,5 +1,4 @@
 import { HARNESS } from '../agent/stageBin.mjs';
-import { listed } from './prompt.mjs';
 
 // План по умолчанию — поиском по тексту: навигацию проект включает сам,
 // своим `prompt.plan` в конфиге.
@@ -13,19 +12,16 @@ export const SEARCH_PLAN = 'Present a plan before your first search: the questio
   + 'A text search matches strings, not types: read every hit before counting it, a '
   + 'method of another class with the same name is not a caller.';
 
-const code = (name) => `\`${name}\``;
-
 /**
  * Общие для всех этапов куски задания: как устроен прогон, откуда дифф, как
  * говорить с харнессом, как строить план. Знают о прогоне то, что знает движок;
- * о проекте — только то, что задал его конфиг (`sharedBranches`, `prompt`).
+ * о проекте — только то, что задал его конфиг (`prompt`).
  */
 export class RunProtocol {
-  #materials; #sharedBranches;
+  #materials;
 
-  constructor({ materials, sharedBranches = [] }) {
+  constructor({ materials }) {
     this.#materials = materials;
-    this.#sharedBranches = sharedBranches;
   }
 
   get materials() { return this.#materials; }
@@ -66,16 +62,13 @@ export class RunProtocol {
         + `${tail} \`git show <base>:<path>\` shows a file as it stood before the task, and `
         + 'opening a file FROM the diff stays allowed.';
     }
-    const shared = this.#sharedBranches;
-    const branches = shared.length === 0 ? 'its target branch'
-      : `its target branch and the shared branch${shared.length > 1 ? 'es' : ''} ${listed(shared.map(code))}`;
     return 'The diff holds the task\'s changes: what this branch adds on top of '
-      + `everything ${branches} already ${shared.length === 0 ? 'has' : 'have'}. `
-      + `Code ${shared.length === 0 ? 'that branch' : 'those branches'} brought into the branch passed its own review `
+      + 'everything the excluded revisions already have. '
+      + 'Code they brought into the branch passed its own review '
       + 'and is left out, even where GitLab shows it on the request page. THE FILES IN IT '
       + 'ARE THE WHOLE REVIEW.\n\n'
       + `${tail} The base revision is `
-      + `${shared.length === 0 ? 'the fork point from that branch' : 'a merge of those branches'} made for this run: `
+      + 'the fork point from those revisions made for this run: '
       + '`git show <base>:<path>` shows a file '
       + 'as it stood before the task, and opening a file FROM the diff stays allowed.';
   }

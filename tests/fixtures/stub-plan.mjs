@@ -54,7 +54,7 @@ function analysis({ brief }) {
     const line = String(diff.linesOf(file)[0]);
     commands.push([
       'finding', '--file', file, '--line', line, '--line-end', line,
-      '--text', `заглушка этапа ${brief.stage} отметила ${file}:${line}, токен ${SECRETS.GITLAB_TOKEN}`,
+      '--text', `заглушка этапа ${brief.stage} отметила ${file}:${line}.\nВторая строка: токен ${SECRETS.GITLAB_TOKEN}`,
       '--severity', 'major', '--severity-reason', 'заглушка ставит вес',
       '--related', `${file}:${line}`,
     ]);

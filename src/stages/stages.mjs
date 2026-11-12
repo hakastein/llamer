@@ -61,7 +61,7 @@ export class ThreadsStage extends ReviewStage {
 /**
  * Чем встроенные разбирающие этапы отличаются друг от друга, кроме шаблона:
  * вывод по реквесту (`summary`) пишет только бизнес-логика, память проекта
- * нужна логике и качеству, задача из трекера качеству кода не нужна. Свой
+ * нужна логике и качеству, текст задачи качеству кода не нужен. Свой
  * этап конфига устроен как бизнес-логика.
  */
 const ANALYSIS_TRAITS = {
@@ -122,9 +122,8 @@ export class AnalysisStage extends ReviewStage {
     }
     if (wanted.has('TASK')) values.TASK = this.settings.task.trim();
     if (wanted.has('TASK_NOTE')) {
-      values.TASK_NOTE = materials.issueId
-        ? `Task ${materials.issueId} is in the pack below — check the implementation `
-          + 'against what was asked for.'
+      values.TASK_NOTE = materials.issue
+        ? 'The task is in the pack below — check the implementation against what was asked for.'
         : '';
     }
     return values;

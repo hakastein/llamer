@@ -1,6 +1,6 @@
 {
   "name": "llamer",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Конфигурируемый движок агентного ревью диффа: оценка, разбирающие этапы, дедупликация, скептик, публикация в GitLab или отчёт.",
   "license": "MIT",
   "author": "hakastein",
@@ -18,11 +18,13 @@
   "files": [
     "bin",
     "src",
-    "skills",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test --test-reporter=spec tests/*.test.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import {
-  ConfigError, analysisStages, driversInUse, parseConfig, skillsInUse,
+  ConfigError, analysisStages, driversInUse, loadConfig, parseConfig, skillsInUse,
 } from '../src/config.mjs';
 import { CLAUDE_DEFAULTS, ClaudeDriver } from '../src/drivers/claude.mjs';
 import { CodexDriver } from '../src/drivers/codex.mjs';
@@ -14,11 +14,10 @@ import {
 
 const FILE = '/repo/.llamer.json';
 // Встроенные этапы на claude, `stages` — поверх них.
-const minimal = (extra = {}) => ({ version: 1, ...extra, stages: stages(extra.stages) });
+const minimal = (extra = {}) => ({ version: 2, driver: 'claude', ...extra, stages: stages(extra.stages) });
 const parse = (raw, env = {}) => parseConfig(raw, { file: FILE, env });
-const without = (key) => ({ version: 1, stages: Object.fromEntries(Object.entries(stages()).filter(([name]) => name !== key)) });
 
-test('умолчания: встроенные этапы со своими скиллами и уровнями, лестницы claude и codex, трекера нет', () => {
+test('умолчания: встроенные этапы со своими скиллами и уровнями, лестницы claude и codex', () => {
   const config = parse(minimal());
 
   assert.deepEqual(Object.keys(config.stages), ['assess', 'threads', 'logic', 'quality', 'comments', 'tests', 'dedupe', 'skeptic']);
@@ -45,7 +44,6 @@ test('умолчания: встроенные этапы со своими ск
     'gpt-6.1-sol/medium', 'gpt-6.1-sol/high', 'gpt-6.1-sol/xhigh', 'gpt-6.1-sol/max', 'gpt-6.1-sol/ultra',
   ]);
   assert.deepEqual(driversInUse(config), ['claude']);
-  assert.deepEqual(config.tracker, { type: 'none', issuePattern: null });
 });
 
 test('встроенному этапу конфиг добавляет скиллы и задаёт level, allow и маски; свой этап — после встроенных', () => {
@@ -98,38 +96,40 @@ test('лестница у каждого драйвера своя: drivers.<и�
 });
 
 test('драйверы этапа — явный список; драйверы прогона — драйверы всех этапов', () => {
-  const config = parseConfig({ version: 1, stages: stages({}, { logic: ['claude', 'codex'] }) }, { file: FILE, env: {} });
+  const config = parse(minimal({ stages: stages({}, { logic: ['claude', 'codex'] }) }));
 
   assert.deepEqual(config.stages.logic.drivers, ['claude', 'codex']);
   assert.deepEqual(config.stages.quality.drivers, ['claude']);
   assert.deepEqual(driversInUse(config), ['claude', 'codex']);
-  assert.deepEqual(driversInUse(parse({ version: 1, stages: stages({}, { all: ['codex'] }) })), ['codex']);
+  assert.deepEqual(driversInUse(parse(minimal({ stages: stages({}, { all: ['codex'] }) }))), ['codex']);
   // Служебные этапы видят каждый экземпляр этапа на нескольких драйверах, одиночный — как прежде.
   assert.equal(formatStages(analysisStages(config)),
     'the business-logic reviewer (logic·claude), the business-logic reviewer (logic·codex), the code-quality reviewer,'
     + ' the comments reviewer and the test reviewer');
 });
 
-test('встроенный этап без drivers или без записи в конфиге — ошибка с именем этапа', () => {
-  for (const key of BUILTIN) {
-    const message = new RegExp(`stages\\.${key}\\.drivers: не задан — у каждого этапа, и у встроенного, драйверы задаются явно`);
-    assert.throws(() => parse(without(key)), (error) => error instanceof ConfigError && message.test(error.message), key);
-    assert.throws(() => parse(minimal({ stages: { [key]: { drivers: [] } } })), message, key);
-  }
-  assert.throws(() => parse({ version: 1 }), /stages\.assess\.drivers: не задан/);
+test('driver — драйвер всех этапов, drivers этапа заменяет его только у этого этапа', () => {
+  const config = parse({ version: 2, driver: 'codex', stages: { logic: { drivers: ['claude', 'codex'] }, docs: { task: 'Docs.' } } });
+
+  const drivers = Object.fromEntries(Object.values(config.stages).map((stage) => [stage.key, stage.drivers.join('+')]));
+  assert.deepEqual(drivers, {
+    assess: 'codex', threads: 'codex', logic: 'claude+codex', quality: 'codex', comments: 'codex', tests: 'codex', dedupe: 'codex', skeptic: 'codex', docs: 'codex',
+  });
+  assert.throws(() => parse({ version: 2, stages: {} }), /driver: одно из claude, codex/);
+  for (const key of BUILTIN) assert.throws(() => parse(minimal({ stages: { [key]: { drivers: [] } } })), /drivers: непустой список/, key);
 });
 
 test('служебный этап на двух драйверах — ошибка; разбирающий на двух — нет', () => {
   for (const key of ['assess', 'threads', 'dedupe', 'skeptic']) {
-    assert.throws(() => parse({ version: 1, stages: stages({}, { [key]: ['claude', 'codex'] }) }),
+    assert.throws(() => parse(minimal({ stages: stages({}, { [key]: ['claude', 'codex'] }) })),
       new RegExp(`stages\\.${key}\\.drivers: ${key} — служебный этап, он идёт одним экземпляром: ровно один драйвер`), key);
   }
-  assert.deepEqual(parse({ version: 1, stages: stages({}, { tests: ['codex', 'claude'] }) }).stages.tests.drivers, ['codex', 'claude']);
+  assert.deepEqual(parse(minimal({ stages: stages({}, { tests: ['codex', 'claude'] }) })).stages.tests.drivers, ['codex', 'claude']);
 });
 
 test('незнакомое в конфиге останавливает разбор с путём до ключа', () => {
   const cases = [
-    [{ ...minimal(), version: 2 }, /version: поддерживается 1/],
+    [{ ...minimal(), version: 1 }, /version: поддерживается 2/],
     [minimal({ extra: true }), /неизвестные ключи: extra/],
     [minimal({ service: {} }), /неизвестные ключи: service/],
     [{ ...minimal(), stages: [] }, /stages: должен быть объектом/],
@@ -155,12 +155,11 @@ test('незнакомое в конфиге останавливает разб
     [minimal({ drivers: { claude: { levels: levels().slice(1) } } }), /drivers\.claude\.levels: должен быть списком из 5/],
     [minimal({ drivers: { codex: { levels: [...levels().slice(1), { driver: 'codex', model: 'm', effort: 'e' }] } } }), /drivers\.codex\.levels\[4\]: неизвестные ключи: driver/],
     [minimal({ drivers: { codex: { levels: [...levels().slice(1), { model: 'm' }] } } }), /drivers\.codex\.levels\[4\]\.effort: должен быть непустой строкой/],
-    [minimal({ stages: { logic: { drivers: 'claude' } } }), /stages\.logic\.drivers: не задан/],
+    [minimal({ stages: { logic: { drivers: 'claude' } } }), /stages\.logic\.drivers: непустой список/],
     [minimal({ stages: { logic: { drivers: ['gemini'] } } }), /stages\.logic\.drivers\[0\]: одно из claude, codex/],
     [minimal({ stages: { docs: { task: 'x', drivers: ['codex', 'claude', 'codex'] } } }), /stages\.docs\.drivers: драйвер повторяется: codex/],
     [minimal({ allow: ['rg; rm -rf /'] }), /allow\[0\]: «rg; rm -rf \/» не подходит/],
     [minimal({ stages: { skeptic: { allow: ['rg | sh'] } } }), /stages\.skeptic\.allow\[0\]: «rg \| sh» не подходит/],
-    [minimal({ tracker: { type: 'youtrack' } }), /tracker\.issuePattern: должен быть непустой строкой/],
     [minimal({ skillPaths: ['${NOPE}/skills'] }), /переменная NOPE не задана/],
   ];
   for (const [raw, message] of cases) {
@@ -202,6 +201,32 @@ test('одноимённый со встроенным скилл в skillPaths 
   const library = SkillLibrary.load([join(root, 'own')]);
 
   assert.equal(library.dirOf('reviewing-code-quality'), join(BUILTIN_SKILLS, 'reviewing-code-quality'));
+});
+
+test('.llamer.local.json рядом с конфигом накладывается по RFC 7396: объекты сливаются, массивы заменяются, null удаляет', () => {
+  const root = tempDir('llamer-local-');
+  const file = join(root, 'ci', 'review.json');
+  write(root, 'ci/review.json', JSON.stringify(minimal({
+    allow: ['rg', 'git log'],
+    drivers: { codex: { bin: 'codex-ci', levels: levels('gpt') } },
+    stages: { logic: { drivers: ['codex'], level: 4 } },
+  })));
+  write(root, 'ci/.llamer.local.json', JSON.stringify({
+    allow: ['rg'],
+    drivers: { codex: { bin: 'codex-mine' } },
+    stages: { logic: { drivers: null } },
+  }));
+
+  const config = loadConfig(file, {});
+
+  assert.equal(config.drivers.codex.bin, 'codex-mine');
+  assert.deepEqual(config.drivers.codex.levels, levels('gpt'), 'соседние ключи объекта остались');
+  assert.deepEqual(config.allow, ['rg'], 'массив заменён целиком');
+  assert.deepEqual(config.stages.logic.drivers, ['claude'], 'null снял переопределение — этап на корневом driver');
+  assert.equal(config.stages.logic.level, 4);
+  assert.equal(config.source, `${file} + ${join(root, 'ci', '.llamer.local.json')}`);
+  write(root, 'ci/.llamer.local.json', JSON.stringify({ driver: 'gemini' }));
+  assert.throws(() => loadConfig(file, {}), /review\.json \+ .*\.llamer\.local\.json: driver: одно из claude, codex/, 'проверяется итог наложения');
 });
 
 test('задание: always — раздел «Your Method» старого движка, onDemand в задании не называется', () => {

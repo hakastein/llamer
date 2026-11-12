@@ -5,7 +5,7 @@ import {
 import { dirname, join } from 'node:path';
 import { redactSecrets } from '../redact.mjs';
 
-// Окружение этапа — белый список: токены GitLab и трекера, переменные CI и всё
+// Окружение этапа — белый список: токен GitLab, переменные CI и всё
 // прочее, чего здесь нет, в процесс модели не попадает. Нужное сверх этого
 // драйверу задаёт `drivers.<имя>.env` конфига.
 const BASE_ENV = ['PATH', 'HOME', 'LANG', 'TZ', 'TMPDIR', 'USER', 'SHELL', 'TERM',

@@ -10,8 +10,10 @@ const STUB_BIN = new URL('./bin', import.meta.url).pathname;
 
 export const SECRETS = {
   GITLAB_TOKEN: 'glpat-stub-token-must-not-leak',
-  YOUTRACK_TOKEN: 'perm-stub-token-must-not-leak',
 };
+
+/** Ветка с незакоммиченным против main — как разбирает свою ветку разработчик. */
+export const WORKTREE = ['--exclude', 'main', '--head', 'worktree'];
 
 const made = [];
 process.on('exit', () => {
@@ -46,7 +48,8 @@ export function stages(own = {}, { all = ['claude'], ...byKey } = {}) {
 }
 
 export const CONFIG = {
-  version: 1,
+  version: 2,
+  driver: 'claude',
   skillPaths: ['skills'],
   allow: ['rg'],
   stages: stages({
@@ -110,7 +113,7 @@ export function stubEnv(extra = {}) {
     ...SECRETS,
     ...extra,
   };
-  for (const name of ['CLAUDE_CONFIG_DIR', 'GITLAB_URL', 'CI_SERVER_URL', 'YOUTRACK_URL', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY']) {
+  for (const name of ['CLAUDE_CONFIG_DIR', 'GITLAB_URL', 'CI_SERVER_URL', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY']) {
     if (!(name in extra)) delete env[name];
   }
   return env;

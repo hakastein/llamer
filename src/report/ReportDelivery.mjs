@@ -1,12 +1,26 @@
+import { join } from 'node:path';
+import { stringify } from 'yaml';
 import { formatCostTable, costSummary } from '../agent/cost.mjs';
 import { formatFailureComment } from './failure.mjs';
 import { buildScopeBlock } from './scope.mjs';
 import { nothingOwnText } from './ReviewReport.mjs';
 import { redactSecrets } from '../redact.mjs';
 
-export const REPORT_VERSION = 2;
+export const REPORT_VERSION = 3;
 
 export const REPORT_FILE = 'report.md';
+
+export const RESULT_FILE = 'result.yaml';
+
+/** YAML для агента: многострочный текст — блоками `|`, длинные строки не переносятся. */
+export function toYaml(value) {
+  return stringify(value, { blockQuote: 'literal', lineWidth: 0 });
+}
+
+// Что этап стоил и как продолжить его сессию: команда, к которой дописывают вопрос в кавычках.
+const stageEntry = (stage) => ({
+  name: stage.name, model: stage.model, effort: stage.effort ?? null, ok: stage.ok, usd: stage.cost ?? null, resume: stage.resume ?? null,
+});
 
 function findingBlock(finding, index) {
   const lines = [`### ${index + 1}. \`${finding.at}\` [${finding.severity}] — этап ${finding.stage ?? '?'}`, '', finding.text];
@@ -17,9 +31,9 @@ function findingBlock(finding, index) {
 }
 
 /**
- * Выход по умолчанию: `report.md` в артефактах прогона и JSON находок в stdout.
- * JSON читает запустивший прогон агент, поэтому stdout несёт только его, а весь
- * лог идёт в stderr.
+ * Выход по умолчанию: YAML-результат в stdout и `result.yaml`, `report.md` из тех
+ * же данных — в артефактах прогона. Результат читает запустивший прогон агент,
+ * поэтому stdout несёт только его, а весь лог идёт в stderr.
  */
 export class ReportDelivery {
   #request; #artifacts;
@@ -31,14 +45,18 @@ export class ReportDelivery {
 
   #emit(markdown, fields) {
     const report = this.#artifacts.saveText(REPORT_FILE, `${markdown}\n`);
-    process.stdout.write(`${redactSecrets(JSON.stringify({
+    // Вымарывается до YAML: на месте секрета в тексте YAML звёздочки прочлись бы ссылкой.
+    const result = toYaml(JSON.parse(redactSecrets(JSON.stringify({
       version: REPORT_VERSION,
       input: this.#request.kind,
       head: this.#request.headSha,
       ...fields,
       report,
+      result: join(this.#artifacts.path, RESULT_FILE),
       artifacts: this.#artifacts.path,
-    }, null, 2))}\n`);
+    }))));
+    this.#artifacts.saveText(RESULT_FILE, result);
+    process.stdout.write(result);
     return report;
   }
 
@@ -83,6 +101,7 @@ export class ReportDelivery {
       resolvedThreads: report.resolve,
       gaps,
       cost: costSummary(report.stages),
+      stages: report.stages.map(stageEntry),
     });
     return { unpublished: [], failures: [] };
   }

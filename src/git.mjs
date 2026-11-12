@@ -33,6 +33,13 @@ export function currentHead(cwd) {
   return git(['rev-parse', 'HEAD'], cwd);
 }
 
+/** Нет общего предка: в неглубоком клоне — потому что истории не хватает, её догружает вызывающий. */
+export function noCommonHistory(head, rev, cwd) {
+  const shallow = tryGit(['rev-parse', '--is-shallow-repository'], cwd) === 'true';
+  return `у ${head.slice(0, 8)} и ${rev} нет общей истории`
+    + (shallow ? ' — клон неглубокий: нужна полная по коммитам история (git fetch --unshallow --filter=tree:0)' : '');
+}
+
 export function firstLine(error) {
   return String(error.stderr || error.message).trim().split('\n')[0];
 }

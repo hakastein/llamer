@@ -6,8 +6,8 @@ const files = (count) => `${count} ${pluralRu(count, 'файл', 'файла', '
 
 function origin({ kind, bases }) {
   if (kind === 'explicit') return `Дифф от базы \`${bases[0].sha.slice(0, 8)}\`, заданной \`--base\`.`;
-  const branches = bases.map(({ branch }) => `\`${branch}\``).join(', ');
-  return `Изменения задачи: всё, чего ещё нет в ${branches}.`;
+  const revs = bases.map(({ rev }) => `\`${rev}\``).join(', ');
+  return `Изменения задачи: всё, чего ещё нет в ${revs}.`;
 }
 
 function fileLine(diff, file, conflicted) {
@@ -29,10 +29,10 @@ export function buildScopeBlock({ task }) {
     origin(task),
   ];
   if (task.kind !== 'explicit') {
-    parts.push('', `Базы: ${task.bases.map(({ branch, sha }) => `\`${branch}@${sha.slice(0, 8)}\``).join(', ')}.`);
+    parts.push('', `Базы: ${task.bases.map(({ rev, sha }) => `\`${rev}@${sha.slice(0, 8)}\``).join(', ')}.`);
   }
   if (conflicted.size > 0) {
-    parts.push('', `Между общими ветками ${pluralRu(conflicted.size, 'конфликтует', 'конфликтуют', 'конфликтуют')}`
+    parts.push('', `Между исключёнными ревизиями ${pluralRu(conflicted.size, 'конфликтует', 'конфликтуют', 'конфликтуют')}`
       + ` ${files(conflicted.size)}: по ним разобран дифф реквеста.`);
   }
   if (diff.files.length > 0) {

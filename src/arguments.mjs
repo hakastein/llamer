@@ -2,29 +2,35 @@ import { parseArgs } from 'node:util';
 
 export const HELP = `llamer — агентное ревью изменений: оценка, разбирающие этапы, дедупликация, скептик.
 
-Вход (ровно один):
-  --mr <url|project!iid>      merge request в GitLab (нужен GITLAB_TOKEN; для project!iid — GITLAB_URL)
-  --local [--target <ветка>]  рабочее дерево против целевой ветки, вместе с незакоммиченным
-  --base <sha> --head <sha>   две ревизии репозитория
+Что разбирается:
+  --mr <url|project!iid>      merge request в GitLab (нужен GITLAB_TOKEN; для project!iid — GITLAB_URL);
+                              исключается целевая ветка MR — origin/<целевая> должна быть в репозитории
+  --head <ревизия|worktree|index>
+                              голова разбора: ревизия, рабочее дерево с неотслеживаемыми или индекс
+  --base <ревизия>            разбор ровно от этой ревизии
+  --exclude <ревизия>         всё, что достижимо из ревизии, в разбор не идёт; повторяемый, с --base не сочетается
+  --task <файл>               текст задачи: этапы сверяют с ним реализацию
+
+Без --mr нужны --head и ровно одно из --base или --exclude; с --mr --head и --base не задаются.
 
 Выход:
-  по умолчанию                отчёт: report.md в .llamer/<прогон>/ и JSON находок в stdout
+  по умолчанию                YAML-результат в stdout и в .llamer/<прогон>/result.yaml, отчёт report.md рядом
   --publish gitlab            треды, заметка о рисках, сводка и статус в MR (только с --mr)
-  --dry-run                   ничего не публиковать: отчёт вместо --publish
+  --dry-run                   ничего не публиковать: отчёт вместо --publish (только с --mr)
   --since-last                только изменения после прошлого прогона LLaMer в MR (только с --mr)
 
 Прочее:
-  --config <файл>             конфиг вместо .llamer.json в корне репозитория
-  --preflight                 проверить окружение и напечатать JSON пробелов, прогон не начинать
+  --config <файл>             конфиг вместо .llamer.json в корне репозитория; .llamer.local.json рядом с ним накладывается
+  --preflight                 проверить окружение и напечатать YAML пробелов, прогон не начинать
   -h, --help                  эта справка
 `;
 
 const OPTIONS = {
   mr: { type: 'string' },
-  local: { type: 'boolean' },
-  target: { type: 'string' },
   base: { type: 'string' },
   head: { type: 'string' },
+  exclude: { type: 'string', multiple: true },
+  task: { type: 'string' },
   publish: { type: 'string' },
   'dry-run': { type: 'boolean' },
   'since-last': { type: 'boolean' },
@@ -46,34 +52,31 @@ export function parseArguments(argv) {
   }
   if (values.help) return { help: true };
 
-  const range = values.base !== undefined || values.head !== undefined;
-  const inputs = [values.mr !== undefined, Boolean(values.local), range].filter(Boolean).length;
-  if (inputs !== 1) throw new UsageError('нужен ровно один вход: --mr, --local или --base с --head — справка: llamer --help');
-  if (range && (values.base === undefined || values.head === undefined)) {
-    throw new UsageError('--base и --head идут парой');
+  const mr = values.mr !== undefined;
+  const exclude = values.exclude ?? [];
+  if (mr && (values.head !== undefined || values.base !== undefined)) {
+    throw new UsageError('с --mr база и голова берутся из merge request: --head и --base не задаются');
   }
-  if (values.target !== undefined && !values.local) throw new UsageError('--target — только вместе с --local');
+  if (!mr && values.head === undefined) throw new UsageError('нужен --mr или --head — справка: llamer --help');
+  if (values.base !== undefined && exclude.length > 0) throw new UsageError('--base и --exclude не сочетаются: нужно одно из них');
+  if (!mr && values.base === undefined && exclude.length === 0) {
+    throw new UsageError('с --head нужно одно из --base или --exclude — справка: llamer --help');
+  }
   if (values.publish !== undefined && values.publish !== 'gitlab') {
     throw new UsageError(`--publish: поддерживается только gitlab; пришло «${values.publish}»`);
   }
-  if (values.publish !== undefined && values.mr === undefined) {
-    throw new UsageError('--publish gitlab публикует в merge request — нужен --mr');
+  for (const flag of ['publish', 'dry-run', 'since-last']) {
+    if (values[flag] !== undefined && !mr) throw new UsageError(`--${flag} — только вместе с --mr`);
   }
-  if (values['since-last'] && values.mr === undefined) {
-    throw new UsageError('--since-last ищет прошлый прогон в заметках merge request — нужен --mr');
-  }
-
-  let input = 'range';
-  if (values.mr !== undefined) input = 'gitlab';
-  else if (values.local) input = 'local';
 
   return {
     help: false,
-    input,
+    input: mr ? 'gitlab' : 'revisions',
     mr: values.mr ?? null,
-    target: values.target ?? null,
     base: values.base ?? null,
     head: values.head ?? null,
+    exclude,
+    task: values.task ?? null,
     publish: values.publish !== undefined && !values['dry-run'],
     sinceLast: Boolean(values['since-last']),
     config: values.config ?? null,

@@ -108,7 +108,7 @@ export class RunArtifacts {
 
 /**
  * `.gitignore` со звёздочкой внутри каталога артефактов: снимок рабочего дерева
- * (`--local`) и поиск по коду иначе захватили бы артефакты прошлых прогонов.
+ * (`--head worktree`) и поиск по коду иначе захватили бы артефакты прошлых прогонов.
  */
 export function openRunArtifacts({ root, startedAt }) {
   const stamp = new Date(startedAt).toISOString().slice(0, 19)

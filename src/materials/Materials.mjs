@@ -12,7 +12,8 @@ export class Materials {
 
   get signals() { return this.#data.signals; }
 
-  get issueId() { return this.#data.issueId; }
+  /** Текст задачи из `--task` или пустая строка. */
+  get issue() { return this.#data.issue; }
 
   get threads() { return this.#data.threads; }
 

@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { taskChanges } from '../src/materials/taskChanges.mjs';
+import { TaskChangesError, taskChanges } from '../src/materials/taskChanges.mjs';
 import { Diff } from '../src/materials/Diff.mjs';
 import { git, tempDir, write } from './fixtures/repo.mjs';
 
 // Ветки как в проекте с двумя общими ветками: release и develop ответвлены от
-// main, ветка задачи ответвляется от одной и вливается в другую.
+// main, ветка задачи ответвляется от одной и вливается в другую. Исключаются
+// целевая ветка и общие — как их передаёт вызывающий: --exclude origin/<ветка>.
 const SHARED = ['release', 'main'];
 
 function commit(cwd, files, message) {
@@ -38,7 +39,7 @@ const branchFrom = (dir, name, from) => git(dir, 'checkout', '-q', '-b', name, f
 const merge = (dir, branch) => git(dir, 'merge', '-q', '--no-ff', '--no-edit', branch);
 const sorted = (files) => [...files].sort();
 
-/** Клон, как в CI: ветки — в origin, дерево — на голове задачи. */
+/** Клон, как в CI: ветки — в origin, дерево — на голове задачи; историю догрузил вызывающий. */
 function scope(dir, {
   head, target, shallow = false, sinceMarks = null,
 }) {
@@ -51,11 +52,9 @@ function scope(dir, {
   return taskChanges({
     cwd: path,
     head,
-    targetBranch: target,
-    sharedBranches: SHARED,
+    excludes: [target, ...SHARED].map((branch) => `origin/${branch}`),
     requestDiff: Diff.overRange({ baseRef: requestBase, revs: [requestBase, head], cwd: dir }),
     requestBase,
-    fetch: true,
     sinceMarks,
   });
 }
@@ -70,7 +69,7 @@ test('ветка от release в release: разбирается ровно ди
   assert.deepEqual(task.diff.files, ['task.php']);
   assert.deepEqual(task.excluded, []);
   assert.equal(task.kind, 'task');
-  assert.deepEqual(task.bases.map(({ branch }) => branch), ['release', 'main']);
+  assert.deepEqual(task.bases.map(({ rev }) => rev), ['origin/release', 'origin/main']);
 });
 
 test('ветка от release в develop: изменения release отсеяны', () => {
@@ -165,18 +164,16 @@ test('реквест без своих изменений: разбирать н
   assert.deepEqual(task.excluded, ['release-only.php']);
 });
 
-test('неглубокий клон, как в CI: история общих веток догружается', () => {
+test('неглубокий клон без общей истории — ошибка, называющая причину', () => {
   const dir = upstream();
   branchFrom(dir, 'PROJ-10', 'release');
   const head = commit(dir, { 'task.php': 'задача\n' }, 'задача');
 
-  const task = scope(dir, { head, target: 'develop', shallow: true });
-
-  assert.deepEqual(task.diff.files, ['task.php']);
-  assert.deepEqual(task.excluded, ['release-only.php']);
+  assert.throws(() => scope(dir, { head, target: 'develop', shallow: true }),
+    (error) => error instanceof TaskChangesError && /нет общей истории — клон неглубокий/.test(error.message));
 });
 
-test('--since-last в неглубоком клоне: от метки, а влитое после неё из общей ветки отсеяно', () => {
+test('--since-last: от метки, а влитое после неё из общей ветки отсеяно', () => {
   const dir = upstream();
   branchFrom(dir, 'PROJ-10', 'release');
   const mark = commit(dir, { 'task.php': 'задача\n' }, 'задача');
@@ -186,13 +183,11 @@ test('--since-last в неглубоком клоне: от метки, а вл�
   merge(dir, 'release');
   const head = commit(dir, { 'task-2.php': 'правка после прогона\n' }, 'после прогона');
 
-  const task = scope(dir, {
-    head, target: 'develop', shallow: true, sinceMarks: [mark],
-  });
+  const task = scope(dir, { head, target: 'develop', sinceMarks: [mark] });
 
   assert.deepEqual(task.diff.files, ['task-2.php']);
   assert.equal(task.since, mark);
-  assert.deepEqual(task.bases.map(({ branch }) => branch), ['develop', 'release', 'main', 'прошлый прогон']);
+  assert.deepEqual(task.bases.map(({ rev }) => rev), ['origin/develop', 'origin/release', 'origin/main', 'прошлый прогон']);
 });
 
 test('--since-last: две метки в истории — счёт от поздней, в каком бы порядке они ни пришли', () => {
@@ -220,5 +215,5 @@ test('--since-last: метка совпала с базой реквеста —
 
   assert.equal(task.since, null);
   assert.deepEqual(task.diff.files, ['task.php']);
-  assert.deepEqual(task.bases.map(({ branch }) => branch), ['develop', 'release', 'main']);
+  assert.deepEqual(task.bases.map(({ rev }) => rev), ['origin/develop', 'origin/release', 'origin/main']);
 });

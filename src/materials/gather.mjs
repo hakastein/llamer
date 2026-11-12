@@ -57,19 +57,6 @@ export function foldDeleted(text) {
   return { text: chunks.join(''), folded };
 }
 
-async function collectIssueText(tracker, issueId) {
-  if (!issueId || tracker.missing().length > 0) return '';
-  try {
-    const text = await tracker.read(issueId);
-    if (text) log(`задача прочитана: ${text.length} символов`);
-    return text ?? '';
-  } catch (error) {
-    log(`задачу ${issueId} прочитать не удалось (${error.message})`
-      + ' — сверки реализации с требованиями не будет');
-    return '';
-  }
-}
-
 async function collectThreads(request) {
   if (request.kind !== 'gitlab') return [];
   try {
@@ -108,18 +95,16 @@ async function previousRunMarks(request) {
  * @throws {import('./taskChanges.mjs').TaskChangesError}
  */
 export async function planReviewScope({
-  request, tree, config, sinceLast = false,
+  request, tree, sinceLast = false,
 }) {
   const requestDiff = await request.requestDiff(tree.path);
   const task = taskChanges({
     cwd: tree.path,
     head: request.headSha,
-    targetBranch: request.targetBranch,
-    sharedBranches: config.sharedBranches,
+    excludes: request.excludes,
     requestDiff,
     requestBase: request.baseSha,
-    explicitBase: request.kind === 'range' ? request.baseSha : null,
-    fetch: request.kind === 'gitlab',
+    explicitBase: request.explicitBase,
     sinceMarks: sinceLast ? await previousRunMarks(request) : null,
   });
   return {
@@ -128,12 +113,10 @@ export async function planReviewScope({
 }
 
 export async function gatherMaterials({
-  request, tree, scope, tracker, artifacts,
+  request, tree, scope, issue, artifacts,
 }) {
   const { requestDiff, task, diff } = scope;
-
-  const issueId = tracker.issueIdOf(request.sourceBranch);
-  if (tracker.type !== 'none') log(issueId ? `задача: ${issueId}` : 'задача в имени ветки не найдена');
+  if (issue) log(`текст задачи: ${issue.length} символов`);
 
   const signals = collectRiskSignals(diff);
   log(`размер изменений: ${signals.size.files} файлов, ${signals.size.changedLines} изменённых строк`);
@@ -151,13 +134,11 @@ export async function gatherMaterials({
   // в таком диффе совпадает с диффом реквеста, по нему удалённая строка
   // переносится на строку реквеста при публикации.
   const taskText = task.diff.text({ context: 3 });
-  const issue = await collectIssueText(tracker, issueId);
 
   const materials = new Materials({
     diff,
     signals,
-    // Без текста задачи номер этапу не нужен: обещал бы задачу, которой в пакете нет.
-    issueId: issue ? issueId : null,
+    issue,
     threads,
     requestDiff,
     task,

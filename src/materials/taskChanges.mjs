@@ -4,53 +4,17 @@ import { join } from 'node:path';
 import { Diff } from './Diff.mjs';
 import { log } from '../log.mjs';
 import {
-  git, tryGit, isAncestor, firstLine,
+  git, tryGit, isAncestor, firstLine, noCommonHistory,
 } from '../git.mjs';
-
-const REMOTE = 'origin';
 
 /** Изменения задачи вычислить не удалось — ревью без них не запускается. */
 export class TaskChangesError extends Error {}
 
-const remoteRef = (branch) => `refs/remotes/${REMOTE}/${branch}`;
-
-/**
- * Неглубокий клон CI не видит общего предка с общими ветками. Полная история —
- * гигабайты блобов, поэтому неглубокий клон догружает только коммиты (`tree:0`):
- * для merge-base их хватает, а деревья и блобы тех немногих ревизий, что сливает
- * `merge-tree`, git тянет сам по мере надобности. Полный клон лишь освежает ветки.
- */
-function fetchBranches(branches, cwd) {
-  if (tryGit(['remote', 'get-url', REMOTE], cwd) === null) return;
-  const shallow = git(['rev-parse', '--is-shallow-repository'], cwd) === 'true';
-  const refspecs = branches.map((branch) => `+refs/heads/${branch}:${remoteRef(branch)}`);
-  const args = shallow
-    ? ['fetch', '--quiet', '--no-tags', '--filter=tree:0', '--unshallow', REMOTE, ...refspecs]
-    : ['fetch', '--quiet', '--no-tags', REMOTE, ...refspecs];
-  try {
-    git(args, cwd);
-  } catch (error) {
-    throw new TaskChangesError(`история веток ${branches.join(', ')} не догрузилась`
-      + ` (${firstLine(error)})`);
-  }
-}
-
-// Ветка сравнивается в том виде, в каком она лежит в origin; локальная копия —
-// когда удалённой нет вовсе.
-export function branchRef(branch, cwd) {
-  for (const ref of [remoteRef(branch), `refs/heads/${branch}`]) {
-    if (tryGit(['rev-parse', '--verify', '--quiet', ref], cwd)) return ref;
-  }
-  return null;
-}
-
 // На перекрёстных слияниях общих предков несколько, и любой один теряет то, что
 // есть только в других (влитую в целевую ветку подзадачу): берутся все.
-function mergeBasesWith(head, branch, cwd) {
-  const ref = branchRef(branch, cwd);
-  if (!ref) throw new TaskChangesError(`ветки ${branch} нет ни в ${REMOTE}, ни локально`);
-  const shas = tryGit(['merge-base', '--all', head, ref], cwd);
-  if (!shas) throw new TaskChangesError(`у ветки задачи нет общего предка с ${branch}`);
+function mergeBasesWith(head, rev, cwd) {
+  const shas = tryGit(['merge-base', '--all', head, rev], cwd);
+  if (!shas) throw new TaskChangesError(noCommonHistory(head, rev, cwd));
   return shas.split('\n');
 }
 
@@ -107,7 +71,7 @@ export const MACHINE_AUTHOR = {
 };
 
 /**
- * Виртуальная база — всё, что уже есть в целевой и общих ветках, в одном коммите.
+ * Виртуальная база — всё, что уже есть в исключённых ревизиях, в одном коммите.
  * Коммит, а не голое дерево: этапы читают базу через `git show <sha>:<путь>`.
  */
 function virtualBase(bases, requestBase, cwd) {
@@ -154,32 +118,28 @@ function lastReviewed(marks, head, requestBase, cwd) {
 }
 
 function describe(changes) {
-  const bases = changes.bases.map(({ branch, sha }) => `${branch}@${sha.slice(0, 8)}`).join(', ');
+  const bases = changes.bases.map(({ rev, sha }) => `${rev}@${sha.slice(0, 8)}`).join(', ');
   log(`изменения задачи от ${bases}: ${changes.diff.files.length} файлов,`
     + ` отсеяно чужих ${changes.excluded.length}`
     + (changes.conflicted.length > 0 ? `, конфликтных по диффу реквеста ${changes.conflicted.length}` : ''));
 }
 
 /**
- * Изменения задачи — то, чего ещё нет ни в целевой ветке, ни в общих ветках
- * (`sharedBranches` конфига). Ветка задачи может ответвиться от одной общей
- * ветки, а влиться в другую, и дифф реквеста несёт всё, что есть в исходной и ещё
- * не пришло в целевую: чужой код, уже прошедший ревью. Работа автора — коммиты,
- * разрешения конфликтов и правки поверх влитых веток — это то, что голова
- * добавляет к слиянию этих веток.
- *
- * `fetch` освежает ветки из `origin` (неглубокий клон CI становится полным по
- * коммитам); локальный прогон берёт их как есть.
+ * Изменения задачи — то, чего ещё нет ни в одной из исключённых ревизий
+ * (`excludes`: целевая ветка MR и `--exclude`). Ветка задачи может ответвиться от
+ * одной общей ветки, а влиться в другую, и дифф реквеста несёт всё, что есть в
+ * исходной и ещё не пришло в целевую: чужой код, уже прошедший ревью. Работа
+ * автора — коммиты, разрешения конфликтов и правки поверх влитых веток — это то,
+ * что голова добавляет к слиянию этих ревизий.
  *
  * `explicitBase` (`--base`) заменяет вычисление: сравнение идёт от неё одной.
  *
  * `sinceMarks` (`--since-last`) — метки прошлых прогонов: годная становится ещё
- * одной базой, и уже разобранное отсеивается так же, как общие ветки. Метки
- * проверяются после догрузки истории: в неглубоком клоне их ещё не видно.
+ * одной базой, и уже разобранное отсеивается так же, как исключённые ревизии.
  *
  * @returns {{
  *   kind: 'task' | 'mixed' | 'explicit',
- *   bases: {branch: string, sha: string}[],
+ *   bases: {rev: string, sha: string}[],
  *   baseSha: string,
  *   diff: Diff,
  *   conflicted: string[],
@@ -197,22 +157,18 @@ export function taskChanges(args) {
 }
 
 function computeTaskChanges({
-  cwd, head, targetBranch, sharedBranches = [], requestDiff, requestBase,
-  explicitBase = null, fetch = false, sinceMarks = null,
+  cwd, head, excludes = [], requestDiff, requestBase, explicitBase = null, sinceMarks = null,
 }) {
   let bases;
   let base;
   let since = null;
   if (explicitBase) {
-    bases = [{ branch: '--base', sha: explicitBase }];
+    bases = [{ rev: '--base', sha: explicitBase }];
     base = { sha: explicitBase, conflicted: [] };
   } else {
-    if (!targetBranch) throw new TaskChangesError('целевая ветка неизвестна');
-    const branches = [...new Set([targetBranch, ...sharedBranches])];
-    if (fetch) fetchBranches(branches, cwd);
-    bases = branches.flatMap((branch) => mergeBasesWith(head, branch, cwd).map((sha) => ({ branch, sha })));
+    bases = [...new Set(excludes)].flatMap((rev) => mergeBasesWith(head, rev, cwd).map((sha) => ({ rev, sha })));
     since = sinceMarks ? lastReviewed(sinceMarks, head, requestBase, cwd) : null;
-    if (since) bases.push({ branch: 'прошлый прогон', sha: since });
+    if (since) bases.push({ rev: 'прошлый прогон', sha: since });
     base = virtualBase(bases, requestBase, cwd);
   }
 

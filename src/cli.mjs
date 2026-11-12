@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { HELP, parseArguments } from './arguments.mjs';
-import { checkReadiness, formatGaps, isBlocking } from './preflight.mjs';
+import { checkReadiness, formatGaps } from './preflight.mjs';
 import { driversInUse, skillsInUse } from './config.mjs';
 import {
-  GitlabRequest, LocalRequest, RangeRequest, InputError, openTree,
+  GitlabRequest, RevisionRequest, InputError, openTree,
 } from './requests.mjs';
 import { openRunArtifacts } from './RunArtifacts.mjs';
 import { planReviewScope, gatherMaterials } from './materials/gather.mjs';
@@ -16,20 +18,35 @@ import { RunProtocol } from './stages/RunProtocol.mjs';
 import { ReviewPipeline } from './pipeline.mjs';
 import { ReviewReport } from './report/ReviewReport.mjs';
 import { GitlabDelivery } from './report/GitlabDelivery.mjs';
-import { ReportDelivery, REPORT_VERSION } from './report/ReportDelivery.mjs';
+import { ReportDelivery, REPORT_VERSION, toYaml } from './report/ReportDelivery.mjs';
 import { collectDropped } from './report/dropped.mjs';
 import { STARTED_AT, log, stamped } from './log.mjs';
 
 function openRequest(options, root, env) {
-  if (options.input === 'gitlab') return GitlabRequest.open({ ref: options.mr, env });
-  if (options.input === 'local') return LocalRequest.open({ cwd: root, target: options.target });
-  return RangeRequest.open({ cwd: root, base: options.base, head: options.head });
+  const { exclude } = options;
+  if (options.input === 'gitlab') {
+    return GitlabRequest.open({
+      ref: options.mr, env, cwd: root, exclude,
+    });
+  }
+  return RevisionRequest.open({
+    cwd: root, base: options.base, head: options.head, exclude,
+  });
+}
+
+function readTask(path) {
+  if (!path) return '';
+  try {
+    return readFileSync(resolve(path), 'utf-8').trim();
+  } catch (error) {
+    throw new InputError(`--task ${path}: файл не читается (${error.message})`);
+  }
 }
 
 async function review({
-  options, ready, env, artifacts, tmp,
+  options, ready, env, artifacts, tmp, issue,
 }) {
-  const { root, config, tracker, library } = ready;
+  const { root, config, library } = ready;
   const request = await openRequest(options, root, env);
   const delivery = options.publish
     ? new GitlabDelivery({ request, runPath: artifacts.path })
@@ -40,7 +57,7 @@ async function review({
     let scope;
     try {
       scope = await planReviewScope({
-        request, tree, config, sinceLast: options.sinceLast,
+        request, tree, sinceLast: options.sinceLast,
       });
     } catch (error) {
       if (!(error instanceof TaskChangesError)) throw error;
@@ -51,13 +68,13 @@ async function review({
       return false;
     }
     if (scope.nothingOwn) {
-      log('своих изменений нет — этапы не поднимаются');
+      log('разбирать нечего: голова не добавляет изменений к базе — этапы не поднимаются');
       await delivery.deliverNothingOwn({ task: scope.task, markSha: request.headSha });
       return true;
     }
 
     const materials = await gatherMaterials({
-      request, tree, scope, tracker, artifacts,
+      request, tree, scope, issue, artifacts,
     });
     // Драйвер получает пакет как есть, а в артефакты ложится копия с вымаранными секретами.
     artifacts.savePrompt('общий пакет', materials.sharedPack);
@@ -95,7 +112,6 @@ async function review({
     }
 
     const report = new ReviewReport({
-      notices: ready.gaps.map((item) => item.message),
       journal: outcome.journal,
       materials,
       stages: outcome.records,
@@ -123,14 +139,14 @@ async function main(argv, env) {
   }
 
   const ready = checkReadiness({ cwd: process.cwd(), options, env });
-  const blocking = ready.gaps.filter(isBlocking);
+  const ok = ready.gaps.length === 0;
   if (options.preflight) {
-    process.stdout.write(`${JSON.stringify({ version: REPORT_VERSION, ok: blocking.length === 0, gaps: ready.gaps }, null, 2)}\n`);
-    return blocking.length === 0;
+    process.stdout.write(toYaml({ version: REPORT_VERSION, ok, gaps: ready.gaps }));
+    return ok;
   }
-  if (blocking.length > 0) throw new InputError(`прогон не начат — окружение не готово:\n${formatGaps(blocking)}`);
-  for (const item of ready.gaps) log(`предупреждение: ${item.message}`);
+  if (!ok) throw new InputError(`прогон не начат — окружение не готово:\n${formatGaps(ready.gaps)}`);
   log(`конфиг: ${ready.config.source}`);
+  const issue = readTask(options.task);
 
   const artifacts = openRunArtifacts({ root: ready.root, startedAt: STARTED_AT });
   log(`артефакты прогона: ${artifacts.path}`);
@@ -139,7 +155,7 @@ async function main(argv, env) {
   const tmp = mkdtempSync(join(tmpdir(), 'llamer-run-'));
   try {
     return await review({
-      options, ready, env, artifacts, tmp,
+      options, ready, env, artifacts, tmp, issue,
     });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
