@@ -77,13 +77,11 @@ const HARNESS_HOOK = {
 const configDirOf = (env) => env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
 // Шаблон со звёздочкой — префикс, и вызов без аргументов ему не отвечает:
-// каждая команда разрешается обеими формами.
-function bashRules(commands, allow) {
-  return [
-    `Bash(${HARNESS} --help)`,
-    ...commands.flatMap((name) => [`Bash(${HARNESS} ${name})`, `Bash(${HARNESS} ${name} *)`]),
-    ...allow.flatMap((command) => [`Bash(${command})`, `Bash(${command} *)`]),
-  ];
+// каждая команда разрешается обеими формами. Харнесс разрешён целиком: чужую
+// этапу команду он отклоняет сам и называет команды этапа, а отказ Claude Code
+// агент читает как запрет Bash вообще и бросает работу.
+function bashRules(allow) {
+  return [HARNESS, ...allow].flatMap((command) => [`Bash(${command})`, `Bash(${command} *)`]);
 }
 
 export function claudeGaps(settings, env) {
@@ -166,7 +164,7 @@ export class ClaudeDriver extends StageDriver {
    * остальные. Скиллы этапа — его плагин `stage`, скиллы дерева выключены.
    */
   launch({
-    stage, level, projectMemory, commands, allow, shared, prompt, env, skills, cwd,
+    stage, level, projectMemory, allow, shared, prompt, env, skills, cwd,
   }) {
     const { model, effort } = level;
     const settings = {
@@ -191,7 +189,7 @@ export class ClaudeDriver extends StageDriver {
         '--permission-mode', 'dontAsk',
         '--model', model,
         '--effort', effort,
-        '--allowedTools', [...ALLOWED_TOOLS, ...bashRules(commands, allow)].join(' '),
+        '--allowedTools', [...ALLOWED_TOOLS, ...bashRules(allow)].join(' '),
         '--disallowedTools', DISALLOWED_TOOLS.join(' '),
         ...NO_MCP,
         ...(plugin ? ['--plugin-dir', plugin] : []),

@@ -170,7 +170,7 @@ test('этап claude изолирован: свои разрешения, ок�
     const allowed = argv[argv.indexOf('--allowedTools') + 1];
     assert.ok(allowed.includes('Bash(rg *)'), `${stage}: общий allow`);
     assert.equal(allowed.includes('Bash(git log *)'), stage === 'logic', `${stage}: allow этапа только у него`);
-    assert.ok(allowed.includes('Bash(review diff) Bash(review diff *)'), `${stage}: review diff разрешена`);
+    assert.ok(allowed.includes('Bash(review) Bash(review *)'), `${stage}: харнесс разрешён целиком`);
     const { skillOverrides } = JSON.parse(argv[argv.indexOf('--settings') + 1]);
     assert.deepEqual(skillOverrides, { 'tree-only': 'off' }, `${stage}: скилл .claude/skills дерева выключен`);
     if (pack !== null) shared.add(pack);
