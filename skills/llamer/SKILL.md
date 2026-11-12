@@ -40,7 +40,8 @@ description: Use when reviewing changes with LLaMer — uncommitted, staged, unp
 | `assessment` | `nature`, `risk`, `level`, `reason`; `null` when there was nothing to review |
 | `summaries[]` | each reviewing stage's conclusion |
 | `resolvedThreads[]` | with `--mr`: threads the run would close and why |
-| `gaps[]` | what the run did not cover: failed or stopped stages, findings left unchecked |
+| `gaps[]` | what the run did not cover: failed or stopped stages, findings left unchecked; any gap makes exit code 1 |
+| `notices[]` | a stage instance that failed while its stage ran on another driver: reported, the run still passes |
 | `cost` | `usd`, tokens, duration |
 | `limits` | subscription limits per driver, also on failure: `windows` (`five_hour`, `seven_day`) with `usedPercent` and `resetsAt` (unix seconds), `status` `allowed`/`allowed_warning`/`rejected`, `reason`; a driver that reported nothing is absent |
 | `stages[]` | `name`, `model`, `ok`, `usd`, `resume` |

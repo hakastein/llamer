@@ -159,11 +159,11 @@ export class ReviewStage {
     });
 
     this.#record = this.#judged(telemetry.finish({
-      ...record, driver: this.driverName, resume: this.#keepSession(launch, record.sessionId),
+      ...record, key: this.key, driver: this.driverName, resume: this.#keepSession(launch, record.sessionId),
     }));
     if (!this.#record.ok) {
       this.journal.recordFailure({
-        stage: this.id, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
+        stage: this.id, key: this.key, reason: this.#record.reason, rateLimit: this.#record.rateLimit,
       });
     }
     return this.state();

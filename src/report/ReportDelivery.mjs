@@ -67,7 +67,7 @@ export class ReportDelivery {
 
   async deliver(report) {
     const { findings, assessment } = report;
-    const gaps = report.shortfall([]).gaps;
+    const { gaps, notices } = report.shortfall([]);
     const parts = [
       this.#title(),
       `База \`${report.baseSha.slice(0, 8)}\`, голова \`${this.#request.headSha.slice(0, 8)}\`.`
@@ -101,6 +101,7 @@ export class ReportDelivery {
       summaries: report.summaries,
       resolvedThreads: report.resolve,
       gaps,
+      notices,
       cost: costSummary(report.stages),
       limits: driverLimits(report.stages),
       stages: report.stages.map(stageEntry),
@@ -114,7 +115,7 @@ export class ReportDelivery {
       nothingOwnText(task),
       buildScopeBlock({ task }),
     ].join('\n\n'), {
-      ok: true, base: task.baseSha, assessment: null, findings: [], summaries: [], resolvedThreads: [], gaps: [],
+      ok: true, base: task.baseSha, assessment: null, findings: [], summaries: [], resolvedThreads: [], gaps: [], notices: [],
     });
     return { failures: [] };
   }

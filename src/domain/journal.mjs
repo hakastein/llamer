@@ -76,9 +76,9 @@ export class Journal {
    * Процесс этапа мог умереть, не успев сказать ни слова. Без этой строки
    * «этап не отработал» неотличимо от «этап отработал и промолчал».
    */
-  recordFailure({ stage, reason, rateLimit = null }) {
+  recordFailure({ stage, key, reason, rateLimit = null }) {
     this.append({
-      type: 'stage-failed', stage, reason, rateLimit,
+      type: 'stage-failed', stage, key, reason, rateLimit,
     });
   }
 }

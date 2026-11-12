@@ -53,6 +53,11 @@ if (!process.argv.includes('--ephemeral')) {
 
 emit({ type: 'thread.started', thread_id: `stub-${brief.stage}` });
 emit({ type: 'turn.started' });
+// STUB_FAIL_STAGE: этап срывается, ничего не записав, как на исчерпанных кредитах.
+if (process.env.STUB_FAIL_STAGE === brief.stage) {
+  emit({ type: 'turn.failed', error: { message: 'Your workspace is out of credits.' } });
+  process.exit(1);
+}
 emit({ type: 'item.completed', item: { id: 'm0', type: 'agent_message', text: `заглушка этапа ${brief.stage}` } });
 
 let failed = 0;

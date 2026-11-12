@@ -93,7 +93,7 @@ export class ReviewReport {
   }
 
   shortfall(unpublished) {
-    return collectShortfall({ state: this.#journal, unpublished });
+    return collectShortfall({ state: this.#journal, unpublished, records: this.#stages });
   }
 
   // Пустая сводка не должна стать пустым комментарием в MR — доставщик решает
@@ -110,7 +110,7 @@ export class ReviewReport {
     const stats = formatRunStats(this.#stages, { elapsedMs: this.#elapsedMs });
     // Метка статуса — точка отсчёта `--since-last`: с сорванным или прекращённым этапом
     // или неопубликованными находками она дала бы следующему прогону пропустить неразобранное.
-    const complete = unpublished.length === 0 && this.#journal.failures.length === 0
+    const complete = unpublished.length === 0 && this.shortfall(unpublished).failed === 0
       && this.#journal.stopped.length === 0;
     return withRevisionMark(`${STATUS_MARKER}\n${status}\n\n${stats}`, complete ? this.#markSha : null);
   }

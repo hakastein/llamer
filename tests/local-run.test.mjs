@@ -32,7 +32,7 @@ test('--head worktree: конвейер на заглушке claude доход�
   assert.equal(readFileSync(answer.result, 'utf-8'), result.stdout);
   assert.match(result.stdout, /^ {4}text: \|-?\n {6}заглушка этапа \S+ отметила src\/Fresh\.php:1\.\n {6}Вторая строка: токен/m);
   assert.deepEqual(Object.keys(answer), ['version', 'input', 'head', 'ok', 'base', 'assessment', 'findings', 'summaries',
-    'resolvedThreads', 'gaps', 'cost', 'limits', 'stages', 'report', 'result', 'artifacts']);
+    'resolvedThreads', 'gaps', 'notices', 'cost', 'limits', 'stages', 'report', 'result', 'artifacts']);
   const { file, line, deleted, severity } = answer.findings[0];
   assert.deepEqual({ file, line, deleted, severity }, { file: 'src/Fresh.php', line: 1, deleted: false, severity: 'major' });
   assert.equal(answer.stages.length, result.launches.length, 'запись на каждый поднятый этап');
@@ -480,6 +480,23 @@ test('этап на двух драйверах — два экземпляра,
   for (const name of ['logic·claude', 'logic·codex']) {
     assert.match(prompts[name], /^You are a Senior Software Engineer with expertise in domain logic/, `${name}: задание этапа общее`);
   }
+});
+
+test('экземпляр этапа сорвался, а этап отработал на другом драйвере — сообщение, не недостача: код 0', async () => {
+  const config = {
+    ...CONFIG,
+    drivers: { claude: { levels: levels('claude') }, codex: { levels: levels('codex'), env: { STUB_FAIL_STAGE: 'logic·codex' } } },
+    stages: stages(CONFIG.stages, { logic: ['claude', 'codex'] }),
+  };
+
+  const result = await run(makeRepo({ config }), WORKTREE);
+
+  assert.equal(result.status, 0, result.stderr);
+  const answer = parse(result.stdout);
+  assert.deepEqual(answer.gaps, []);
+  assert.equal(answer.notices.length, 1);
+  assert.match(answer.notices[0], /^этап «logic·codex» сорвался: .+ — этап «logic» отработал на другом драйвере$/);
+  assert.match(result.stderr, /этап «logic·codex» сорвался: .+ — этап «logic» отработал на другом драйвере/);
 });
 
 test('неизвестный ключ или версия конфига останавливают прогон', async () => {

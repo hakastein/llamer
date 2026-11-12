@@ -122,10 +122,12 @@ async function review({
 
     for (const line of report.repeats) log(line);
     for (const line of collectDropped(outcome.journal.findings)) log(line);
-    for (const gap of report.shortfall(unpublished).gaps) log(`недостача: ${gap}`);
+    const shortfall = report.shortfall(unpublished);
+    for (const notice of shortfall.notices) log(notice);
+    for (const gap of shortfall.gaps) log(`недостача: ${gap}`);
     artifacts.reportCost(outcome.records, Date.now() - STARTED_AT);
     // Сорванный этап — неполное ревью, даже если отчёт доставлен.
-    return failures.length === 0 && outcome.journal.failures.length === 0;
+    return failures.length === 0 && shortfall.failed === 0;
   } finally {
     tree.close();
   }
