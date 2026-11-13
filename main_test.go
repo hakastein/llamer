@@ -156,7 +156,11 @@ var worktree = []string{"--exclude", "main", "--head", "worktree"}
 // дереве — незакоммиченная правка и неотслеживаемый файл.
 func makeRepo(t *testing.T, cfg obj) string {
 	t.Helper()
-	root := t.TempDir()
+	// На macOS TMPDIR лежит за симлинком /var → /private/var, а llamer видит корень репозитория по git.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	git(t, root, "init", "-q", "-b", "main")
 	git(t, root, "config", "user.email", "dev@example.com")
 	git(t, root, "config", "user.name", "dev")
