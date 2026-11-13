@@ -15,8 +15,16 @@
 ## Установка
 
 ```bash
-npm i -g github:hakastein/llamer#v0.4.0
+npm i -g github:hakastein/llamer
 llamer --help
+```
+
+Скилл [`llamer`](skills/llamer/SKILL.md) говорит агенту, как запустить ревью нужного набора
+изменений и прочитать результат. Формат — [Agent Skills](https://agentskills.io), его читают
+Claude Code, Codex, OpenCode, Gemini CLI, Copilot и Cursor.
+
+```bash
+npx skills add hakastein/llamer -g -y
 ```
 
 Нужен Node ≥ 24 и git ≥ 2.38 (`git merge-tree --write-tree`); зависимость пакета — `yaml`. Драйвер (`claude` или `codex`), его
