@@ -1,10 +1,10 @@
 // Заглушка claude: те же аргументы и stdin, что у настоящего, отчёт — теми же
 // командами харнесса. С чем этап был запущен, пишется в $TMPDIR/launches.jsonl:
 // окружение этапа — белый список, и TMPDIR в нём есть.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import {
-  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
+  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { stubCommands } from '../stub-plan.mjs';
@@ -49,6 +49,16 @@ emit({
 });
 // Лимиты подписки — дословное событие живого claude 2.1.316.
 emit(JSON.parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794480600,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.45,"resetsAt":1794480600,"status":"allowed"},"seven_day":{"utilization":0.58,"resetsAt":1794787200,"status":"allowed"}}},"uuid":"a7255113-cdfd-4eac-9f94-7a154dcadb53","session_id":"f66bac7e-9b13-4b63-82a4-ae9fce05e825"}'));
+
+// STUB_HANG_STAGE: этап с запущенной командой повисает — его прерывает тест; через минуту оба выходят сами.
+if (process.env.STUB_HANG_STAGE === brief.stage) {
+  const command = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  const hang = join(tmpdir(), 'hang.json');
+  writeFileSync(`${hang}.part`, JSON.stringify({ llamer: process.ppid, stage: process.pid, command: command.pid }));
+  renameSync(`${hang}.part`, hang);
+  setTimeout(() => process.exit(1), 60000);
+  await new Promise(() => {});
+}
 
 // STUB_FAIL_STAGE задаётся конфигом теста через drivers.<имя>.env: этап срывается, ничего не записав.
 if (process.env.STUB_FAIL_STAGE === brief.stage) {

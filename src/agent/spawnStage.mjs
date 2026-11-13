@@ -9,6 +9,24 @@ const STAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const AUTH_STATUSES = new Set([401, 403]);
 const RATE_LIMIT_TEXT = /usage limit reached|rate limit|out of credits/i;
 
+// Живые этапы. Каждый — своя группа процессов и убивается группой: убитая одна
+// обёртка драйвера (codex на node) оставила бы жить сам драйвер и его команды.
+const running = new Set();
+
+function killGroup(child) {
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    // Группа уже вымерла, а 'close' ещё не пришёл.
+    if (error.code !== 'ESRCH') throw error;
+  }
+}
+
+/** Прогон прерван: все поднятые этапы гибнут вместе со своими процессами. */
+export function stopStages() {
+  for (const child of running) killGroup(child);
+}
+
 export function failureReason(stage) {
   const result = stage?.result ?? null;
   // exitCode 0 не значит успех — при is_error: true причина читается из result,
@@ -70,7 +88,9 @@ export function spawnStage({
       // stderr — pipe, а не inherit: на упавшем этапе причина обычно в нём.
       stdio: ['pipe', 'pipe', 'pipe'],
       env: launch.env,
+      detached: true,
     });
+    child.once('spawn', () => running.add(child));
     // setEncoding до первого 'data': иначе `rest += chunk` режет многобайтовый
     // символ на границе чтения в U+FFFD.
     child.stdout.setEncoding('utf-8');
@@ -143,11 +163,12 @@ export function spawnStage({
       timedOut = true;
       // SIGKILL, а не SIGTERM: драйвер может игнорировать мягкий сигнал и
       // продолжать держать этап, ради чего таймаут и вводится.
-      child.kill('SIGKILL');
+      killGroup(child);
     }, STAGE_TIMEOUT_MS);
 
     child.on('close', (code, signal) => {
       clearTimeout(timer);
+      running.delete(child);
       // result приходит последним; без завершающего перевода строки он осядет
       // в rest, и успешный этап отчитается упавшим.
       if (rest.trim()) consume(rest);

@@ -1,10 +1,27 @@
+import { basename } from 'node:path';
 import { git } from '../git.mjs';
 import { widenFromWorkTree } from './widen.mjs';
 import { fileReader } from './windows.mjs';
 
 const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
-const COMMENT_LINE = /^(\/\/|\/\*|\*\/|\*|#|<!--|-->)/;
+// Начало строки-комментария по синтаксису языка файла; в Markdown, тексте и данных комментариев нет.
+const C_LIKE = String.raw`\/\/|\/\*|\*\/|\*`;
+const MARKUP = '<!--|-->';
+// shortcut: язык — по расширению или имени файла; не названный здесь язык комментариев не даёт — дописать, когда понадобится.
+const COMMENT_SYNTAX = new Map([
+  ...['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cs', 'swift', 'rs', 'scala', 'dart',
+    'proto', 'css', 'scss', 'less'].map((ext) => [ext, C_LIKE]),
+  // `#[` в PHP — атрибут, а не комментарий.
+  ['php', String.raw`${C_LIKE}|#(?!\[)`],
+  ...['vue', 'html'].map((ext) => [ext, `${C_LIKE}|${MARKUP}`]),
+  ...['xml', 'svg'].map((ext) => [ext, MARKUP]),
+  ['sql', String.raw`--|${C_LIKE}`],
+  ...['sh', 'bash', 'py', 'rb', 'pl', 'r', 'yaml', 'yml', 'toml', 'ini', 'conf', 'neon', 'tf', 'dockerfile', 'makefile',
+    'gitignore', 'htaccess'].map((ext) => [ext, '#']),
+].map(([ext, markers]) => [ext, new RegExp(`^(${markers})`)]));
+
+const commentSyntaxOf = (file) => COMMENT_SYNTAX.get(basename(file).split('.').pop().toLowerCase()) ?? null;
 
 function sideOf(store, header, prefix) {
   const path = header.slice(4).trim();
@@ -221,8 +238,10 @@ export class Diff {
   addedCommentLines() {
     const byFile = new Map();
     for (const [file, lines] of this.added) {
+      const comment = commentSyntaxOf(file);
+      if (!comment) continue;
       const numbers = [...lines.entries()]
-        .filter(([, entry]) => COMMENT_LINE.test(entry.text.trim()))
+        .filter(([, entry]) => comment.test(entry.text.trim()))
         .map(([number]) => number)
         .sort((a, b) => a - b);
       if (numbers.length > 0) byFile.set(file, numbers);

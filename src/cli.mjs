@@ -1,7 +1,7 @@
 import {
   mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { HELP, parseArguments } from './arguments.mjs';
 import { checkReadiness, formatGaps } from './preflight.mjs';
@@ -13,6 +13,7 @@ import { openRunArtifacts } from './RunArtifacts.mjs';
 import { planReviewScope, gatherMaterials } from './materials/gather.mjs';
 import { TaskChangesError } from './materials/taskChanges.mjs';
 import { prepareStageBin } from './agent/stageBin.mjs';
+import { stopStages } from './agent/spawnStage.mjs';
 import { prepareDriver } from './drivers/index.mjs';
 import { RunProtocol } from './stages/RunProtocol.mjs';
 import { ReviewPipeline } from './pipeline.mjs';
@@ -21,6 +22,18 @@ import { GitlabDelivery } from './report/GitlabDelivery.mjs';
 import { ReportDelivery, REPORT_VERSION, toYaml } from './report/ReportDelivery.mjs';
 import { collectDropped } from './report/dropped.mjs';
 import { STARTED_AT, log, stamped } from './log.mjs';
+
+// Что убрать, если прогон прервут: по сигналу Node выходит, не доходя до finally, — этапы
+// с моделями жили бы дальше, копии кредов и выложенная голова остались бы.
+const onInterrupt = [];
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    log(`прогон прерван: ${signal} — этапы остановлены`);
+    stopStages();
+    for (const cleanUp of onInterrupt.reverse()) cleanUp();
+    process.exit(128 + constants.signals[signal]);
+  });
+}
 
 function openRequest(options, root, env) {
   const { exclude } = options;
@@ -53,6 +66,7 @@ async function review({
     : new ReportDelivery({ request, artifacts });
 
   const tree = openTree({ request, root });
+  onInterrupt.push(() => tree.close());
   try {
     let scope;
     try {
@@ -155,14 +169,18 @@ async function main(argv, env) {
   // Временное прогона: обёртка харнесса, пакет, приватные конфиги драйверов
   // с копией кредов — после прогона не должно остаться ничего.
   const tmp = mkdtempSync(join(tmpdir(), 'llamer-run-'));
+  const cleanUp = () => {
+    rmSync(tmp, { recursive: true, force: true });
+    artifacts.redactJournals();
+    log(`артефакты прогона: ${artifacts.path}`);
+  };
+  onInterrupt.push(cleanUp);
   try {
     return await review({
       options, ready, env, artifacts, tmp, issue,
     });
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
-    artifacts.redactJournals();
-    log(`артефакты прогона: ${artifacts.path}`);
+    cleanUp();
   }
 }
 

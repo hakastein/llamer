@@ -3,6 +3,7 @@ import { StageTraffic, failureReason, collectRateLimit } from './spawnStage.mjs'
 import { formatStreamEvent, StageStats } from './stream.mjs';
 import { formatCost } from './cost.mjs';
 import { limitsOf } from './limits.mjs';
+import { WRITE_COMMANDS } from '../harness/createCommands.mjs';
 
 const SILENCE_REPORT_MS = 30_000;
 
@@ -62,7 +63,7 @@ export class StageTelemetry {
     this.stream.end();
 
     const stats = StageStats.from(this.events, {
-      cwd: this.cwd, skills: this.skills, commands: this.stage.commands,
+      cwd: this.cwd, skills: this.skills, commands: this.stage.commands, writes: WRITE_COMMANDS,
     });
     for (const line of stats.lines()) log(`[${this.stage.name}] ${line}`);
 

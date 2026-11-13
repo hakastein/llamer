@@ -284,3 +284,16 @@ test('review diff удалённого файла при свёрнутом па
   assert.equal(gone.stdout, `${section('src/Gone.php')}\n`);
   assert.match(gone.stdout, /\n {6}-1\n {6}-2\n[^]*\n {6}-30\n$/);
 });
+
+test('комментарии этапу comments — по синтаксису языка файла: заголовок Markdown и атрибут PHP — не комментарии', () => {
+  const added = (file, ...lines) => [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)];
+  const diff = Diff.fromText([
+    ...added('scripts/ci/Readme.md', '# scripts/ci', '<!-- note -->'),
+    ...added('scripts/ci/run.sh', '# run', 'make'),
+    ...added('src/A.php', '#[Route]', '# note', '// note', 'return 1;'),
+    ...added('db/m.sql', '-- note', 'SELECT 1;'),
+    '',
+  ].join('\n'));
+  assert.deepEqual([...diff.addedCommentLines()], [['scripts/ci/run.sh', [1]], ['src/A.php', [2, 3]], ['db/m.sql', [1]]]);
+});

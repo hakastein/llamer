@@ -23,6 +23,11 @@ const stageEntry = (stage) => ({
   name: stage.name, model: stage.model, effort: stage.effort ?? null, ok: stage.ok, usd: stage.cost ?? null, resume: stage.resume ?? null,
 });
 
+// Цена, лимиты и этапы — в каждом результате ревью, даже если этапы не поднимались.
+const stageFields = (stages) => ({
+  cost: costSummary(stages), limits: driverLimits(stages), stages: stages.map(stageEntry),
+});
+
 function findingBlock(finding, index) {
   const lines = [`### ${index + 1}. \`${finding.at}\` [${finding.severity}] — этап ${finding.stage ?? '?'}`, '', finding.text];
   if (finding.severityReason) lines.push('', `Вес: ${finding.severityReason}`);
@@ -102,9 +107,7 @@ export class ReportDelivery {
       resolvedThreads: report.resolve,
       gaps,
       notices,
-      cost: costSummary(report.stages),
-      limits: driverLimits(report.stages),
-      stages: report.stages.map(stageEntry),
+      ...stageFields(report.stages),
     });
     return { unpublished: [], failures: [] };
   }
@@ -116,6 +119,7 @@ export class ReportDelivery {
       buildScopeBlock({ task }),
     ].join('\n\n'), {
       ok: true, base: task.baseSha, assessment: null, findings: [], summaries: [], resolvedThreads: [], gaps: [], notices: [],
+      ...stageFields([]),
     });
     return { failures: [] };
   }

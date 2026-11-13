@@ -4,13 +4,18 @@ import {
   existsSync, readdirSync, readFileSync, utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parse } from 'yaml';
 import {
-  CONFIG, SECRETS, WORKTREE, git, levels, makeRepo, run, stages, write,
+  CONFIG, SECRETS, WORKTREE, git, levels, makeRepo, run, stages, tempDir, write,
 } from './fixtures/repo.mjs';
 import { readRunState } from '../src/domain/journal.mjs';
 
 const stagesOf = (launches) => launches.map((launch) => launch.stage).sort();
+
+// Поля результата ревью: одни и те же, разбирал ли прогон что-то или нет.
+const RESULT_KEYS = ['version', 'input', 'head', 'ok', 'base', 'assessment', 'findings', 'summaries',
+  'resolvedThreads', 'gaps', 'notices', 'cost', 'limits', 'stages', 'report', 'result', 'artifacts'];
 
 test('--head worktree: конвейер на заглушке claude доходит до report.md и YAML-результата в stdout', async () => {
   const root = makeRepo();
@@ -31,8 +36,7 @@ test('--head worktree: конвейер на заглушке claude доход�
   // Тот же документ — в result.yaml; многострочный текст — блоком, находка — с местом и стороной диффа.
   assert.equal(readFileSync(answer.result, 'utf-8'), result.stdout);
   assert.match(result.stdout, /^ {4}text: \|-?\n {6}заглушка этапа \S+ отметила src\/Fresh\.php:1\.\n {6}Вторая строка: токен/m);
-  assert.deepEqual(Object.keys(answer), ['version', 'input', 'head', 'ok', 'base', 'assessment', 'findings', 'summaries',
-    'resolvedThreads', 'gaps', 'notices', 'cost', 'limits', 'stages', 'report', 'result', 'artifacts']);
+  assert.deepEqual(Object.keys(answer), RESULT_KEYS);
   const { file, line, deleted, severity } = answer.findings[0];
   assert.deepEqual({ file, line, deleted, severity }, { file: 'src/Fresh.php', line: 1, deleted: false, severity: 'major' });
   assert.equal(answer.stages.length, result.launches.length, 'запись на каждый поднятый этап');
@@ -519,8 +523,10 @@ test('разбирать нечего — этапы не поднимаются
 
   const nothing = await run(empty, WORKTREE);
   assert.equal(nothing.status, 0, nothing.stderr);
-  assert.equal(parse(nothing.stdout).findings.length, 0);
-  assert.match(readFileSync(parse(nothing.stdout).report, 'utf-8'), /Разбирать нечего/);
+  const none = parse(nothing.stdout);
+  assert.deepEqual(Object.keys(none), RESULT_KEYS);
+  assert.deepEqual([none.findings, none.stages, none.limits, none.cost.usd], [[], [], {}, 0]);
+  assert.match(readFileSync(none.report, 'utf-8'), /Разбирать нечего/);
   assert.equal(nothing.launches.length, 0);
 
   // Вторая исключённая ревизия — без общей истории с головой: открыть вход это не мешает, вычислить изменения — да.
@@ -545,4 +551,38 @@ test('оценщик сорвался — прогон не удался, а л�
   assert.equal(answer.ok, false);
   assert.deepEqual(answer.limits.claude.windows.seven_day, { usedPercent: 58, resetsAt: 1794787200 });
   assert.match(result.stderr, /лимиты claude: 5 часов — использовано 45%/);
+});
+
+test('SIGTERM посреди этапа: этап и его команда остановлены, временное и выложенная голова убраны, артефакты на месте', async () => {
+  const tmp = tempDir('llamer-signal-');
+  const root = makeRepo({ config: { ...CONFIG, drivers: { claude: { env: { STUB_HANG_STAGE: 'assess' } } } } });
+  git(root, 'checkout', '-q', '-f', 'main');
+  // Голова — не HEAD: llamer выкладывает её отдельным worktree.
+  const running = run(root, ['--exclude', 'main', '--head', 'feature/dev-7-orders'], { TMPDIR: tmp });
+  const hang = join(tmp, 'hang.json');
+  for (let wait = 0; wait < 500 && !existsSync(hang); wait += 1) await sleep(20);
+  const { llamer, stage, command } = JSON.parse(readFileSync(hang, 'utf-8'));
+  const temporaries = () => readdirSync(tmp).filter((name) => name.startsWith('llamer-')).map((name) => name.slice(0, -6)).sort();
+  assert.deepEqual(temporaries(), ['llamer-run-', 'llamer-tree-'], 'временное прогона и голова выложены');
+
+  process.kill(llamer, 'SIGTERM');
+  const result = await running;
+
+  assert.equal(result.status, 143, result.stderr);
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // Убитые процессы ещё мгновение висят зомби, пока их не приберёт init.
+  for (let wait = 0; wait < 50 && (alive(stage) || alive(command)); wait += 1) await sleep(20);
+  assert.deepEqual([alive(stage), alive(command)], [false, false], 'этап и его команда остановлены');
+  assert.deepEqual(temporaries(), []);
+  assert.equal(git(root, 'worktree', 'list').split('\n').length, 1, 'worktree головы снят с учёта git');
+  const artifacts = readdirSync(join(root, '.llamer')).filter((name) => name !== '.gitignore');
+  const written = readdirSync(join(root, '.llamer', artifacts[0]));
+  assert.ok(['оценщик.prompt.md', 'оценщик.jsonl'].every((name) => written.includes(name)), `записанные артефакты на месте: ${written}`);
 });

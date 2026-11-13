@@ -11,6 +11,9 @@ import { SummaryCommand, StopCommand } from './commands/NoteCommands.mjs';
 import { ListCommand } from './commands/ListCommand.mjs';
 import { DiffCommand } from './commands/DiffCommand.mjs';
 
+/** Команды, которые пишут в журнал: все, кроме печатающих ответ (справка — не команда). */
+export const WRITE_COMMANDS = new Set(createCommands().filter((command) => !command.prints).map((command) => command.name));
+
 export function createCommands() {
   const commands = [];
   const commandByName = (name) => commands.find((command) => command.name === name) ?? null;

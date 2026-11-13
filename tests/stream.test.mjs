@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { filesIn, StageStats } from '../src/agent/stream.mjs';
 import { codexNormalizer, requestCost, sessionTotals } from '../src/drivers/codex.mjs';
+import { WRITE_COMMANDS } from '../src/harness/createCommands.mjs';
 
 function workspace(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'llamer-stream-'));
@@ -67,20 +68,28 @@ test('StageStats считает вызовы харнесса, не дошедш
     answer('t2', 'Exit code 1\nотказ: строка 1 в a не изменена'),
     call('t3', 'rg missing'),
     answer('t3', 'Exit code 1'),
-  ]);
-  assert.equal(claude.lostWrites, 1);
-  assert.equal(claude.errors, 3);
+    // Справка и чтение харнесса записи не несут: упала соседняя команда, а не запись.
+    call('t4', 'review --help; lsd def X'),
+    answer('t4', 'Exit code 5'),
+    call('t5', 'review diff a.php'),
+    answer('t5', 'Exit code 1'),
+    // Запись после чтения в той же команде — запись.
+    call('t6', "review list && review finding --file a --line 1 --text 'x'"),
+    answer('t6', 'Permission to use Bash has been denied'),
+  ], { writes: WRITE_COMMANDS });
+  assert.equal(claude.lostWrites, 2);
+  assert.equal(claude.errors, 6);
 
   const normalize = codexNormalizer('m');
   const codex = StageStats.from([
-    { type: 'item.started', item: { id: 'c1', type: 'command_execution', command: "review batch --json '[]'" } },
+    { type: 'item.started', item: { id: 'c1', type: 'command_execution', command: "/bin/bash -lc 'review batch --json []'" } },
     {
       type: 'item.completed',
       item: {
         id: 'c1', type: 'command_execution', exit_code: 2, aggregated_output: 'сбой харнесса: EROFS: read-only file system',
       },
     },
-  ].flatMap(normalize));
+  ].flatMap(normalize), { writes: WRITE_COMMANDS });
   assert.equal(codex.lostWrites, 1);
 });
 

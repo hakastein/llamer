@@ -2,6 +2,10 @@ import { statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { HARNESS } from './stageBin.mjs';
 
+// Вызов харнесса в команде Bash, в том числе после `;`, `&&`, `|` и внутри `bash -lc '…'`,
+// в которую codex заворачивает команды: имя его команды.
+const HARNESS_CALL = new RegExp(String.raw`(?:^|[;&|\n'"])\s*${HARNESS}\s+(\S+)`, 'g');
+
 function statSafe(path) {
   try {
     return statSync(path, { throwIfNoEntry: false });
@@ -177,14 +181,18 @@ export function isResultEvent(event) {
 }
 
 export class StageStats {
-  constructor({ cwd = '', skills = [], commands = [] } = {}) {
+  /** `writes` — команды харнесса, которые пишут в журнал: только их сорванный вызов теряет запись. */
+  constructor({
+    cwd = '', skills = [], commands = [], writes = new Set(),
+  } = {}) {
     this.cwd = cwd;
     this.skills = new Set(skills);
     this.commands = commands;
     this.calls = new Map();
     this.files = new Set();
     this.errors = 0;
-    this.harnessCalls = new Set();
+    this.writes = writes;
+    this.harnessWrites = new Set();
     this.lostWrites = 0;
     this.messages = new Set();
     this.looseTurns = 0;
@@ -213,7 +221,8 @@ export class StageStats {
         this.files.add(relativeToCwd(block.input.file_path, this.cwd));
       }
       if (block.name === 'Bash' && block.input?.command) {
-        if (block.input.command.trimStart().startsWith(`${HARNESS} `)) this.harnessCalls.add(block.id);
+        const called = [...block.input.command.matchAll(HARNESS_CALL)].map(([, name]) => name);
+        if (called.some((name) => this.writes.has(name))) this.harnessWrites.add(block.id);
         for (const file of filesIn(block.input.command, this.cwd)) this.files.add(file);
       }
       if (block.name === 'Skill' && block.input?.skill) {
@@ -225,7 +234,7 @@ export class StageStats {
       this.errors += 1;
       // Отказ харнесса агент чинит повтором; вызов, не дошедший до харнесса
       // (права, песочница, сбой), уносит запись с собой.
-      if (this.harnessCalls.has(block.tool_use_id) && !/^отказ:/m.test(String(toolResultText(block)))) {
+      if (this.harnessWrites.has(block.tool_use_id) && !/^отказ:/m.test(String(toolResultText(block)))) {
         this.lostWrites += 1;
       }
     }
