@@ -54,10 +54,10 @@ func Raw(args []string, cwd string, env ...string) (string, error) {
 	return "", gitErr
 }
 
-// Git — вывод git без пробелов по краям. env — дополнительные NAME=value.
+// Git — вывод git без концевых переводов строк; пробелы значимы (пустая строка контекста диффа — « »). env — дополнительные NAME=value.
 func Git(args []string, cwd string, env ...string) (string, error) {
 	out, err := Raw(args, cwd, env...)
-	return strings.TrimSpace(out), err
+	return strings.TrimRight(out, "\n"), err
 }
 
 // Try — вывод git или ok=false при любой ошибке.

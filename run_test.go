@@ -642,6 +642,19 @@ func TestCommentsBySyntax(t *testing.T) {
 	noMatch(t, block[1], `L1\+\t#\[Route\]`, "атрибут PHP — не комментарий")
 }
 
+// Пустая строка в конце ханка — строка контекста « »: её потеря ломает разбор диффа.
+func TestHunkEndingWithBlankContext(t *testing.T) {
+	t.Parallel()
+	root := makeRepo(t, config())
+	// Последний файл диффа: обрезку по краям вывода git видит только он.
+	write(t, root, "zz.txt", "x\n\n")
+	git(t, root, "add", "zz.txt")
+	git(t, root, "commit", "-q", "-m", "notes")
+	write(t, root, "zz.txt", "y\n\n")
+
+	ok(t, run(t, root, []string{"--base", "HEAD", "--head", "worktree"}, nil))
+}
+
 func TestConfigPrompt(t *testing.T) {
 	t.Parallel()
 	cfg := config()
