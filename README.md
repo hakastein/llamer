@@ -12,7 +12,7 @@ LLaMer ничего не знает о конкретном проекте и с
 
 ## Требования
 
-- Node.js 24 или новее.
+- Linux или macOS (Windows — через WSL).
 - git 2.38 или новее (нужен `git merge-tree --write-tree`).
 - `claude` или `codex` с выполненным входом.
 
@@ -23,9 +23,21 @@ LLaMer ничего не знает о конкретном проекте и с
 
 ## Установка
 
+Бинарник — из [последнего релиза](https://github.com/hakastein/llamer/releases/latest): `llamer-<os>-<arch>` для
+`linux` и `darwin` на `amd64` и `arm64`, суммы — в `sha256sums.txt`.
+
 ```bash
-npm i -g github:hakastein/llamer
+curl -fLo ~/.local/bin/llamer https://github.com/hakastein/llamer/releases/latest/download/llamer-linux-amd64
+chmod +x ~/.local/bin/llamer
 llamer --help
+```
+
+На macOS скачанный бинарник не подписан: `xattr -d com.apple.quarantine llamer` снимает карантин.
+
+Из исходников (Go из `go.mod`):
+
+```bash
+go install github.com/hakastein/llamer@latest
 ```
 
 Скилл [`llamer`](skills/llamer/SKILL.md) объясняет агенту, как запустить ревью и прочитать
@@ -524,13 +536,14 @@ ln -sf ~/.claude/.credentials.json …/sessions/logic-claude/.credentials.json &
 ## Разработка
 
 ```bash
-npm test
+make go      # gofmt, go vet, тесты
+make build   # bin/llamer, статический, без CGO
 ```
 
-Тесты прогоняют весь конвейер на заглушках `claude` и `codex` (`tests/fixtures/bin`) и
-заглушке GitLab на локальном HTTP-сервере (`tests/fixtures/gitlab.mjs`). Заглушки принимают
-те же аргументы и stdin, что настоящие драйверы, и пишут журнал теми же командами `review`,
-но находки в них заданы заранее.
+Тесты собирают `llamer` и прогоняют весь конвейер на заглушке `claude` и `codex`
+(`testdata/stub`) и подделке GitLab на `httptest`. Заглушка принимает те же аргументы и stdin,
+что настоящие драйверы, и пишет журнал теми же командами `review`, но находки в ней заданы
+заранее.
 
 ## Лицензия
 

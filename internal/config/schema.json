@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LLaMer .llamer.json v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "driver"
+  ],
+  "properties": {
+    "version": {
+      "const": 2
+    },
+    "skillPaths": {
+      "$ref": "#/$defs/texts"
+    },
+    "allow": {
+      "$ref": "#/$defs/commands"
+    },
+    "prompt": {
+      "$ref": "#/$defs/prompt"
+    },
+    "driver": {
+      "$ref": "#/$defs/driverName"
+    },
+    "drivers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude": {
+          "$ref": "#/$defs/driver"
+        },
+        "codex": {
+          "$ref": "#/$defs/driver"
+        }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "properties": {
+        "assess": {
+          "$ref": "#/$defs/openingStage"
+        },
+        "threads": {
+          "$ref": "#/$defs/openingStage"
+        },
+        "dedupe": {
+          "$ref": "#/$defs/serviceStage"
+        },
+        "skeptic": {
+          "$ref": "#/$defs/serviceStage"
+        },
+        "logic": {
+          "$ref": "#/$defs/builtinStage"
+        },
+        "quality": {
+          "$ref": "#/$defs/builtinStage"
+        },
+        "comments": {
+          "$ref": "#/$defs/builtinStage"
+        },
+        "tests": {
+          "$ref": "#/$defs/builtinStage"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/ownStage"
+      }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "texts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[\\w./:@=+-]+( [\\w./:@=+-]+)*$"
+      }
+    },
+    "driverName": {
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "drivers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/driverName"
+      }
+    },
+    "number": {
+      "enum": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "level": {
+      "enum": [
+        "assessed",
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "skills": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "always": {
+          "$ref": "#/$defs/texts"
+        },
+        "onDemand": {
+          "$ref": "#/$defs/texts"
+        }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/text"
+        },
+        "plan": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "driver": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bin": {
+          "$ref": "#/$defs/text"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "levels": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "effort"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/$defs/text"
+              },
+              "effort": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        }
+      }
+    },
+    "openingStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drivers": {
+          "$ref": "#/$defs/drivers"
+        },
+        "skills": {
+          "$ref": "#/$defs/skills"
+        },
+        "level": {
+          "$ref": "#/$defs/number"
+        },
+        "allow": {
+          "$ref": "#/$defs/commands"
+        },
+        "prompt": {
+          "$ref": "#/$defs/prompt"
+        }
+      }
+    },
+    "serviceStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drivers": {
+          "$ref": "#/$defs/drivers"
+        },
+        "skills": {
+          "$ref": "#/$defs/skills"
+        },
+        "level": {
+          "$ref": "#/$defs/level"
+        },
+        "allow": {
+          "$ref": "#/$defs/commands"
+        },
+        "prompt": {
+          "$ref": "#/$defs/prompt"
+        }
+      }
+    },
+    "builtinStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "drivers": {
+          "$ref": "#/$defs/drivers"
+        },
+        "skills": {
+          "$ref": "#/$defs/skills"
+        },
+        "level": {
+          "$ref": "#/$defs/level"
+        },
+        "paths": {
+          "$ref": "#/$defs/texts"
+        },
+        "allow": {
+          "$ref": "#/$defs/commands"
+        },
+        "prompt": {
+          "$ref": "#/$defs/prompt"
+        }
+      }
+    },
+    "ownStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task"
+      ],
+      "properties": {
+        "task": {
+          "$ref": "#/$defs/text"
+        },
+        "drivers": {
+          "$ref": "#/$defs/drivers"
+        },
+        "skills": {
+          "$ref": "#/$defs/skills"
+        },
+        "level": {
+          "$ref": "#/$defs/level"
+        },
+        "paths": {
+          "$ref": "#/$defs/texts"
+        },
+        "allow": {
+          "$ref": "#/$defs/commands"
+        },
+        "prompt": {
+          "$ref": "#/$defs/prompt"
+        }
+      }
+    }
+  }
+}
