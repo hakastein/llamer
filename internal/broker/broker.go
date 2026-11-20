@@ -19,6 +19,9 @@ import (
 // SocketEnv — переменная окружения агента с путём к сокету этапа; её ставит прогон.
 const SocketEnv = "LLAMER_HARNESS"
 
+// Subcommand — скрытая подкоманда llamer, которой обёртка команды workflow зовёт клиент.
+const Subcommand = "__call"
+
 type Call struct {
 	Argv []string `json:"argv"`
 	Cwd  string   `json:"cwd"`

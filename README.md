@@ -484,10 +484,22 @@ exports.command = (flags) => {
 ### Вывод `llamer run`
 
 Stdout — строки JSON. Пока идут этапы, каждое событие потока агента приходит строкой
-`{"type": "event", "stage": "<этап>", "event": {…}}`; событие — в форме потока claude, у codex
-тоже. Последняя строка — результат, он же лежит в `result.json` каталога прогона
-`.llamer/<дата>_<время>/` рядом с конфигом проекта. Там же задания, сырые потоки этапов и
-`cost.json`. Секреты окружения вымарываются из вывода и артефактов.
+`{"type": "event", "stage": "<этап>", "event": {…}}`. Событие — в форме LLaMer, одной для всех
+драйверов: `kind` — тип события у драйвера, и по смыслу события одно или несколько из `session`
+(`id`, `model`), `turn` (ход модели: `blocks` с `text`, `thinking` или `call` — `id`, `name`,
+`input`, `command`), `replies` (ответы инструментов: `callId`, `text`, `isError`), `result`
+(итог: `text`, `isError`, `cost`, `usage`), `note`, `stderr`, `unparsed`, `failed`, `start` и
+`rateLimit`:
+
+```json
+{"type": "event", "stage": "writer", "event": {"kind": "assistant", "turn": {"messageId": "msg_1",
+ "blocks": [{"call": {"id": "t1", "name": "Bash", "input": {"command": "notes list"}, "command": "notes list"}}]}}}
+```
+
+Последняя строка — результат, он же лежит в `result.json` каталога прогона
+`.llamer/<дата>_<время>/` рядом с конфигом проекта. Там же задания, потоки этапов и `cost.json`.
+Поток этапа — `<этап>.jsonl` из тех же событий, вывод CLI агента как есть — `<этап>.raw.jsonl`.
+Секреты окружения вымарываются из вывода и артефактов.
 
 ```json
 {"type": "result", "ok": false, "run": "/srv/notes/.llamer/2026-11-20_10-00-00",
@@ -525,7 +537,7 @@ Stdout — строки JSON. Пока идут этапы, каждое соб�
 | | `claude` | `codex` |
 |---|---|---|
 | Запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin. Команды идут через `bash -c`, не login-шелл (`allow_login_shell = false`): профиль образа сбросил бы `PATH`, и `review` пропал бы |
-| Песочница | `--permission-mode dontAsk`; `--allowedTools` — чтение, `Skill`, `review` и `allow`. Хук `PreToolUse` пропускает вызов `review` длиннее 10 000 символов, который Claude Code не разбирает, и цикл `for f in <пути>; do review diff "$f"; done` по литеральным путям. Запись, веб, агенты и MCP запрещены | `--sandbox read-only`; `review` и `allow` — правилами `prefix_rule` |
+| Песочница | `--permission-mode dontAsk`; `--allowedTools` — чтение, `Skill`, `review` и `allow`. Запись, веб, агенты и MCP запрещены | `--sandbox read-only`; `review` и `allow` — правилами `prefix_rule` |
 | Изоляция | Свой `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | Свои `HOME` и `CODEX_HOME` на этап с копией `auth.json` и своим `config.toml` |
 | Скиллы | Только `always` и `onDemand` этапа, плагином этапа (`--plugin-dir`), имена `stage:<скилл>`. Скиллы `.claude/skills` дерева выключены через `skillOverrides` | Только `always` и `onDemand` этапа, в `$HOME/.agents/skills` этапа. Встроенные скиллы codex и скиллы дерева (`.codex/skills`, `.agents/skills`) выключены в `config.toml`. `always` подключается упоминанием `$<скилл>` |
 | Общая часть задания | Системный промпт: `--append-system-prompt-file` | Developer-сообщение: `developer_instructions` в `config.toml` (аргумент `-c` ограничен 128 КиБ) |
@@ -567,8 +579,9 @@ gaps:
 ## Результат
 
 Артефакты прогона лежат в `.llamer/<дата>_<время>/` в корне репозитория, каталог `.llamer/`
-игнорируется git. Там `result.yaml`, `report.md`, журналы этапов, задания и промпты, сырые
-потоки этапов, `task.diff`, `cost.json`, плагин скиллов прогона и `sessions/<этап>/` —
+игнорируется git. Там `result.yaml`, `report.md`, журналы этапов, задания и промпты, потоки
+этапов (`<этап>.jsonl` — события в форме LLaMer, как в выводе `llamer run`; `<этап>.raw.jsonl` —
+вывод CLI агента как есть), `task.diff`, `cost.json`, плагин скиллов прогона и `sessions/<этап>/` —
 журналы сессий этапов без учётных данных и с вымаранными секретами.
 
 В stdout печатается тот же YAML, что в `result.yaml`; многострочный текст — блоками `|`.

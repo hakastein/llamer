@@ -86,7 +86,11 @@ func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
 	events := lines(t, r.stdout)["event"]
 	equal(t, events[0]["stage"], any("writer"), "событие этапа названо этапом")
-	data := read(t, filepath.Join(lines(t, r.stdout)["result"][0]["run"].(string), "result.json"))
+	_, kind := events[0]["event"].(map[string]any)["kind"]
+	equal(t, kind, true, "событие — в форме LLaMer")
+	runDir := lines(t, r.stdout)["result"][0]["run"].(string)
+	match(t, read(t, filepath.Join(runDir, "writer.raw.jsonl")), `(?m)^\{.*"type":"result"\}$`, "вывод CLI этапа — как есть")
+	data := read(t, filepath.Join(runDir, "result.json"))
 	equal(t, strings.TrimSpace(data), strings.TrimSpace(r.stdout[strings.LastIndex(strings.TrimSpace(r.stdout), "\n")+1:]), "result.json — последняя строка вывода")
 	noMatch(t, r.stdout+r.stderr, `leak-value`, "секрет в выводе")
 	filepath.WalkDir(lines(t, r.stdout)["result"][0]["run"].(string), func(path string, d os.DirEntry, err error) error {

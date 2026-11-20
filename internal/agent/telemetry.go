@@ -12,49 +12,54 @@ const silenceReport = 30 * time.Second
 
 // Начало ответа модели: с этого момента кэш промпта, записанный запросом,
 // доступен соседним запросам.
-func isResponseStart(e *Event) bool {
-	return (e.Type == "stream_event" && e.Inner.Type == "message_start") || e.Type == "assistant"
-}
+func isResponseStart(e *Event) bool { return e.Start || e.Turn != nil }
 
-// Stream — сырой поток этапа в артефактах.
+// Stream — поток этапа: его события и сырой вывод процесса строками.
 type Stream interface {
-	Write(line []byte)
+	Write(e *Event)
+	Raw(line []byte)
 	End()
 }
 
-// Telemetry — лог и статистика этапа по его событиям.
+// Telemetry — лог и поток этапа по его событиям, статистика и итог в лог.
 type Telemetry struct {
 	mu         sync.Mutex
 	name       string
 	cwd        string
 	skills     []string
 	commands   []string
-	protocol   CommandProtocol
 	stream     Stream
 	events     []*Event
 	lastShown  string
 	heartbeat  *time.Ticker
 	stop       chan struct{}
 	onResponse func()
-	Traffic    *Traffic
+	traffic    *Traffic
 }
 
-func NewTelemetry(name string, commands, skills []string, cwd string, stream Stream, onResponse func(), protocol CommandProtocol) *Telemetry {
+// NewTelemetry — телеметрия этапа name. commands и skills — команды и скиллы метода этапа: статистика называет
+// их и тогда, когда агент к ним не обращался; onResponse — начало ответа модели.
+func NewTelemetry(name string, commands, skills []string, cwd string, stream Stream, onResponse func()) *Telemetry {
 	t := &Telemetry{name: name, cwd: cwd, skills: skills, commands: commands, stream: stream, onResponse: onResponse,
-		Traffic: newTraffic(), stop: make(chan struct{}), protocol: protocol}
+		traffic: newTraffic(), stop: make(chan struct{})}
 	startedAt := time.Now()
 	t.heartbeat = time.NewTicker(silenceReport)
 	go func(ticker *time.Ticker, stop chan struct{}) {
 		for {
 			select {
 			case <-ticker.C:
-				logx.Logf("этап «%s»: %sс без единого события — %s", name, seconds(time.Since(startedAt).Milliseconds()), t.Traffic.Describe())
+				t.Logf("%sс без единого события — %s", seconds(time.Since(startedAt).Milliseconds()), t.traffic.Describe())
 			case <-stop:
 				return
 			}
 		}
 	}(t.heartbeat, t.stop)
 	return t
+}
+
+// Logf пишет в лог строку об этапе.
+func (t *Telemetry) Logf(format string, args ...any) {
+	logx.Logf("этап «%s»: %s", t.name, fmt.Sprintf(format, args...))
 }
 
 func (t *Telemetry) stopHeartbeat() {
@@ -65,17 +70,38 @@ func (t *Telemetry) stopHeartbeat() {
 	}
 }
 
-func (t *Telemetry) Accept(event *Event) {
+// Accept записывает событие драйвера в поток и лог этапа и учитывает его в сообщениях о молчании.
+func (t *Telemetry) Accept(e *Event) {
+	t.traffic.mu.Lock()
+	t.traffic.events++
+	t.traffic.lastEventType = e.Kind
+	t.traffic.mu.Unlock()
+	t.record(e)
+}
+
+// Unparsed — строка вывода, которую драйвер не разобрал, или иное сообщение о выводе этапа.
+func (t *Telemetry) Unparsed(text string) { t.own("stage_raw", text) }
+
+// own записывает событие llamer о процессе этапа: вывод stderr или неразобранную строку.
+func (t *Telemetry) own(kind, text string) {
+	e := &Event{Kind: kind, Stderr: text}
+	if kind == "stage_raw" {
+		e = &Event{Kind: kind, Unparsed: text}
+	}
+	t.record(e)
+}
+
+func (t *Telemetry) record(event *Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if isResponseStart(event) {
 		t.onResponse()
 	}
 	t.stopHeartbeat()
-	t.stream.Write(event.Raw)
+	t.stream.Write(event)
 	t.events = append(t.events, event)
-	// Цвет в логе всегда, и без терминала: так у JS-версии (isTTY вне терминала — undefined, и срабатывал colors = true по умолчанию).
-	shown, ok := FormatStreamEvent(event, true, t.cwd, t.name)
+	// Лог раскрашен всегда, и вне терминала.
+	shown, ok := formatEvent(event, true, t.cwd, t.name)
 	if !ok || shown == "" || shown == t.lastShown {
 		return
 	}
@@ -83,42 +109,48 @@ func (t *Telemetry) Accept(event *Event) {
 	logx.Stamped(shown)
 }
 
-// Finish — итог этапа: статистика в лог, причина срыва, лимиты.
-func (t *Telemetry) Finish(r *Record) *Record {
+// Close — этап закончен: поток закрыт, сообщения о молчании остановлены.
+func (t *Telemetry) Close() {
 	t.mu.Lock()
 	t.stopHeartbeat()
 	t.mu.Unlock()
 	t.stream.End()
-	stats := StatsFrom(t.events, t.cwd, t.skills, t.commands, t.protocol)
-	for _, line := range stats.Lines() {
+}
+
+// Finish — этап закончен исходом o: статистика и итог в лог.
+func (t *Telemetry) Finish(o *Outcome) {
+	t.Close()
+	for _, line := range statsFrom(t.events, t.cwd, t.skills, t.commands).Lines() {
 		logx.Logf("[%s] %s", t.name, line)
 	}
-	if !r.OK {
-		r.Reason = FailureReason(r)
-	}
 	outcome := "завершён"
-	if !r.OK {
+	if !o.OK {
 		detail := ""
-		if r.Result == nil {
+		if o.Result == nil {
 			code := "?"
-			if r.ExitCode != nil {
-				code = fmt.Sprint(*r.ExitCode)
+			if o.ExitCode != nil {
+				code = fmt.Sprint(*o.ExitCode)
 			}
-			if r.Signal != "" {
-				code += ", " + r.Signal
+			if o.Signal != "" {
+				code += ", " + o.Signal
 			}
 			detail = " [exit " + code + "]"
 		}
-		outcome = "не выполнен (" + r.Reason + ")" + detail
+		outcome = "не выполнен (" + o.Reason + ")" + detail
 	}
-	logx.Logf("этап «%s» %s: %sс, %s", t.name, outcome, seconds(r.DurationMs), FormatCost(r))
-	if !r.OK {
-		logx.Logf("этап «%s»: %s", t.name, t.Traffic.Describe())
+	logx.Logf("этап «%s» %s: %sс, %s", t.name, outcome, seconds(o.DurationMs), FormatCost(o))
+	if !o.OK {
+		t.Logf("%s", t.traffic.Describe())
 	}
-	r.RateLimit = CollectRateLimit(t.events)
-	if r.Limits == nil {
-		r.Limits = LimitsOf(r.RateLimit)
-	}
-	r.LostWrites = stats.LostWrites
-	return r
 }
+
+// FormatCost — цена этапа. Токены, восстановленные из потока убитого этапа, —
+// оценка снизу; цену, которую драйвер не назвал, не выдумываем.
+func FormatCost(o *Outcome) string {
+	if o.UsageApprox || o.Cost == nil {
+		return "$?"
+	}
+	return fmt.Sprintf("$%.2f", *o.Cost)
+}
+
+func seconds(ms int64) string { return fmt.Sprint((ms + 500) / 1000) }

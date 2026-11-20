@@ -11,6 +11,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
@@ -49,7 +50,7 @@ var failureTexts = map[string]string{
 func FailureComment(f Failure) string {
 	var text string
 	if f.Reason == "rate_limit" && f.ResetsAt != nil && *f.ResetsAt != 0 {
-		text = rateLimitHead + " Окно откроется " + agent.FormatResetTime(*f.ResetsAt) + " — после этого прогон нужно перезапустить."
+		text = rateLimitHead + " Окно откроется " + cost.FormatResetTime(*f.ResetsAt) + " — после этого прогон нужно перезапустить."
 	} else {
 		key := f.Reason
 		if strings.HasPrefix(key, "killed:") {
@@ -77,7 +78,7 @@ type Request interface {
 type Delivery interface {
 	Deliver(r *Review) (unpublished []*domain.Finding, failures []string)
 	DeliverNothingOwn(task *materials.TaskChanges, markSha string) []string
-	DeliverFailure(f Failure, stages []*agent.Record) []string
+	DeliverFailure(f Failure, stages []*cost.Stage) []string
 }
 
 // Результат прогона v3: поля и их порядок — контракт с запустившим агентом.
@@ -102,7 +103,7 @@ type (
 		ResolvedThreads []resolvedResult         `yaml:"resolvedThreads"`
 		Gaps            []string                 `yaml:"gaps"`
 		Notices         []string                 `yaml:"notices"`
-		Cost            agent.CostSummary        `yaml:"cost"`
+		Cost            cost.Summary             `yaml:"cost"`
 		Limits          map[string]*agent.Limits `yaml:"limits"`
 		Stages          []stageResult            `yaml:"stages"`
 		places          `yaml:",inline"`
@@ -169,10 +170,11 @@ func optional(s string) *string {
 }
 
 // stageResults — этапы в каждом результате ревью, даже если они не поднимались.
-func stageResults(stages []*agent.Record) []stageResult {
+func stageResults(stages []*cost.Stage) []stageResult {
 	out := []stageResult{}
 	for _, s := range stages {
-		out = append(out, stageResult{Name: s.Name, Model: s.Model, Effort: optional(s.Effort), OK: s.OK, USD: s.Cost, Resume: optional(s.Resume)})
+		o := s.Outcome
+		out = append(out, stageResult{Name: s.Name, Model: o.Model, Effort: optional(o.Effort), OK: s.OK, USD: o.Cost, Resume: optional(o.Resume)})
 	}
 	return out
 }
@@ -281,18 +283,18 @@ func (d *ReportDelivery) Deliver(r *Review) ([]*domain.Finding, []string) {
 	}
 	var sessions []string
 	for _, s := range r.Stages {
-		if s.Resume != "" {
-			sessions = append(sessions, "- "+s.Name+": `"+s.Resume+" '<вопрос>'`")
+		if s.Outcome.Resume != "" {
+			sessions = append(sessions, "- "+s.Name+": `"+s.Outcome.Resume+" '<вопрос>'`")
 		}
 	}
 	if len(sessions) > 0 {
 		parts = append(parts, "## Сессии этапов\n\nПродолжить сессию этапа вопросом к агенту:\n\n"+strings.Join(sessions, "\n"))
 	}
 	if len(r.Stages) > 0 {
-		parts = append(parts, "## Цена\n\n```\n"+agent.FormatCostTable(r.Stages, r.ElapsedMs)+"\n```")
+		parts = append(parts, "## Цена\n\n```\n"+cost.Table(r.Stages, r.ElapsedMs)+"\n```")
 	}
 	result := reviewResult{OK: true, Base: r.BaseSha(), Findings: []findingResult{}, Summaries: []summaryResult{}, ResolvedThreads: []resolvedResult{},
-		Gaps: shortfall.Gaps, Notices: shortfall.Notices, Cost: agent.Summarize(r.Stages), Limits: agent.DriverLimits(r.Stages), Stages: stageResults(r.Stages)}
+		Gaps: shortfall.Gaps, Notices: shortfall.Notices, Cost: cost.Summarize(r.Stages), Limits: cost.DriverLimits(r.Stages), Stages: stageResults(r.Stages)}
 	if assessment != nil {
 		result.Assessment = &assessmentResult{assessment.Nature, assessment.Risk, assessment.Level, assessment.Reason}
 	}
@@ -316,17 +318,17 @@ func (d *ReportDelivery) Deliver(r *Review) ([]*domain.Finding, []string) {
 func (d *ReportDelivery) DeliverNothingOwn(task *materials.TaskChanges, _ string) []string {
 	must(d.emit(strings.Join([]string{d.title(), NothingOwnText(task), ScopeBlock(task)}, "\n\n"), func(h header, p places) any {
 		return reviewResult{header: h, OK: true, Base: task.BaseSha, Findings: []findingResult{}, Summaries: []summaryResult{},
-			ResolvedThreads: []resolvedResult{}, Gaps: []string{}, Notices: []string{}, Cost: agent.Summarize(nil),
+			ResolvedThreads: []resolvedResult{}, Gaps: []string{}, Notices: []string{}, Cost: cost.Summarize(nil),
 			Limits: map[string]*agent.Limits{}, Stages: []stageResult{}, places: p}
 	}))
 	return nil
 }
 
 // DeliverFailure — сорванный прогон — тот случай, когда лимиты подписки интереснее всего: они в результате и здесь.
-func (d *ReportDelivery) DeliverFailure(f Failure, stages []*agent.Record) []string {
+func (d *ReportDelivery) DeliverFailure(f Failure, stages []*cost.Stage) []string {
 	text := FailureComment(f)
 	must(d.emit(d.title()+"\n\n"+text, func(h header, p places) any {
-		result := failureResult{header: h, Findings: []findingResult{}, Limits: agent.DriverLimits(stages), places: p}
+		result := failureResult{header: h, Findings: []findingResult{}, Limits: cost.DriverLimits(stages), places: p}
 		result.Failure.Reason, result.Failure.Detail, result.Failure.Text = f.Reason, optional(f.Detail), text
 		return result
 	}))
@@ -486,7 +488,7 @@ func (d *GitlabDelivery) DeliverNothingOwn(task *materials.TaskChanges, markSha 
 	return d.failed
 }
 
-func (d *GitlabDelivery) DeliverFailure(f Failure, _ []*agent.Record) []string {
+func (d *GitlabDelivery) DeliverFailure(f Failure, _ []*cost.Stage) []string {
 	body := gitlab.StatusMarker + "\n\n" + FailureComment(f)
 	d.attempt("сообщение о срыве опубликовать не удалось", func() error { return d.MR.PostNote(body) })
 	return d.failed
