@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/hakastein/llamer/internal/agent"
-
 	"github.com/hakastein/llamer/internal/redact"
 )
 

@@ -22,11 +22,6 @@ import (
 
 var rateLimitText = regexp.MustCompile(`(?i)usage limit reached|rate limit|out of credits`)
 
-func killGroup(pid int) {
-	// Группа уже вымерла, а ожидание ещё не вернулось — ESRCH не ошибка.
-	syscall.Kill(-pid, syscall.SIGKILL)
-}
-
 // FailureReason — причина срыва этапа. exitCode 0 не значит успех — при
 // is_error причина читается из result, а текст ловит исчерпание подписки и без статуса.
 func FailureReason(r *Record) string {
@@ -200,17 +195,25 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 	}
 
 	path, lookErr := lookPath(launch.Command, launch.Env)
-	cmd := &exec.Cmd{Path: path, Args: append([]string{launch.Command}, launch.Argv...), Dir: cwd, Env: launch.Env,
-		SysProcAttr: &syscall.SysProcAttr{Setsid: true}}
+	cmd := exec.CommandContext(ctx, path, launch.Argv...)
+	// Путь уже найден в PATH запуска, а не в окружении llamer.
+	cmd.Path, cmd.Err = path, nil
+	cmd.Args[0], cmd.Dir, cmd.Env = launch.Command, cwd, launch.Env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		// Вся группа: обёртка драйвера может оставить дочерние команды.
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
 	var exitCode *int
 	signal := ""
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	startErr := lookErr
-	if startErr == nil {
-		startErr = ctx.Err()
-	}
 	if startErr == nil {
 		startErr = cmd.Start()
 	}
@@ -221,7 +224,6 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 		traffic.promptSentMs = since()
 		traffic.mu.Unlock()
 	} else {
-		pid := cmd.Process.Pid
 		go func() {
 			io.WriteString(stdin, launch.Input)
 			stdin.Close()
@@ -229,12 +231,6 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 			traffic.promptSentMs = since()
 			traffic.mu.Unlock()
 		}()
-		stopped := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			// Вся группа: обёртка драйвера может оставить дочерние команды.
-			killGroup(pid)
-			close(stopped)
-		})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
@@ -273,9 +269,6 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 		}()
 		wg.Wait()
 		cmd.Wait() // исход — в ProcessState: код или сигнал
-		if !stop() {
-			<-stopped
-		}
 		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			signal = unix.SignalName(status.Signal())
 		} else {

@@ -419,7 +419,7 @@ func (s *Stats) add(e *Event) {
 		}
 		s.errors++
 		// Отказ команды агент чинит повтором; отказ в запуске теряет запись.
-		if s.commandWrites[b.ToolUseID] && !s.refusalLine.MatchString(toolResultText(b)) {
+		if s.commandWrites[b.ToolUseID] && (s.protocol.RefusalPrefix == "" || !s.refusalLine.MatchString(toolResultText(b))) {
 			s.LostWrites++
 		}
 	}

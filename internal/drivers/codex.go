@@ -13,7 +13,6 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
-
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/pelletier/go-toml/v2"
 )

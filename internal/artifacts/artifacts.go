@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/hakastein/llamer/internal/agent"
-
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/redact"
 )
