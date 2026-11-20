@@ -316,7 +316,7 @@ func Main(argv []string, stdout, stderr io.Writer) (code int) {
 		return 0
 	}
 	if r, ok := err.(*domain.Refusal); ok {
-		fmt.Fprintln(stderr, refusalPrefix+" "+r.Message)
+		fmt.Fprintln(stderr, "отказ: "+r.Message)
 		return 1
 	}
 	fmt.Fprintln(stderr, "сбой харнесса: "+err.Error())

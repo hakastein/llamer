@@ -162,6 +162,17 @@ var Commands = []*Command{
 
 func init() { commandByName(Commands, "batch").build = batch }
 
+// WriteCommands — команды, которые пишут в журнал: все, кроме печатающих ответ.
+var WriteCommands = func() []string {
+	var out []string
+	for _, c := range Commands {
+		if !c.Prints {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}()
+
 func assess(v values, _ *Context) (Result, error) {
 	level, err := strconv.Atoi(strings.TrimSpace(v.str("level")))
 	if err != nil || level < 1 || level > config.LevelCount {

@@ -237,7 +237,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 // дошёл до журнала или разбор не закрыт сводкой. Такой этап — сорванный, как упавший.
 func (s *Stage) judged(o *agent.Outcome) *cost.Stage {
 	r := &cost.Stage{Name: s.Name(), Driver: s.driver, OK: o.OK, Reason: o.Reason, Outcome: o}
-	lost := harness.LostWrites(o.Events)
+	lost := lostWrites(o.Events)
 	if lost > 0 {
 		logx.Logf("[%s] вызовов %s, не дошедших до журнала: %d", s.Name(), harness.Name, lost)
 	}
