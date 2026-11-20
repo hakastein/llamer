@@ -23,6 +23,9 @@ const Name = "review"
 // BriefEnv — переменная с путём до задания этапа.
 const BriefEnv = "LLAMER_BRIEF"
 
+// Subcommand — скрытая подкоманда llamer, которой обёртка `review` этапа зовёт харнесс.
+const Subcommand = "__harness"
+
 // Option — флаг команды: из флагов собираются и разбор аргументов, и справка.
 type Option struct {
 	Flags, Hint string

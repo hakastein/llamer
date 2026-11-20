@@ -49,7 +49,7 @@ type Record struct {
 	Usage               map[string]Usage
 	UsageApprox         bool
 	ContextTokens       int64
-	Requests            []json.RawMessage // usage каждого запроса — у драйвера, что считает их сам (codex)
+	Requests            []json.RawMessage // usage каждого запроса — у драйвера, что считает их сам
 	Limits              *Limits
 	Turns               int
 	SessionID           string
@@ -222,7 +222,7 @@ func WriteCostJSON(path string, stages []*Record) error {
 		Turns         int                `json:"turns"`
 		Tokens        int64              `json:"tokens"`
 		ContextTokens int64              `json:"contextTokens"`
-		Requests      *[]json.RawMessage `json:"requests,omitempty"` // usage запросов как в журнале сессии codex
+		Requests      *[]json.RawMessage `json:"requests,omitempty"` // usage запросов как в журнале сессии драйвера
 		OK            bool               `json:"ok"`
 	}
 	items := make([]entry, len(stages))

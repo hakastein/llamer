@@ -100,7 +100,7 @@ type Launch struct {
 	KeepSession func(dir, sessionID string) (string, error)
 }
 
-// Late — то, что драйвер досчитывает после выхода (у codex — по журналу сессии).
+// Late — то, что драйвер досчитывает после выхода, например по журналу сессии.
 type Late struct {
 	Cost          *float64
 	ContextTokens int64
@@ -280,7 +280,7 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 		t.Accept(ownEvent("stage_raw", name, "процесс завершился без итогового события: код "+code+", сигнал "+sig))
 	}
 
-	// Чего нет в потоке драйвера (у codex — usage по запросам), он досчитывает после выхода.
+	// Чего нет в потоке драйвера (usage по запросам), он досчитывает после выхода.
 	var late Late
 	if launch.AfterExit != nil {
 		late = launch.AfterExit(sessionID)
