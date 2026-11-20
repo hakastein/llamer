@@ -105,7 +105,9 @@ type Gap struct {
 }
 
 func binaryGap(ctx context.Context, name string, settings Settings) []Gap {
-	err := exec.CommandContext(ctx, settings.Bin, "--version").Run()
+	cmd := exec.CommandContext(ctx, settings.Bin, "--version")
+	agent.Group(cmd)
+	err := cmd.Run()
 	if err == nil {
 		return nil
 	}

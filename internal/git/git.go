@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/hakastein/llamer/internal/agent"
 )
 
 // Error — git завершился с ошибкой.
@@ -36,9 +38,10 @@ func FirstLine(err error) string {
 	return strings.Split(strings.TrimSpace(text), "\n")[0]
 }
 
-// Raw — git как есть: вывод без обрезки. Отмена ctx останавливает git.
+// Raw — git как есть: вывод без обрезки. Отмена ctx останавливает git с потомками.
 func Raw(ctx context.Context, args []string, cwd string, env ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
+	agent.Group(cmd)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer

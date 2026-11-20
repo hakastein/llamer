@@ -199,15 +199,7 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 	// Путь уже найден в PATH запуска, а не в окружении llamer.
 	cmd.Path, cmd.Err = path, nil
 	cmd.Args[0], cmd.Dir, cmd.Env = launch.Command, cwd, launch.Env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Cancel = func() error {
-		// Вся группа: обёртка драйвера может оставить дочерние команды.
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
+	Group(cmd)
 	var exitCode *int
 	signal := ""
 	stdin, _ := cmd.StdinPipe()
@@ -316,4 +308,20 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 		r.UsageApprox = true
 	}
 	return r
+}
+
+// Group — команда из CommandContext в своей группе процессов: отмена контекста
+// завершает всю группу (обёртка или git могут оставить дочерние команды), а
+// ожидание труб после этого ограничено.
+func Group(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	// Трубы может держать потомок, ушедший из группы.
+	cmd.WaitDelay = time.Second
 }

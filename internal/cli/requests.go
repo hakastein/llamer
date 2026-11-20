@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,9 +239,16 @@ func openTree(ctx context.Context, r request, root string) (*tree, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Уборка — и после отмены прогона: без своего контекста.
+	// Уборка — и после отмены прогона: без своего контекста. Прерванный
+	// worktree add оставляет запись заблокированной — её снимает второй --force.
 	t := &tree{path, func() {
-		git.Try(context.Background(), []string{"worktree", "remove", "--force", path}, root)
+		args := []string{"worktree", "remove", "--force", "--force", path}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			args = []string{"worktree", "prune"}
+		}
+		if _, err := git.Git(context.Background(), args, root); err != nil {
+			logx.Logf("worktree головы %s не убран: %s", path, git.FirstLine(err))
+		}
 		os.RemoveAll(path)
 	}}
 	// Без hooksPath post-checkout-хук (lfs и подобные) может вернуть ненулевой
