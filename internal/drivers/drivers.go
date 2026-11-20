@@ -5,7 +5,10 @@ package drivers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"maps"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"time"
@@ -130,4 +133,23 @@ func (s *Sandbox) Paths(a LaunchArgs, runSkills string) []string {
 		paths = append(paths, filepath.Join(runSkills, "skills", name))
 	}
 	return paths
+}
+
+// BinaryGap — пробел, если бинарник драйвера name не отвечает на --version.
+func BinaryGap(ctx context.Context, name string, settings Settings) []Gap {
+	cmd := exec.CommandContext(ctx, settings.Bin, "--version")
+	agent.Group(cmd)
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	reason := ""
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit) && exit.ExitCode() >= 0:
+		reason = fmt.Sprintf("код %d", exit.ExitCode())
+	default:
+		reason = err.Error()
+	}
+	return []Gap{{"driver-" + name, fmt.Sprintf("драйвер %s: %s не запускается (%s)", name, settings.Bin, reason)}}
 }

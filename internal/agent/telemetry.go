@@ -101,7 +101,7 @@ func (t *Telemetry) record(event *Event) {
 	t.stream.Write(event)
 	t.events = append(t.events, event)
 	// Цвет в логе всегда, и без терминала: так у JS-версии (isTTY вне терминала — undefined, и срабатывал colors = true по умолчанию).
-	shown, ok := FormatStreamEvent(event, true, t.cwd, t.name)
+	shown, ok := formatEvent(event, true, t.cwd, t.name)
 	if !ok || shown == "" || shown == t.lastShown {
 		return
 	}
@@ -120,7 +120,7 @@ func (t *Telemetry) Close() {
 // Finish — этап закончен исходом o: статистика и итог в лог.
 func (t *Telemetry) Finish(o *Outcome) {
 	t.Close()
-	for _, line := range StatsFrom(t.events, t.cwd, t.skills, t.commands).Lines() {
+	for _, line := range statsFrom(t.events, t.cwd, t.skills, t.commands).Lines() {
 		logx.Logf("[%s] %s", t.name, line)
 	}
 	outcome := "завершён"
