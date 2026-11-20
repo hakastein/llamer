@@ -3,13 +3,14 @@
 package redact
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/json"
+	"io"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -21,86 +22,135 @@ const minSecretLength = 7
 
 const placeholder = "***REDACTED***"
 
-// Короткие экранирования JSON для управляющих символов.
-var shortEscapes = map[rune]string{'\b': "b", '\f': "f", '\n': "n", '\r': "r", '\t': "t"}
-
-// plain — символ, который кодировщики JSON не экранируют: внутри строк JSON
-// любой вложенности он записан как есть.
-func plain(r rune) bool {
-	return r > 0x1f && r < 0x7f && !strings.ContainsRune(`"\/<>&'`, r)
+// set — значения секретов и замена в тексте самих значений и их записи внутри
+// строки JSON (и с экранированием HTML, как пишет encoding/json).
+type set struct {
+	values   []string
+	replacer *strings.Replacer
 }
 
-// secret — значение секрета в любой записи внутри строк JSON любой вложенности
-// и его самый длинный кусок из plain-символов: текст без куска выражение не проверяет.
-type secret struct {
-	core string
-	re   *regexp.Regexp
-}
-
-// compile — каждый уровень вложенности удваивает обратные косые черты перед
-// экранированием, а не plain-символ бывает записан как есть, коротким
-// экранированием или `\uXXXX` (HTML-символы у encoding/json, не-ASCII у
-// ensure_ascii, суррогатные пары вне BMP).
-func compile(value string) secret {
-	var b strings.Builder
-	core, run := "", ""
-	for _, r := range value {
-		if plain(r) {
-			b.WriteString(regexp.QuoteMeta(string(r)))
-			if run += string(r); len(run) > len(core) {
-				core = run
-			}
-			continue
-		}
-		run = ""
-		alts := []string{regexp.QuoteMeta(string(r))}
-		switch r {
-		case '\\':
-			alts[0] = `\\+`
-		case '"', '/':
-			alts[0] = `\\*` + alts[0]
-		}
-		if short, ok := shortEscapes[r]; ok {
-			alts = append(alts, `\\+`+short)
-		}
-		units := []rune{r}
-		if r > 0xFFFF {
-			hi, lo := utf16.EncodeRune(r)
-			units = []rune{hi, lo}
-		}
-		var escaped strings.Builder
-		for _, u := range units {
-			fmt.Fprintf(&escaped, `\\+(?i:u%04x)`, u)
-		}
-		b.WriteString("(?:" + strings.Join(append(alts, escaped.String()), "|") + ")")
-	}
-	return secret{core: core, re: regexp.MustCompile(b.String())}
-}
-
-// Секреты окружения от длинных к коротким: если одно значение — подстрока
-// другого, плейсхолдер иначе разорвал бы внешнее на видимые куски.
-var secrets = sync.OnceValue(func() []secret {
-	var values []string
+var secrets = sync.OnceValue(func() *set {
+	s := &set{}
+	var forms []string
 	for _, entry := range os.Environ() {
 		name, value, _ := strings.Cut(entry, "=")
-		if utf8.RuneCountInString(value) >= minSecretLength && secretName.MatchString(name) {
-			values = append(values, value)
+		if utf8.RuneCountInString(value) < minSecretLength || !secretName.MatchString(name) {
+			continue
 		}
+		s.values = append(s.values, value)
+		var plain bytes.Buffer
+		enc := json.NewEncoder(&plain)
+		enc.SetEscapeHTML(false)
+		enc.Encode(value) // строка кодируется всегда
+		quoted := strings.TrimSpace(plain.String())
+		escaped, _ := json.Marshal(value)
+		forms = append(forms, value, quoted[1:len(quoted)-1], string(escaped[1:len(escaped)-1]))
 	}
-	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	out := make([]secret, len(values))
-	for i, v := range values {
-		out[i] = compile(v)
+	// От длинных к коротким: из совпадений в одной позиции Replacer берёт первое,
+	// а более короткое разорвало бы внешнее значение на видимые куски.
+	sort.SliceStable(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	pairs := make([]string, 0, 2*len(forms))
+	for _, f := range forms {
+		pairs = append(pairs, f, placeholder)
 	}
-	return out
+	s.replacer = strings.NewReplacer(pairs...)
+	return s
 })
 
-// Secrets — текст без значений секретов окружения процесса.
-func Secrets(s string) string {
-	for _, secret := range secrets() {
-		if strings.Contains(s, secret.core) {
-			s = secret.re.ReplaceAllLiteralString(s, placeholder)
+// Secrets — текст без значений секретов окружения процесса. Текст JSON
+// (целиком или построчно) остаётся JSON: вымарываются раскодированные строки.
+func Secrets(s string) string { return secrets().redact(s) }
+
+func (s *set) redact(text string) string {
+	if s.clean(text) {
+		return text
+	}
+	if redacted, ok := s.json(text); ok {
+		return redacted
+	}
+	if strings.Contains(text, "\n") {
+		lines := strings.Split(text, "\n")
+		for i, line := range lines {
+			lines[i] = s.redact(line)
+		}
+		return strings.Join(lines, "\n")
+	}
+	return s.replacer.Replace(text)
+}
+
+// clean — в тексте нет секрета ни в какой записи: всякая запись, кроме
+// буквальной, содержит обратную косую черту.
+func (s *set) clean(text string) bool {
+	if len(s.values) == 0 {
+		return true
+	}
+	if strings.Contains(text, `\`) {
+		return false
+	}
+	for _, v := range s.values {
+		if strings.Contains(text, v) {
+			return false
 		}
 	}
-	return s
+	return true
+}
+
+// json — текст JSON (одно или несколько значений подряд) с вымаранными
+// строками, ключами и числами; ok=false — текст не JSON. Изменённое значение
+// пишется заново, остальное — байт-в-байт.
+func (s *set) json(text string) (string, bool) {
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	var b strings.Builder
+	done := 0
+	for {
+		start := int(dec.InputOffset())
+		token, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", false
+		}
+		var value string
+		switch t := token.(type) {
+		case string:
+			value = t
+		case json.Number:
+			value = string(t)
+		default:
+			continue
+		}
+		redacted := s.value(value)
+		if redacted == value {
+			continue
+		}
+		end := int(dec.InputOffset())
+		// Перед значением Token съедает пробелы и разделитель.
+		start = end - len(strings.TrimLeft(text[start:end], " \t\r\n,:"))
+		quoted, _ := json.Marshal(redacted)
+		b.WriteString(text[done:start])
+		b.Write(quoted)
+		done = end
+	}
+	if done == 0 {
+		return text, true
+	}
+	b.WriteString(text[done:])
+	return b.String(), true
+}
+
+// value — раскодированная строка: объект или массив JSON в ней разбирается
+// тем же путём. Глубина ограничена длиной: каждый уровень вложения хотя бы
+// удваивает обратные косые черты.
+func (s *set) value(v string) string {
+	if s.clean(v) {
+		return v
+	}
+	if t := strings.TrimLeft(v, " \t\r\n"); t != "" && (t[0] == '{' || t[0] == '[') {
+		if redacted, ok := s.json(v); ok {
+			return redacted
+		}
+	}
+	return s.replacer.Replace(v)
 }
