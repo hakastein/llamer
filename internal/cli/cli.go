@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"al.essio.dev/pkg/shellescape"
@@ -174,35 +176,6 @@ func formatGaps(gaps []gap) string {
 	return strings.Join(lines, "\n")
 }
 
-// Что убрать, если прогон прервут: этапы с моделями жили бы дальше, копии
-// кредов и выложенная голова остались бы.
-var (
-	interruptMu sync.Mutex
-	onInterrupt []func()
-)
-
-func pushCleanup(f func()) {
-	interruptMu.Lock()
-	defer interruptMu.Unlock()
-	onInterrupt = append(onInterrupt, f)
-}
-
-func watchSignals() {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-signals
-		name := map[os.Signal]string{syscall.SIGINT: "SIGINT", syscall.SIGTERM: "SIGTERM"}[sig]
-		logx.Logf("прогон прерван: %s — этапы остановлены", name)
-		agent.StopStages()
-		interruptMu.Lock()
-		for i := len(onInterrupt) - 1; i >= 0; i-- {
-			onInterrupt[i]()
-		}
-		os.Exit(128 + int(sig.(syscall.Signal)))
-	}()
-}
-
 // HarnessCommand — скрытая подкоманда llamer, которой обёртка `review` этапа зовёт харнесс.
 const HarnessCommand = "__harness"
 
@@ -238,6 +211,7 @@ func readTask(path string) (string, error) {
 }
 
 type run struct {
+	ctx       context.Context
 	options   *Options
 	ready     *ready
 	env       map[string]string
@@ -272,7 +246,6 @@ func (r *run) review() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	pushCleanup(t.close)
 	defer t.close()
 
 	scope, err := materials.PlanReviewScope(req, t.path, r.options.SinceLast)
@@ -326,7 +299,7 @@ func (r *run) review() (bool, error) {
 		}
 		prepared[name] = d
 	}
-	outcome, err := stages.Run(&stages.Toolkit{Artifacts: r.artifacts, Drivers: prepared, Materials: m, Library: library,
+	outcome, err := stages.Run(&stages.Toolkit{Context: r.ctx, Artifacts: r.artifacts, Drivers: prepared, Materials: m, Library: library,
 		Config: cfg, Shared: shared})
 	if err != nil {
 		return false, err
@@ -380,7 +353,7 @@ func environ() (map[string]string, []string) {
 	return env, order
 }
 
-func main(options *Options, stdout io.Writer) (bool, error) {
+func main(ctx context.Context, options *Options, stdout io.Writer) (bool, error) {
 	env, order := environ()
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -434,9 +407,8 @@ func main(options *Options, stdout io.Writer) (bool, error) {
 			logx.Log("артефакты прогона: " + runArtifacts.Path)
 		})
 	}
-	pushCleanup(cleanUp)
 	defer cleanUp()
-	ok, err = (&run{options: options, ready: rd, env: env, envOrder: order, artifacts: runArtifacts, tmp: tmp, issue: issue, stdout: stdout}).review()
+	ok, err = (&run{ctx: ctx, options: options, ready: rd, env: env, envOrder: order, artifacts: runArtifacts, tmp: tmp, issue: issue, stdout: stdout}).review()
 	cleanUp()
 	if err == nil && cleanErr != nil {
 		return false, cleanErr
@@ -446,16 +418,30 @@ func main(options *Options, stdout io.Writer) (bool, error) {
 
 // run — прогон llamer; возвращает код выхода.
 func runMain(options *Options, stdout io.Writer) (code int) {
-	watchSignals()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	var interrupted atomic.Int32
+	go func() {
+		select {
+		case sig := <-signals:
+			interrupted.Store(int32(sig.(syscall.Signal)))
+			logx.Logf("прогон прерван: %s — этапы остановлены", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	defer func() {
 		if p := recover(); p != nil {
 			code = fail(fmt.Sprint(p))
 		}
 	}()
-	ok, err := main(options, stdout)
-	// Прерванный прогон завершает обработчик сигнала, своим кодом: здесь его ждём.
-	interruptMu.Lock()
-	defer interruptMu.Unlock()
+	ok, err := main(ctx, options, stdout)
+	if sig := interrupted.Load(); sig != 0 {
+		return 128 + int(sig)
+	}
 	if err != nil {
 		return fail(err.Error())
 	}
