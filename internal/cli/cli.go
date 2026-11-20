@@ -16,6 +16,7 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
@@ -184,23 +185,35 @@ const HarnessCommand = "__harness"
 // ClaudeHook — скрытая подкоманда llamer для хука PreToolUse.
 const ClaudeHook = "__claude-hook"
 
+// CallCommand — скрытая подкоманда llamer, которой обёртка команды workflow зовёт клиент брокера.
+const CallCommand = "__call"
+
 // prepareStageBin — каталог команд этапа: обёртка `review` над тем же
 // бинарником, что ведёт прогон. Пишется на каждый прогон: `review` в PATH
 // этапа мог бы оказаться чужим.
 func prepareStageBin(dir string) (string, error) {
+	return dir, stageWrapper(dir, harness.Name, HarnessCommand)
+}
+
+// stageWrapper — обёртка name в каталоге команд этапа dir: бинарник, что ведёт прогон, с аргументами args.
+func stageWrapper(dir, name string, args ...string) error {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		return "", err
+		return err
 	}
-	script := "#!/bin/sh\nexec " + shellescape.Quote(exe) + " " + HarnessCommand + " \"$@\"\n"
-	path := filepath.Join(dir, harness.Name)
+	script := "#!/bin/sh\nexec " + shellescape.Quote(exe)
+	for _, arg := range args {
+		script += " " + shellescape.Quote(arg)
+	}
+	script += " \"$@\"\n"
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		return "", err
+		return err
 	}
-	return dir, os.Chmod(path, 0o755)
+	return os.Chmod(path, 0o755)
 }
 
 // prepareDrivers — драйверы прогона по именам: скиллы прогона копируются в
@@ -525,6 +538,8 @@ func Execute(argv []string, stdout io.Writer) int {
 		runCommand(stdout, &code),
 		&cobra.Command{Use: HarnessCommand, Hidden: true, DisableFlagParsing: true,
 			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
+		&cobra.Command{Use: CallCommand, Hidden: true, DisableFlagParsing: true, Args: cobra.MinimumNArgs(1),
+			Run: func(_ *cobra.Command, args []string) { code = broker.Main(args[0], args[1:], os.Stdout, os.Stderr) }},
 		&cobra.Command{Use: ClaudeHook, Hidden: true,
 			RunE: func(*cobra.Command, []string) error { return harness.HookMain(os.Stdin, os.Stdout) }},
 	)

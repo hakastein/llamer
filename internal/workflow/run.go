@@ -6,11 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/artifacts"
+	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/logx"
@@ -26,6 +29,9 @@ type Run struct {
 	Artifacts *artifacts.Run
 	Cwd       string    // каталог контекста: рабочий каталог агента
 	Out       io.Writer // события и результат строками JSON
+	// Bin — каталог команд этапа: обёртки клиента команд и сокеты этапов; ClientDir — каталог бинаря llamer.
+	Bin, ClientDir string
+	commands       *commands
 }
 
 // Failure — этап, сорвавший прогон.
@@ -101,6 +107,7 @@ func (s *stream) Write(line []byte) {
 // результата не выдаёт: возвращается ошибка контекста.
 func (r *Run) Execute() (*Result, error) {
 	o := &out{w: r.Out}
+	r.commands = &commands{workflow: r.Workflow, journal: newJournal(r.Artifacts.Path)}
 	result := &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}}
 	answers := map[string]string{}
 	var records []*agent.Record
@@ -146,15 +153,34 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 	}
 	promptPath := r.Artifacts.SavePrompt(s.Name, prompt.String())
 	d := r.Drivers[s.Driver]
+	sandbox := &drivers.Sandbox{Readable: r.Workflow.Readable}
+	var env []string
+	// shortcut: сокет в каталоге команд этапа — путь до него не длиннее 107 байт только при коротком TMPDIR;
+	// переносить, если упрётся.
+	socket := filepath.Join(r.Bin, s.Name+".sock")
+	if r.Workflow.Commands != nil {
+		// Клиенту в песочнице нужны его обёртка с сокетом и сам бинарь llamer.
+		sandbox.Readable = slices.Concat(r.Workflow.Readable, []string{r.Bin, r.ClientDir})
+		env = []string{broker.SocketEnv + "=" + socket}
+	}
 	launch, err := d.Launch(drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Prompt: prompt.String(), Skills: s.Skills,
-		Cwd: r.Cwd, Schema: s.SchemaPath, Sandbox: &drivers.Sandbox{Readable: r.Workflow.Readable}})
+		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox})
 	if err != nil {
 		return nil, "", err
 	}
 	launch.Timeout = s.Timeout
+	// Первый отказ команды; этап срывается им после агента.
+	failed := make(chan error, 1)
+	stop := func() {}
+	if r.Workflow.Commands != nil {
+		if stop, err = broker.Listen(socket, r.commands.handler(s.Name, failed)); err != nil {
+			return nil, "", err
+		}
+	}
 	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, d.Name(), launch.Model, launch.Effort, promptPath)
 	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {}, agent.CommandProtocol{})
 	record := agent.Spawn(r.Context, s.Name, launch, r.Cwd, telemetry)
+	stop()
 	record.Key, record.Driver = s.Name, s.Driver
 	record = telemetry.Finish(record)
 	if !record.OK {
@@ -163,6 +189,13 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 			detail = record.Result.Result
 		}
 		return record, detail, nil
+	}
+	select {
+	case err := <-failed:
+		logx.Logf("этап «%s» сорван: %v", s.Name, err)
+		record.OK, record.Reason = false, "command"
+		return record, err.Error(), nil
+	default:
 	}
 	if s.Schema == nil {
 		return record, "", nil

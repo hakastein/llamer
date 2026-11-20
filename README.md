@@ -370,6 +370,7 @@ workflows/notes/
   checker.md
   answer.schema.json    JSON Schema ответа этапа
   skills/<скилл>/SKILL.md
+  commands/<команда>.js команды агента
 ```
 
 ### `workflow.json`
@@ -428,6 +429,51 @@ workflow и `drivers.<имя>.readable` своего драйвера. Сети 
 | Сеть | Песочница без разрешённых доменов, команды вне песочницы запрещены | Прокси без разрешённых доменов (`features.network_proxy`), `web_search` выключен |
 | Вход и настройки | Как у ревью | Общий `CODEX_HOME` с `auth.json`: копия разорвала бы обновление токена. Его `config.toml` и правила не читаются (`--ignore-user-config`, `--ignore-rules`), журнал сессии находится по её id |
 
+### Команды агента
+
+Команды агента — [cliche](https://github.com/hakastein/cliche)-скрипты в `commands/` каталога
+workflow: путь скрипта — команда (`commands/note.js` — `note`, `commands/gitlab/thread.js` —
+`gitlab thread`). Скрипт исполняется в процессе `llamer`, а не в песочнице: в `PATH` агента
+под именем каждой команды стоит тонкий клиент, который пересылает argv и рабочий каталог по
+Unix-сокету этапа. Каталог клиента и каталог бинаря `llamer` открыты песочнице на чтение. Сломанный
+скрипт останавливает прогон до первого этапа.
+
+```js
+const llamer = require("llamer");
+
+exports.definition = {
+  short: "Record a note",
+  long: "Record a note in the run journal.",
+  flags: [{ name: "text", type: "string", usage: "the note" }],
+};
+
+exports.command = (flags) => {
+  llamer.record({ note: flags.text });
+  return "recorded";
+};
+```
+
+Модуль `llamer`:
+
+| Функция | Что делает |
+|---|---|
+| `record(value)` | Пишет результат вызова в журнал прогона. Значение — то, что пишется в JSON. |
+| `fetch(url, {method, headers, body})` | HTTP-запрос, ответ — `{status, body}`. Только `http`/`https` без учётных данных в адресе, к хосту из `commands.hosts`; переадресация проверяется так же. |
+| `exec(program, [args], {stdin})` | Запускает программу из `commands.programs` в рабочем каталоге вызова, ответ — `{stdout, stderr, exit}`. Окружение программы — только `PATH`, `HOME`, `LANG`. |
+
+```json
+{ "version": 1, "commands": { "hosts": ["gitlab.example.com", "127.0.0.1:8080"], "programs": ["git"] }, "stages": [ … ] }
+```
+
+Хост в `commands.hosts` — имя (любой порт) или `имя:порт`. Ответ скрипта — в stdout вызова:
+строка как есть, остальное — JSON. Неверный вызов (неизвестный флаг, не те аргументы) — код
+`2` и подсказка агенту. Обращение к хосту или программе, которых нет в `commands`, отклоняется
+и срывает этап с `reason: command`, даже если скрипт поймал ошибку; так же срывает этап
+результат, который не удалось записать. Агент узнаёт об этом сразу, этап срывается после агента.
+
+Журнал прогона — `journal.jsonl` в каталоге прогона, строка на вызов: этап, argv, код,
+`rejected`, stdout, stderr и `results` — записанное через `record`. У неудачного вызова
+`results` пуст. Секреты окружения вымарываются из журнала и из выдачи агенту.
 ### Ответ по схеме
 
 Схема уходит драйверу: `claude` получает её текстом `--json-schema`, `codex` — файлом
@@ -458,7 +504,7 @@ Stdout — строки JSON. Пока идут этапы, каждое соб�
 
 `answer` — JSON по схеме, строка у этапа без схемы, `null` у сорванного. `cost` — доллары,
 `null`, если драйвер цены не назвал. `failure` — `null` у успешного прогона, иначе этап и
-`reason` из [Срыва прогона](#срыв-прогона) или `schema`; `detail` — подробность.
+`reason` из [Срыва прогона](#срыв-прогона), `schema` или `command`; `detail` — подробность.
 
 | Код | Когда |
 |---|---|
