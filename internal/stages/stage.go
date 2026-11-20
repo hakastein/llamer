@@ -115,7 +115,14 @@ func (s *Stage) template() *template {
 	return s.tmpl
 }
 
-func (s *Stage) skillsBlock(d drivers.Launcher) (string, error) {
+// style — как задание этапа пишется под его драйвер.
+type style interface {
+	SkillsHow() string
+	SkillRef(name string) string
+	Quote() string
+}
+
+func (s *Stage) skillsBlock(d style) (string, error) {
 	skills := s.settings.Skills
 	if err := s.tk.Library.AssertPresent(append(slices.Clone(skills.Always), skills.OnDemand...)); err != nil {
 		return "", err
@@ -133,7 +140,7 @@ func (s *Stage) skillsBlock(d drivers.Launcher) (string, error) {
 		"they are not optional, and nothing below repeats what is in them.\n\n" + bullets(refs), nil
 }
 
-func (s *Stage) prompt(d drivers.Launcher, journal *domain.State) (string, error) {
+func (s *Stage) prompt(d style, journal *domain.State) (string, error) {
 	t := s.template()
 	p := s.tk.protocol
 	skills, err := s.skillsBlock(d)
@@ -197,8 +204,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 		level = assessed
 	}
 	settings := s.tk.Config.Drivers[s.driver].Levels[level-1]
-	d := s.tk.Drivers[s.driver]
-	prompt, err := s.prompt(d, journal)
+	prompt, err := s.prompt(drivers.Get(s.driver), journal)
 	if err != nil {
 		return err
 	}
@@ -207,7 +213,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 	if s.sharesPack() {
 		shared = s.tk.Shared
 	}
-	launch, err := d.Launch(drivers.LaunchArgs{
+	launch, err := s.tk.Drivers[s.driver].Launch(drivers.LaunchArgs{
 		Stage: s.ID(), Level: settings, ProjectMemory: s.projectMemory, Allow: s.allow(), Shared: shared, Prompt: prompt,
 		Env: []string{harness.BriefEnv + "=" + briefPath}, Skills: append(slices.Clone(s.settings.Skills.Always), s.settings.Skills.OnDemand...),
 		Cwd: m.Cwd,
@@ -215,7 +221,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 	if err != nil {
 		return err
 	}
-	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), d.Name(), level, launch.Model, launch.Effort, utf8.RuneCountInString(prompt), promptPath)
+	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, launch.Model, launch.Effort, utf8.RuneCountInString(prompt), promptPath)
 	logx.Logf("этап «%s» запускается: %s %s", s.Name(), launch.Command, strings.Join(launch.Argv, " "))
 
 	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding, agent.CommandProtocol{Name: harness.Name, Writes: harness.WriteCommands, RefusalPrefix: "отказ:"})

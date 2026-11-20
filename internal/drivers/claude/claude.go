@@ -118,6 +118,14 @@ func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[strin
 		" и не задана ни одна из " + strings.Join(claudeAuth, ", ") + " — claude /login"}}
 }
 
+func (driver) SkillsHow() string {
+	return "Load each of these with the Skill tool before you start."
+}
+
+func (driver) SkillRef(name string) string { return stagePlugin + ":" + name }
+
+func (driver) Quote() string { return `'\''` }
+
 // launcher — драйвер claude, готовый к прогону.
 type launcher struct {
 	settings    drivers.Settings
@@ -184,16 +192,6 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 	return &launcher{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
 		credentials: credentials, hook: hook}, nil
 }
-
-func (c *launcher) Name() string { return "claude" }
-
-func (c *launcher) SkillsHow() string {
-	return "Load each of these with the Skill tool before you start."
-}
-
-func (c *launcher) SkillRef(name string) string { return stagePlugin + ":" + name }
-
-func (c *launcher) Quote() string { return `'\''` }
 
 // Launch — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
 // командной строки в Linux ограничен 128 килобайтами. Общая часть пакета — в

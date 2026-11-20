@@ -14,12 +14,18 @@ import (
 	"github.com/hakastein/llamer/internal/agent"
 )
 
-// Driver — драйвер этапов до прогона: умолчания, проверка окружения и подготовка.
+// Driver — драйвер этапов до прогона: умолчания, проверка окружения, оформление
+// задания под драйвер и подготовка.
 type Driver interface {
 	// Defaults — настройки драйвера, пока конфиг их не перекрыл.
 	Defaults() Settings
 	// Gaps — пробелы окружения драйвера: бинарник и вход.
 	Gaps(ctx context.Context, settings Settings, env map[string]string) []Gap
+	// SkillsHow — как этап берёт скиллы своего метода; SkillRef — как назван скилл в задании.
+	SkillsHow() string
+	SkillRef(name string) string
+	// Quote — как пишется одинарная кавычка внутри текста в вызове.
+	Quote() string
 	// Prepare — драйвер, готовый к этапам прогона.
 	Prepare(s Setup) (Launcher, error)
 	// Commands — скрытые подкоманды llamer, которые зовёт процесс этапа драйвера.
@@ -28,12 +34,6 @@ type Driver interface {
 
 // Launcher — драйвер, готовый к прогону: собирает запуск этапа.
 type Launcher interface {
-	Name() string
-	// SkillsHow — как этап берёт скиллы своего метода; SkillRef — как назван скилл в задании.
-	SkillsHow() string
-	SkillRef(name string) string
-	// Quote — как пишется одинарная кавычка внутри текста в вызове.
-	Quote() string
 	Launch(a LaunchArgs) (*agent.Launch, error)
 }
 

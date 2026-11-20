@@ -373,6 +373,17 @@ func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[strin
 		" и не задана ни одна из " + strings.Join(codexAuth, ", ") + " — codex login"}}
 }
 
+// SkillsHow — скиллы этапа codex находит сам в `$HOME/.agents/skills` этапа, а
+// упоминание `$имя` в задании подключает скилл целиком ещё до первого хода.
+func (driver) SkillsHow() string {
+	return "Each of these is attached by its mention below — its text is already with you, follow it from the start."
+}
+
+func (driver) SkillRef(name string) string { return "$" + name }
+
+// Quote — не '\”: правило codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
+func (driver) Quote() string { return `'"'"'` }
+
 // launcher — драйвер codex, готовый к прогону.
 type launcher struct {
 	settings  drivers.Settings
@@ -392,19 +403,6 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 	return &launcher{settings: s.Settings, env: s.StageEnv(codexAuth),
 		runSkills: s.RunSkills, tmp: s.Tmp, auth: auth}, nil
 }
-
-func (c *launcher) Name() string { return "codex" }
-
-// SkillsHow — скиллы этапа codex находит сам в `$HOME/.agents/skills` этапа, а
-// упоминание `$имя` в задании подключает скилл целиком ещё до первого хода.
-func (c *launcher) SkillsHow() string {
-	return "Each of these is attached by its mention below — its text is already with you, follow it from the start."
-}
-
-func (c *launcher) SkillRef(name string) string { return "$" + name }
-
-// Quote — не '\”: правило codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
-func (c *launcher) Quote() string { return `'"'"'` }
 
 // sandboxed — этап `llamer run`. Песочница — профиль прав codex: чтение только каталога
 // контекста, Readable этапа и драйвера, скиллов этапа и HOME этапа, сеть закрыта прокси без

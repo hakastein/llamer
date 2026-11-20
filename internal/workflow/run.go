@@ -177,7 +177,7 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 			return nil, "", err
 		}
 	}
-	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, d.Name(), launch.Model, launch.Effort, promptPath)
+	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, launch.Model, launch.Effort, promptPath)
 	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {}, agent.CommandProtocol{})
 	record := agent.Spawn(r.Context, s.Name, launch, r.Cwd, telemetry)
 	stop()
