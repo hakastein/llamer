@@ -3,6 +3,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -35,9 +36,9 @@ func FirstLine(err error) string {
 	return strings.Split(strings.TrimSpace(text), "\n")[0]
 }
 
-// Raw — git как есть: вывод без обрезки.
-func Raw(args []string, cwd string, env ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// Raw — git как есть: вывод без обрезки. Отмена ctx останавливает git.
+func Raw(ctx context.Context, args []string, cwd string, env ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
@@ -55,36 +56,36 @@ func Raw(args []string, cwd string, env ...string) (string, error) {
 }
 
 // Git — вывод git без концевых переводов строк; пробелы значимы (пустая строка контекста диффа — « »). env — дополнительные NAME=value.
-func Git(args []string, cwd string, env ...string) (string, error) {
-	out, err := Raw(args, cwd, env...)
+func Git(ctx context.Context, args []string, cwd string, env ...string) (string, error) {
+	out, err := Raw(ctx, args, cwd, env...)
 	return strings.TrimRight(out, "\n"), err
 }
 
 // Try — вывод git или ok=false при любой ошибке.
-func Try(args []string, cwd string) (string, bool) {
-	out, err := Git(args, cwd)
+func Try(ctx context.Context, args []string, cwd string) (string, bool) {
+	out, err := Git(ctx, args, cwd)
 	return out, err == nil
 }
 
 // Short — короткий sha: первые восемь знаков.
 func Short(sha string) string { return sha[:min(8, len(sha))] }
 
-func RepoRoot(cwd string) (string, error) {
-	return Git([]string{"rev-parse", "--show-toplevel"}, cwd)
+func RepoRoot(ctx context.Context, cwd string) (string, error) {
+	return Git(ctx, []string{"rev-parse", "--show-toplevel"}, cwd)
 }
 
-func IsAncestor(sha, descendant, cwd string) bool {
-	_, ok := Try([]string{"merge-base", "--is-ancestor", sha, descendant}, cwd)
+func IsAncestor(ctx context.Context, sha, descendant, cwd string) bool {
+	_, ok := Try(ctx, []string{"merge-base", "--is-ancestor", sha, descendant}, cwd)
 	return ok
 }
 
-func CurrentHead(cwd string) (string, error) {
-	return Git([]string{"rev-parse", "HEAD"}, cwd)
+func CurrentHead(ctx context.Context, cwd string) (string, error) {
+	return Git(ctx, []string{"rev-parse", "HEAD"}, cwd)
 }
 
 // NoCommonHistory — нет общего предка: в неглубоком клоне — потому что истории не хватает, её догружает вызывающий.
-func NoCommonHistory(head, rev, cwd string) string {
-	shallow, _ := Try([]string{"rev-parse", "--is-shallow-repository"}, cwd)
+func NoCommonHistory(ctx context.Context, head, rev, cwd string) string {
+	shallow, _ := Try(ctx, []string{"rev-parse", "--is-shallow-repository"}, cwd)
 	text := "у " + Short(head) + " и " + rev + " нет общей истории"
 	if shallow == "true" {
 		text += " — клон неглубокий: нужна полная по коммитам история (git fetch --unshallow --filter=tree:0)"

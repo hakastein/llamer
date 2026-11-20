@@ -1,6 +1,7 @@
 package materials
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -33,8 +34,8 @@ type Fitted struct {
 // WidestFittingDiff — фиксированная ширина тратит бюджет на окружение, а режется
 // дифф с конца. Полный дифф, когда влезает, идёт как есть; иначе первыми место
 // уступают удалённые файлы, а ширина подбирается уже по свёрнутому диффу.
-func WidestFittingDiff(diff *Diff, budget int) (Fitted, error) {
-	text, err := diff.Text(DiffWidths[0])
+func WidestFittingDiff(ctx context.Context, diff *Diff, budget int) (Fitted, error) {
+	text, err := diff.Text(ctx, DiffWidths[0])
 	if err != nil {
 		return Fitted{}, err
 	}
@@ -43,7 +44,7 @@ func WidestFittingDiff(diff *Diff, budget int) (Fitted, error) {
 		return Fitted{Text: full, Context: DiffWidths[0]}, nil
 	}
 	for i, context := range DiffWidths {
-		text, err := diff.Text(context)
+		text, err := diff.Text(ctx, context)
 		if err != nil {
 			return Fitted{}, err
 		}
@@ -112,7 +113,7 @@ type Request interface {
 	BaseSha() string
 	Excludes() []string
 	ExplicitBase() string
-	RequestDiff(cwd string) (*Diff, error)
+	RequestDiff(ctx context.Context, cwd string) (*Diff, error)
 	Discussions() ([]*gl.Discussion, error)
 }
 
@@ -167,8 +168,8 @@ type Scope struct {
 // PlanReviewScope — разбирается не дифф реквеста, а изменения задачи; дифф
 // реквеста остаётся для публикации: треды GitLab встают только на его строки.
 // Ошибка *TaskChangesError — изменения задачи не вычислены.
-func PlanReviewScope(request Request, tree string, sinceLast bool) (*Scope, error) {
-	requestDiff, err := request.RequestDiff(tree)
+func PlanReviewScope(ctx context.Context, request Request, tree string, sinceLast bool) (*Scope, error) {
+	requestDiff, err := request.RequestDiff(ctx, tree)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +177,7 @@ func PlanReviewScope(request Request, tree string, sinceLast bool) (*Scope, erro
 	if sinceLast {
 		marks = previousRunMarks(request)
 	}
-	task, err := ComputeTaskChanges(TaskArgs{
+	task, err := ComputeTaskChanges(ctx, TaskArgs{
 		Cwd: tree, Head: request.HeadSha(), Excludes: request.Excludes(), RequestDiff: requestDiff,
 		RequestBase: request.BaseSha(), ExplicitBase: request.ExplicitBase(), SinceLast: sinceLast, SinceMarks: marks,
 	})
@@ -187,17 +188,17 @@ func PlanReviewScope(request Request, tree string, sinceLast bool) (*Scope, erro
 }
 
 // Gather — пакет контекста и материалы этапов. saveDiff кладёт дифф в артефакты прогона.
-func Gather(request Request, tree string, scope *Scope, issue string, saveDiff func(name, text string) (string, error)) (*Materials, error) {
+func Gather(ctx context.Context, request Request, tree string, scope *Scope, issue string, saveDiff func(name, text string) (string, error)) (*Materials, error) {
 	if issue != "" {
 		logx.Logf("текст задачи: %d символов", chars(issue))
 	}
 	diff := scope.Diff
-	signals, err := CollectRiskSignals(diff)
+	signals, err := CollectRiskSignals(ctx, diff)
 	if err != nil {
 		return nil, err
 	}
 	logx.Logf("размер изменений: %d файлов, %d изменённых строк", signals.Files, signals.ChangedLines)
-	fitted, err := WidestFittingDiff(diff, diffBudget)
+	fitted, err := WidestFittingDiff(ctx, diff, diffBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +215,7 @@ func Gather(request Request, tree string, scope *Scope, issue string, saveDiff f
 	// Контекст как у GitLab (три строки): номер новой строки у удалённой строки
 	// в таком диффе совпадает с диффом реквеста, по нему удалённая строка
 	// переносится на строку реквеста при публикации.
-	taskText, err := scope.Task.Diff.Text(3)
+	taskText, err := scope.Task.Diff.Text(ctx, 3)
 	if err != nil {
 		return nil, err
 	}
@@ -262,18 +263,18 @@ var MachineAuthor = []string{
 
 // На перекрёстных слияниях общих предков несколько, и любой один теряет то,
 // что есть только в других: берутся все.
-func mergeBasesWith(head, rev, cwd string) ([]string, error) {
-	shas, ok := git.Try([]string{"merge-base", "--all", head, rev}, cwd)
+func mergeBasesWith(ctx context.Context, head, rev, cwd string) ([]string, error) {
+	shas, ok := git.Try(ctx, []string{"merge-base", "--all", head, rev}, cwd)
 	if !ok || shas == "" {
-		return nil, &TaskChangesError{git.NoCommonHistory(head, rev, cwd)}
+		return nil, &TaskChangesError{git.NoCommonHistory(ctx, head, rev, cwd)}
 	}
 	return strings.Split(shas, "\n"), nil
 }
 
 // mergeTree сливает две ревизии без рабочего дерева; merge-base git выбирает
 // сам: явно заданный ломается на перекрёстных слияниях.
-func mergeTree(ours, theirs, cwd string) (string, []string, error) {
-	tree, err := git.Git([]string{"merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs}, cwd)
+func mergeTree(ctx context.Context, ours, theirs, cwd string) (string, []string, error) {
+	tree, err := git.Git(ctx, []string{"merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs}, cwd)
 	if err == nil {
 		return tree, nil, nil
 	}
@@ -297,49 +298,49 @@ func mergeTree(ours, theirs, cwd string) (string, []string, error) {
 // takeFromRequestBase — конфликтный путь в слитом дереве содержит маркеры
 // конфликта: такой файл берётся из базы реквеста — по нему ревьюится дифф
 // реквеста: лишний чужой код в нём дешевле, чем пропущенный свой.
-func takeFromRequestBase(tree string, paths []string, requestBase, cwd string) (string, error) {
+func takeFromRequestBase(ctx context.Context, tree string, paths []string, requestBase, cwd string) (string, error) {
 	dir, err := os.MkdirTemp("", "llamer-base-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(dir)
 	env := "GIT_INDEX_FILE=" + filepath.Join(dir, "index")
-	if _, err := git.Git([]string{"read-tree", tree}, cwd, env); err != nil {
+	if _, err := git.Git(ctx, []string{"read-tree", tree}, cwd, env); err != nil {
 		return "", err
 	}
 	for _, p := range paths {
-		entry, err := git.Git([]string{"ls-tree", requestBase, "--", p}, cwd)
+		entry, err := git.Git(ctx, []string{"ls-tree", requestBase, "--", p}, cwd)
 		if err != nil {
 			return "", err
 		}
 		if entry != "" {
 			meta, _, _ := strings.Cut(entry, "\t")
 			fields := strings.Split(meta, " ")
-			_, err = git.Git([]string{"update-index", "--add", "--cacheinfo", fields[0] + "," + fields[2] + "," + p}, cwd, env)
+			_, err = git.Git(ctx, []string{"update-index", "--add", "--cacheinfo", fields[0] + "," + fields[2] + "," + p}, cwd, env)
 		} else {
-			_, err = git.Git([]string{"update-index", "--force-remove", "--", p}, cwd, env)
+			_, err = git.Git(ctx, []string{"update-index", "--force-remove", "--", p}, cwd, env)
 		}
 		if err != nil {
 			return "", err
 		}
 	}
-	return git.Git([]string{"write-tree"}, cwd, env)
+	return git.Git(ctx, []string{"write-tree"}, cwd, env)
 }
 
 // virtualBase — всё, что уже есть в исключённых ревизиях, в одном коммите.
 // Коммит, а не голое дерево: этапы читают базу через `git show <sha>:<путь>`.
-func virtualBase(bases []Base, requestBase, cwd string) (string, []string, error) {
+func virtualBase(ctx context.Context, bases []Base, requestBase, cwd string) (string, []string, error) {
 	head := bases[0].Sha
 	var conflicted []string
 	for _, b := range bases[1:] {
-		if git.IsAncestor(b.Sha, head, cwd) {
+		if git.IsAncestor(ctx, b.Sha, head, cwd) {
 			continue
 		}
-		if git.IsAncestor(head, b.Sha, cwd) {
+		if git.IsAncestor(ctx, head, b.Sha, cwd) {
 			head = b.Sha
 			continue
 		}
-		tree, paths, err := mergeTree(head, b.Sha, cwd)
+		tree, paths, err := mergeTree(ctx, head, b.Sha, cwd)
 		if err != nil {
 			return "", nil, err
 		}
@@ -349,11 +350,11 @@ func virtualBase(bases []Base, requestBase, cwd string) (string, []string, error
 			}
 		}
 		if len(paths) > 0 {
-			if tree, err = takeFromRequestBase(tree, conflicted, requestBase, cwd); err != nil {
+			if tree, err = takeFromRequestBase(ctx, tree, conflicted, requestBase, cwd); err != nil {
 				return "", nil, err
 			}
 		}
-		if head, err = git.Git([]string{"commit-tree", "-p", head, "-p", b.Sha, "-m", "llamer: база изменений задачи", tree}, cwd, MachineAuthor...); err != nil {
+		if head, err = git.Git(ctx, []string{"commit-tree", "-p", head, "-p", b.Sha, "-m", "llamer: база изменений задачи", tree}, cwd, MachineAuthor...); err != nil {
 			return "", nil, err
 		}
 	}
@@ -368,10 +369,10 @@ func virtualBase(bases []Base, requestBase, cwd string) (string, []string, error
 // lastReviewed — метка прошлого прогона, от которой считать: последняя из тех,
 // чья ревизия есть в истории головы. Метка вне истории — голова переписана.
 // Совпавшая с базой реквеста ничего не сужает.
-func lastReviewed(marks []string, head, requestBase, cwd string) string {
+func lastReviewed(ctx context.Context, marks []string, head, requestBase, cwd string) string {
 	var inHistory, dropped []string
 	for _, sha := range marks {
-		if git.IsAncestor(sha, head, cwd) {
+		if git.IsAncestor(ctx, sha, head, cwd) {
 			inHistory = append(inHistory, sha)
 		}
 	}
@@ -389,7 +390,7 @@ func lastReviewed(marks []string, head, requestBase, cwd string) string {
 	}
 	sha := inHistory[0]
 	for _, b := range inHistory[1:] {
-		if git.IsAncestor(sha, b, cwd) {
+		if git.IsAncestor(ctx, sha, b, cwd) {
 			sha = b
 		}
 	}
@@ -417,8 +418,8 @@ type TaskArgs struct {
 // разрешения конфликтов и правки поверх влитых веток — это то, что голова
 // добавляет к слиянию этих ревизий. --since-last добавляет ещё одну базу —
 // метку прошлого прогона. Любая ошибка — *TaskChangesError.
-func ComputeTaskChanges(a TaskArgs) (*TaskChanges, error) {
-	t, err := computeTaskChanges(a)
+func ComputeTaskChanges(ctx context.Context, a TaskArgs) (*TaskChanges, error) {
+	t, err := computeTaskChanges(ctx, a)
 	var tce *TaskChangesError
 	if err != nil && !errors.As(err, &tce) {
 		return nil, &TaskChangesError{"git не посчитал изменения задачи (" + git.FirstLine(err) + ")"}
@@ -426,7 +427,7 @@ func ComputeTaskChanges(a TaskArgs) (*TaskChanges, error) {
 	return t, err
 }
 
-func computeTaskChanges(a TaskArgs) (*TaskChanges, error) {
+func computeTaskChanges(ctx context.Context, a TaskArgs) (*TaskChanges, error) {
 	var bases []Base
 	baseSha, conflicted, since := "", []string{}, ""
 	if a.ExplicitBase != "" {
@@ -439,7 +440,7 @@ func computeTaskChanges(a TaskArgs) (*TaskChanges, error) {
 				continue
 			}
 			seen = append(seen, rev)
-			shas, err := mergeBasesWith(a.Head, rev, a.Cwd)
+			shas, err := mergeBasesWith(ctx, a.Head, rev, a.Cwd)
 			if err != nil {
 				return nil, err
 			}
@@ -448,17 +449,17 @@ func computeTaskChanges(a TaskArgs) (*TaskChanges, error) {
 			}
 		}
 		if a.SinceLast {
-			since = lastReviewed(a.SinceMarks, a.Head, a.RequestBase, a.Cwd)
+			since = lastReviewed(ctx, a.SinceMarks, a.Head, a.RequestBase, a.Cwd)
 		}
 		if since != "" {
 			bases = append(bases, Base{"прошлый прогон", since})
 		}
 		var err error
-		if baseSha, conflicted, err = virtualBase(bases, a.RequestBase, a.Cwd); err != nil {
+		if baseSha, conflicted, err = virtualBase(ctx, bases, a.RequestBase, a.Cwd); err != nil {
 			return nil, err
 		}
 	}
-	diff, err := OverRange(baseSha, []string{baseSha, a.Head}, a.Cwd)
+	diff, err := OverRange(ctx, baseSha, []string{baseSha, a.Head}, a.Cwd)
 	if err != nil {
 		return nil, err
 	}

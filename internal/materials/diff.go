@@ -3,6 +3,7 @@
 package materials
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"sort"
@@ -122,9 +123,9 @@ type Diff struct {
 }
 
 // OverRange — дифф между ревизиями репозитория.
-func OverRange(baseRef string, revs []string, cwd string) (*Diff, error) {
+func OverRange(ctx context.Context, baseRef string, revs []string, cwd string) (*Diff, error) {
 	renamed := map[string]string{}
-	out, err := git.Git(append([]string{"diff", "--name-status"}, revs...), cwd)
+	out, err := git.Git(ctx, append([]string{"diff", "--name-status"}, revs...), cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +145,7 @@ func OverRange(baseRef string, revs []string, cwd string) (*Diff, error) {
 		}
 		files = append(files, p)
 	}
-	narrow, err := git.Git(append([]string{"diff", "-U0"}, revs...), cwd)
+	narrow, err := git.Git(ctx, append([]string{"diff", "-U0"}, revs...), cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +279,7 @@ func (d *Diff) PairAt(file string, line int, deleted bool) (oldLine, newLine int
 }
 
 // Text — дифф с контекстом в context строк, таким, каким его печатает git.
-func (d *Diff) Text(context int) (string, error) {
+func (d *Diff) Text(ctx context.Context, context int) (string, error) {
 	if len(d.Files) == 0 {
 		return "", nil
 	}
@@ -288,7 +289,7 @@ func (d *Diff) Text(context int) (string, error) {
 	var text string
 	if d.read != nil {
 		var err error
-		if text, err = widenFromWorkTree(d.Files, d.Added, d.Removed, d.read, context); err != nil {
+		if text, err = widenFromWorkTree(ctx, d.Files, d.Added, d.Removed, d.read, context); err != nil {
 			return "", err
 		}
 	} else {
@@ -304,7 +305,7 @@ func (d *Diff) Text(context int) (string, error) {
 				}
 			}
 		}
-		out, err := git.Git(args, d.cwd)
+		out, err := git.Git(ctx, args, d.cwd)
 		if err != nil {
 			return "", err
 		}

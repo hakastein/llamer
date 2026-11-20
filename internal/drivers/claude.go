@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -75,8 +76,8 @@ func bashRules(allow []string) []string {
 	return rules
 }
 
-func claudeGaps(settings Settings, env map[string]string) []Gap {
-	if missing := binaryGap("claude", settings); missing != nil {
+func claudeGaps(ctx context.Context, settings Settings, env map[string]string) []Gap {
+	if missing := binaryGap(ctx, "claude", settings); missing != nil {
 		return missing
 	}
 	credentials := filepath.Join(claudeConfigDir(env), ".credentials.json")

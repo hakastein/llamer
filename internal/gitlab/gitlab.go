@@ -2,6 +2,7 @@
 package gitlab
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -53,8 +54,9 @@ type MergeRequest struct {
 	loaded      bool
 }
 
-func NewMergeRequest(ref Ref, token string) (*MergeRequest, error) {
-	client, err := gl.NewClient(token, gl.WithBaseURL(ref.URL))
+// NewMergeRequest — отмена ctx обрывает любой запрос к MR, в том числе публикацию.
+func NewMergeRequest(ctx context.Context, ref Ref, token string) (*MergeRequest, error) {
+	client, err := gl.NewClient(token, gl.WithBaseURL(ref.URL), gl.WithRequestOptions(gl.WithContext(ctx)))
 	if err != nil {
 		return nil, err
 	}

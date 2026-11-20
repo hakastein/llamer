@@ -1,6 +1,7 @@
 package materials
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -153,8 +154,8 @@ func (s Signals) Summary() string {
 }
 
 // CollectRiskSignals — размер, механика и тесты изменений.
-func CollectRiskSignals(diff *Diff) (Signals, error) {
-	narrow, err := diff.Text(0)
+func CollectRiskSignals(ctx context.Context, diff *Diff) (Signals, error) {
+	narrow, err := diff.Text(ctx, 0)
 	if err != nil {
 		return Signals{}, err
 	}
@@ -222,8 +223,8 @@ func restoreOldVersion(newLines []string, added, removed *Lines) []string {
 	return old
 }
 
-func gitDiffFiles(oldPath, newPath string, context int) (string, error) {
-	out, err := exec.Command("git", "diff", "--no-index", "-U"+strconv.Itoa(context), oldPath, newPath).Output()
+func gitDiffFiles(ctx context.Context, oldPath, newPath string, context int) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "diff", "--no-index", "-U"+strconv.Itoa(context), oldPath, newPath).Output()
 	if err == nil {
 		return "", nil
 	}
@@ -256,7 +257,7 @@ func retitle(diff, file string, born bool) string {
 	return strings.TrimRightFunc(strings.Join(out, "\n"), unicode.IsSpace)
 }
 
-func widenFromWorkTree(files []string, added, removed *Side, read func(string) (string, bool), context int) (string, error) {
+func widenFromWorkTree(ctx context.Context, files []string, added, removed *Side, read func(string) (string, bool), context int) (string, error) {
 	dir, err := os.MkdirTemp("", "review-widen-")
 	if err != nil {
 		return "", err
@@ -291,7 +292,7 @@ func widenFromWorkTree(files []string, added, removed *Side, read func(string) (
 		if err := os.WriteFile(newPath, []byte(strings.Join(newLines, "\n")+"\n"), 0o666); err != nil {
 			return "", err
 		}
-		diff, err := gitDiffFiles(oldPath, newPath, context)
+		diff, err := gitDiffFiles(ctx, oldPath, newPath, context)
 		if err != nil {
 			return "", err
 		}

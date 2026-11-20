@@ -3,6 +3,7 @@
 package drivers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -103,8 +104,8 @@ type Gap struct {
 	Message string `yaml:"message"`
 }
 
-func binaryGap(name string, settings Settings) []Gap {
-	err := exec.Command(settings.Bin, "--version").Run()
+func binaryGap(ctx context.Context, name string, settings Settings) []Gap {
+	err := exec.CommandContext(ctx, settings.Bin, "--version").Run()
 	if err == nil {
 		return nil
 	}
@@ -166,11 +167,11 @@ func Prepare(name string, s Setup) (Driver, error) {
 }
 
 // Gaps — пробелы драйвера: бинарник и вход.
-func Gaps(name string, settings Settings, env map[string]string) []Gap {
+func Gaps(ctx context.Context, name string, settings Settings, env map[string]string) []Gap {
 	if name == "codex" {
-		return codexGaps(settings, env)
+		return codexGaps(ctx, settings, env)
 	}
-	return claudeGaps(settings, env)
+	return claudeGaps(ctx, settings, env)
 }
 
 func settingsEnv(s Settings) []string {

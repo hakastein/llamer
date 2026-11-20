@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -312,8 +313,8 @@ func treeSkills(cwd string) []string {
 	return out
 }
 
-func codexGaps(settings Settings, env map[string]string) []Gap {
-	if missing := binaryGap("codex", settings); missing != nil {
+func codexGaps(ctx context.Context, settings Settings, env map[string]string) []Gap {
+	if missing := binaryGap(ctx, "codex", settings); missing != nil {
 		return missing
 	}
 	auth := filepath.Join(codexHomeOf(env), "auth.json")

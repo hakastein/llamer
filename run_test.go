@@ -819,7 +819,7 @@ func TestAssessorFailure(t *testing.T) {
 func TestSigtermMidStage(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	root := makeRepo(t, with(config(), "drivers", stubEnvOf("STUB_HANG_STAGE", "assess")))
+	root := makeRepo(t, with(config(), "drivers", stubEnvOf("STUB_HANG_STAGE", "skeptic")))
 	git(t, root, "checkout", "-q", "-f", "main")
 	done := make(chan *result)
 	// Голова — не HEAD: llamer выкладывает её отдельным worktree.
@@ -827,7 +827,8 @@ func TestSigtermMidStage(t *testing.T) {
 		done <- run(t, root, []string{"--exclude", "main", "--head", "feature/dev-7-orders"}, map[string]string{"TMPDIR": tmp})
 	}()
 	hang := filepath.Join(tmp, "hang.json")
-	for wait := 0; wait < 500; wait++ {
+	// Скептик — последний этап: под -race прогон доходит до него не за секунды.
+	for wait := 0; wait < 3000; wait++ {
 		if _, err := os.Stat(hang); err == nil {
 			break
 		}
@@ -856,6 +857,7 @@ func TestSigtermMidStage(t *testing.T) {
 	r := <-done
 
 	equal(t, r.status, 143, "код\n"+r.stderr)
+	equal(t, r.stdout, "", "результата нет")
 	alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
 	// Убитые процессы ещё мгновение висят зомби, пока их не приберёт init.
 	for wait := 0; wait < 50 && (alive(pids.Stage) || alive(pids.Command)); wait++ {
@@ -865,9 +867,44 @@ func TestSigtermMidStage(t *testing.T) {
 	sameList(t, temporaries(), nil, "временное убрано")
 	equal(t, len(strings.Split(git(t, root, "worktree", "list"), "\n")), 1, "worktree головы снят с учёта git")
 	runs, _ := filepath.Glob(filepath.Join(root, ".llamer", "2*"))
-	for _, name := range []string{"оценщик.prompt.md", "оценщик.jsonl"} {
+	for _, name := range []string{"скептик.prompt.md", "скептик.jsonl"} {
 		if _, err := os.Stat(filepath.Join(runs[0], name)); err != nil {
 			t.Errorf("записанные артефакты на месте: %v", err)
 		}
+	}
+}
+
+func TestSigtermDuringPreflight(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	pid := filepath.Join(tmp, "llamer.pid")
+	// Проверка драйвера висит: прогон ждал бы её, а не сигнал.
+	write(t, tmp, "slow-claude", "#!/bin/sh\necho $PPID > "+pid+".part && mv "+pid+".part "+pid+"\nexec sleep 30\n")
+	if err := os.Chmod(filepath.Join(tmp, "slow-claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := makeRepo(t, with(config(), "drivers", obj{"claude": obj{"bin": filepath.Join(tmp, "slow-claude")}}))
+	done := make(chan *result)
+	go func() { done <- run(t, root, append(slices.Clone(worktree), "--preflight"), nil) }()
+	for wait := 0; wait < 500; wait++ {
+		if _, err := os.Stat(pid); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var llamerPid int
+	if _, err := fmt.Sscan(read(t, pid), &llamerPid); err != nil {
+		t.Fatal(err)
+	}
+	signalled := time.Now()
+	if err := syscall.Kill(llamerPid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+
+	equal(t, r.status, 143, "код\n"+r.stderr)
+	equal(t, r.stdout, "", "результата нет")
+	if waited := time.Since(signalled); waited > 10*time.Second {
+		t.Errorf("после сигнала прогон ждал проверку драйвера: %s", waited)
 	}
 }
