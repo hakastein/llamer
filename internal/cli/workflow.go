@@ -12,6 +12,7 @@ import (
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
+	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/workflow"
 	"github.com/spf13/cobra"
@@ -32,13 +33,19 @@ type RunOptions struct{ Workflow, Context, Config string }
 
 func runCommand(stdout io.Writer, code *int) *cobra.Command {
 	o := &RunOptions{}
-	cmd := &cobra.Command{Use: "run", Args: cobra.ExactArgs(1), SilenceErrors: true, SilenceUsage: true,
+	cmd := &cobra.Command{Use: "run", SilenceErrors: true, SilenceUsage: true,
 		RunE: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return usage("нужен ровно один каталог workflow — справка: llamer run --help")
+			}
 			o.Workflow = args[0]
 			*code = runMain(func(ctx context.Context) (bool, error) { return runWorkflow(ctx, o, stdout) })
 			return nil
 		}}
 	cmd.SetHelpFunc(func(*cobra.Command, []string) { io.WriteString(stdout, RunHelp) })
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return &InputError{harness.FlagError(err) + " — справка: llamer run --help"}
+	})
 	f := cmd.Flags()
 	f.StringVar(&o.Context, "context", ".", "")
 	f.StringVar(&o.Config, "config", "", "")
