@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
@@ -209,7 +208,7 @@ func (r *run) review() (bool, error) {
 		}
 		f := report.Failure{Reason: "other", Detail: detail}
 		if outcome.Failure != nil {
-			f.Reason, f.ResetsAt = outcome.Failure.Reason, agent.ResetsAt(outcome.Failure.RateLimit)
+			f.Reason, f.ResetsAt = outcome.Failure.Reason, outcome.Failure.ResetsAt
 		}
 		delivery.DeliverFailure(f, outcome.Records)
 		r.artifacts.ReportCost(outcome.Records, logx.SinceStart())

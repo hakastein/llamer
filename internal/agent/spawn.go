@@ -23,10 +23,10 @@ import (
 var rateLimitText = regexp.MustCompile(`(?i)usage limit reached|rate limit|out of credits`)
 
 // FailureReason — причина срыва этапа. exitCode 0 не значит успех — при
-// is_error причина читается из result, а текст ловит исчерпание подписки и без статуса.
+// ошибке причина читается из итога, а текст ловит исчерпание подписки и без статуса.
 func FailureReason(r *Record) string {
 	if r.Result != nil {
-		if status := r.Result.APIErrorStatus; status != nil {
+		if status := r.Result.APIStatus; status != nil {
 			switch *status {
 			case 401, 403:
 				return "auth"
@@ -34,7 +34,7 @@ func FailureReason(r *Record) string {
 				return "rate_limit"
 			}
 		}
-		if rateLimitText.MatchString(r.Result.Result) {
+		if rateLimitText.MatchString(r.Result.Text) {
 			return "rate_limit"
 		}
 	}
@@ -49,12 +49,12 @@ func FailureReason(r *Record) string {
 	return "other"
 }
 
-// CollectRateLimit — последние сведения о лимитах из потока.
-func CollectRateLimit(events []*Event) json.RawMessage {
-	var last json.RawMessage
+// lastRateLimit — последние сведения о лимитах из потока; nil — их не было.
+func lastRateLimit(events []*Event) *RateLimit {
+	var last *RateLimit
 	for _, e := range events {
-		if e.Type == "rate_limit_event" && len(e.RateLimitInfo) > 0 && string(e.RateLimitInfo) != "null" {
-			last = e.RateLimitInfo
+		if e.RateLimit != nil {
+			last = e.RateLimit
 		}
 	}
 	return last
@@ -86,16 +86,17 @@ func (t *Traffic) Describe() string {
 }
 
 // Launch — запуск этапа драйвером: команда, аргументы, окружение, stdin и
-// разбор потока в события claude.
+// разбор потока в общие события.
 type Launch struct {
-	Command     string
-	Timeout     time.Duration
-	Argv        []string
-	Env         []string
-	Input       string
-	Model       string
-	Effort      string
-	Normalize   func(line []byte) [][]byte
+	Command string
+	Timeout time.Duration
+	Argv    []string
+	Env     []string
+	Input   string
+	Model   string
+	Effort  string
+	// Parse — события строки потока; ошибка — строка не разобрана.
+	Parse       func(line []byte) ([]*Event, error)
 	AfterExit   func(sessionID string) Late
 	KeepSession func(dir, sessionID string) (string, error)
 }
@@ -131,8 +132,8 @@ func lookPath(command string, env []string) (string, error) {
 	return "", errors.New("команды " + command + " нет в PATH этапа")
 }
 
-// Spawn — процесс этапа по спецификации драйвера. Каждая строка потока
-// проходит через launch.Normalize — дальше все драйверы говорят событиями claude.
+// Spawn — процесс этапа по спецификации драйвера. Каждую строку потока
+// launch.Parse переводит в общие события.
 func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Telemetry) *Record {
 	if launch.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -150,26 +151,22 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 	var contextTokens int64
 	turns := 0
 	sessionID := ""
-	var result *Event
+	var result *Result
 	handle := func(e *Event) {
 		traffic.mu.Lock()
 		traffic.events++
-		traffic.lastEventType = e.Type
-		if e.Subtype != "" {
-			traffic.lastEventType += "/" + e.Subtype
-		}
+		traffic.lastEventType = e.Kind
 		traffic.mu.Unlock()
 		t.Accept(e)
-		switch e.Type {
-		case "result":
-			result = e
-		case "system":
-			if e.Subtype == "init" && e.SessionID != "" {
-				sessionID = e.SessionID
-			}
-		case "assistant":
+		if e.Result != nil {
+			result = e.Result
+		}
+		if e.Session != nil && e.Session.ID != "" {
+			sessionID = e.Session.ID
+		}
+		if e.Turn != nil {
 			turns++
-			if u := e.Message.Usage; u != nil {
+			if u := e.Turn.Usage; u != nil {
 				sawUsage = true
 				usage.InputTokens += u.InputTokens
 				usage.OutputTokens += u.OutputTokens
@@ -184,12 +181,12 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 		if trimmed == "" {
 			return
 		}
-		for _, raw := range launch.Normalize([]byte(trimmed)) {
-			e, err := ParseEvent(raw)
-			if err != nil {
-				t.Accept(ownEvent("stage_raw", name, trimmed))
-				return
-			}
+		events, err := launch.Parse([]byte(trimmed))
+		if err != nil {
+			t.Accept(ownEvent("stage_raw", name, trimmed))
+			return
+		}
+		for _, e := range events {
 			handle(e)
 		}
 	}
@@ -299,10 +296,10 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 	case late.Cost != nil:
 		r.Cost = late.Cost
 	default:
-		r.Cost = result.TotalCostUSD
+		r.Cost = result.Cost
 	}
-	if result != nil && result.ModelUsage != nil {
-		r.Usage = result.ModelUsage
+	if result != nil && result.Usage != nil {
+		r.Usage = result.Usage
 	} else if sawUsage {
 		r.Usage = map[string]Usage{"stream": usage}
 		r.UsageApprox = true

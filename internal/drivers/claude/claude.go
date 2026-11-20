@@ -281,7 +281,7 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	return &agent.Launch{
 		Command: c.settings.Bin, Argv: argv, Env: append(slices.Clone(c.env), a.Env...), Input: a.Prompt,
 		Model: level.Model, Effort: level.Effort,
-		Normalize:   func(line []byte) [][]byte { return [][]byte{line} },
+		Parse:       parse,
 		KeepSession: func(dir, id string) (string, error) { return c.keepSession(dir, id, level) },
 	}, nil
 }

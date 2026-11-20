@@ -12,9 +12,7 @@ const silenceReport = 30 * time.Second
 
 // Начало ответа модели: с этого момента кэш промпта, записанный запросом,
 // доступен соседним запросам.
-func isResponseStart(e *Event) bool {
-	return (e.Type == "stream_event" && e.Inner.Type == "message_start") || e.Type == "assistant"
-}
+func isResponseStart(e *Event) bool { return e.Start || e.Turn != nil }
 
 // Stream — сырой поток этапа в артефактах.
 type Stream interface {
@@ -115,9 +113,11 @@ func (t *Telemetry) Finish(r *Record) *Record {
 	if !r.OK {
 		logx.Logf("этап «%s»: %s", t.name, t.Traffic.Describe())
 	}
-	r.RateLimit = CollectRateLimit(t.events)
-	if r.Limits == nil {
-		r.Limits = LimitsOf(r.RateLimit)
+	if rl := lastRateLimit(t.events); rl != nil {
+		r.RateLimit, r.ResetsAt = rl.Raw, rl.ResetsAt
+		if r.Limits == nil {
+			r.Limits = rl.Limits
+		}
 	}
 	r.LostWrites = stats.LostWrites
 	return r

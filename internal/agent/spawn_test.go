@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,12 +18,21 @@ type processStream struct {
 }
 
 func (s *processStream) Write(raw []byte) {
-	e, err := agent.ParseEvent(raw)
-	if err == nil && e.Type == "stage_stderr" && e.Text == "ready" {
+	var e struct{ Type, Text string }
+	if json.Unmarshal(raw, &e) == nil && e.Type == "stage_stderr" && e.Text == "ready" {
 		s.once.Do(func() { close(s.ready) })
 	}
 }
 func (*processStream) End() {}
+
+// parseResult — итог из строки `{"result": …}`.
+func parseResult(line []byte) ([]*agent.Event, error) {
+	var e struct{ Result string }
+	if err := json.Unmarshal(line, &e); err != nil {
+		return nil, err
+	}
+	return []*agent.Event{{Raw: line, Result: &agent.Result{Text: e.Result}}}, nil
+}
 
 func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 	for _, byTimeout := range []bool{false, true} {
@@ -38,7 +48,7 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 				result := make(chan *agent.Record, 1)
 				go func() {
 					launch := &agent.Launch{Command: "/bin/sh", Argv: []string{"-c", script}, Env: []string{"PATH=/usr/bin:/bin"},
-						Timeout: timeout, Normalize: func(line []byte) [][]byte { return [][]byte{line} }}
+						Timeout: timeout, Parse: parseResult}
 					result <- telemetry.Finish(agent.Spawn(ctx, name, launch, dir, telemetry))
 				}()
 				return stream.ready, result
@@ -63,7 +73,7 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 			}
 			otherCtx, stopOther := context.WithCancel(context.Background())
 			defer stopOther()
-			ready, other := start(otherCtx, `echo ready >&2; while [ ! -e release ]; do sleep 0.01; done; printf '%s\n' '{"type":"result","result":"done","total_cost_usd":0}'`, 0)
+			ready, other := start(otherCtx, `echo ready >&2; while [ ! -e release ]; do sleep 0.01; done; printf '%s\n' '{"result":"done"}'`, 0)
 			awaitReady(ready)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -90,7 +100,7 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 				t.Fatal(err)
 			}
 			r = awaitResult(other)
-			if !r.OK || r.Result.Result != "done" || len(r.Events) == 0 {
+			if !r.OK || r.Result.Text != "done" || len(r.Events) == 0 {
 				t.Fatalf("независимый запуск не вернул результат и события: %+v", r)
 			}
 		})

@@ -12,8 +12,8 @@ import (
 type Outcome struct {
 	Journal    *domain.State
 	Assessment *domain.Assessment
-	// Failure — последний срыв волны оценки, для сообщения о неудаче.
-	Failure *domain.StageFailed
+	// Failure — запись сорвавшегося оценщика, для сообщения о неудаче; nil — оценщик не срывался.
+	Failure *agent.Record
 	// Records — записи отработавших этапов: стоимость, токены, длительность.
 	Records []*agent.Record
 }
@@ -35,7 +35,11 @@ func Run(tk *Toolkit) (*Outcome, error) {
 	// Без вердикта оценщика глубина разбора неизвестна — дальше не идём.
 	assessment := assess.State().Assessment
 	if assessment == nil {
-		return &Outcome{Journal: fold(opening), Failure: assess.State().Failure(), Records: records(opening)}, nil
+		var failure *agent.Record
+		if r := assess.Record(); r != nil && !r.OK {
+			failure = r
+		}
+		return &Outcome{Journal: fold(opening), Failure: failure, Records: records(opening)}, nil
 	}
 	logx.Logf("оценка: %s, риск %s, уровень %d", assessment.Nature, assessment.Risk, assessment.Level)
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"math"
 	"os"
 	"slices"
 	"strings"
@@ -15,12 +14,12 @@ import (
 	"golang.org/x/text/message"
 )
 
-// Usage — токены модели за этап, как в `modelUsage` итога claude.
+// Usage — токены модели: вход без кэша, выход, чтение и запись кэша.
 type Usage struct {
-	InputTokens              int64 `json:"inputTokens"`
-	OutputTokens             int64 `json:"outputTokens"`
-	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+	InputTokens              int64
+	OutputTokens             int64
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
 }
 
 // Window — окно лимита подписки: использовано в процентах, сброс — unix-секунды.
@@ -42,7 +41,7 @@ type Record struct {
 	OK, TimedOut        bool
 	ExitCode            *int
 	Signal              string
-	Result              *Event   // итоговое событие result или nil
+	Result              *Result  // итог этапа или nil
 	Events              []*Event // поток событий запуска
 	DurationMs          int64
 	Cost                *float64 // nil — драйвер цены не назвал: в отчёте это `$?`, а не $0
@@ -56,7 +55,8 @@ type Record struct {
 
 	Key, Driver, Resume string
 	Reason              string
-	RateLimit           json.RawMessage // rate_limit_info потока как есть
+	RateLimit           json.RawMessage // сведения о лимитах из потока драйвера как есть
+	ResetsAt            *int64          // сброс лимита из тех же сведений; nil — не назван
 	LostWrites          int
 }
 
@@ -250,60 +250,6 @@ var statusTitles = map[string]string{"allowed_warning": "на исходе", "re
 // FormatResetTime — время сброса лимита в UTC.
 func FormatResetTime(resetsAt int64) string {
 	return time.Unix(resetsAt, 0).UTC().Format("2006-01-02 15:04") + " UTC"
-}
-
-// rateLimitInfo — `rate_limit_info` события claude: окна — в `unifiedWindows`
-// живого потока; документация знает одно окно на верхнем уровне.
-type rateLimitInfo struct {
-	Status         *string                    `json:"status"`
-	ErrorCode      *string                    `json:"errorCode"`
-	RateLimitType  string                     `json:"rateLimitType"`
-	UnifiedWindows map[string]rateLimitWindow `json:"unifiedWindows"`
-	rateLimitWindow
-}
-
-type rateLimitWindow struct {
-	Utilization *float64 `json:"utilization"`
-	ResetsAt    *float64 `json:"resetsAt"`
-}
-
-// ResetsAt — сброс лимита из `rate_limit_info`; nil — не назван.
-func ResetsAt(info json.RawMessage) *int64 {
-	var r rateLimitInfo
-	if json.Unmarshal(info, &r) != nil || r.ResetsAt == nil {
-		return nil
-	}
-	at := int64(*r.ResetsAt)
-	return &at
-}
-
-// LimitsOf — лимиты подписки из `rate_limit_info` события claude.
-func LimitsOf(raw json.RawMessage) *Limits {
-	var info rateLimitInfo
-	if len(raw) == 0 || json.Unmarshal(raw, &info) != nil {
-		return nil
-	}
-	windows := info.UnifiedWindows
-	if windows == nil {
-		name := info.RateLimitType
-		if name == "" {
-			name = "window"
-		}
-		windows = map[string]rateLimitWindow{name: info.rateLimitWindow}
-	}
-	out := &Limits{Status: info.Status, Reason: info.ErrorCode, Windows: map[string]Window{}}
-	for name, w := range windows {
-		if w.Utilization == nil {
-			continue
-		}
-		window := Window{UsedPercent: math.Round(*w.Utilization * 100)}
-		if w.ResetsAt != nil {
-			at := int64(*w.ResetsAt)
-			window.ResetsAt = &at
-		}
-		out.Windows[name] = window
-	}
-	return out
 }
 
 // DriverLimits — последние сведения о лимитах каждого драйвера за прогон;

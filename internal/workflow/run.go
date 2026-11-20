@@ -127,10 +127,10 @@ func (r *Run) Execute() (*Result, error) {
 			result.OK, result.Failure = false, &Failure{Stage: s.Name, Reason: record.Reason, Detail: detail}
 			break
 		}
-		answers[s.Name] = record.Result.Result
-		stage.Answer = json.RawMessage(record.Result.Result)
+		answers[s.Name] = record.Result.Text
+		stage.Answer = json.RawMessage(record.Result.Text)
 		if s.Schema == nil {
-			stage.Answer, _ = json.Marshal(record.Result.Result) // строка кодируется всегда
+			stage.Answer, _ = json.Marshal(record.Result.Text) // строка кодируется всегда
 		}
 		result.Stages = append(result.Stages, stage)
 	}
@@ -186,7 +186,7 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 	if !record.OK {
 		detail := ""
 		if record.Result != nil {
-			detail = record.Result.Result
+			detail = record.Result.Text
 		}
 		return record, detail, nil
 	}
@@ -200,7 +200,7 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 	if s.Schema == nil {
 		return record, "", nil
 	}
-	if detail := check(s.Schema, record.Result.Result); detail != "" {
+	if detail := check(s.Schema, record.Result.Text); detail != "" {
 		logx.Logf("этап «%s» сорван: ответ не по схеме %s", s.Name, s.SchemaPath)
 		record.OK, record.Reason = false, "schema"
 		return record, detail, nil

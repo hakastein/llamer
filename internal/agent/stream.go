@@ -1,4 +1,4 @@
-// Package agent — процесс этапа: запуск драйвера, разбор его потока, цена и лимиты.
+// Package agent — процесс этапа: запуск драйвера, его поток в общей форме, цена и лимиты.
 package agent
 
 import (
@@ -15,96 +15,89 @@ import (
 	"syscall"
 )
 
-// Event — событие потока этапа в форме claude: поля, которые читает llamer, и
-// строка как пришла — она ложится в артефакты.
+// Event — событие потока этапа в общей форме: драйвер переводит в неё свой поток.
 type Event struct {
-	Raw        json.RawMessage `json:"-"`
-	Type       string          `json:"type"`
-	Subtype    string          `json:"subtype"`
-	SessionID  string          `json:"session_id"`
-	Model      string          `json:"model"`
-	Tools      []any           `json:"tools"`
-	MCPServers []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-	} `json:"mcp_servers"`
-	Status   string `json:"status"`
-	HookName string `json:"hook_name"`
-	// Message — у system строка, у assistant и user — сообщение с блоками.
-	RawMessage json.RawMessage `json:"message"`
-	Message    Message         `json:"-"`
-	Text       string          `json:"text"`
-	Marks
-	Result       string           `json:"result"`
-	TotalCostUSD *float64         `json:"total_cost_usd"`
-	ModelUsage   map[string]Usage `json:"modelUsage"`
-	Inner        struct {
-		Type         string `json:"type"`
-		ContentBlock struct {
-			Type string `json:"type"`
-		} `json:"content_block"`
-	} `json:"event"`
-	RateLimitInfo json.RawMessage `json:"rate_limit_info"`
+	Raw []byte // строка события, как она ложится в артефакты
+	// Kind — тип события у драйвера: его называет сообщение о молчании этапа.
+	Kind string
+	// Failed — драйвер пометил событие ошибкой: лог показывает его строку целиком.
+	Failed  bool
+	Session *Session // начало сессии
+	Note    string   // служебное событие драйвера одной строкой
+	Stderr  string   // вывод мимо потока: stderr процесса или ошибка драйвера
+	// Unparsed — строка вывода, которую драйвер не разобрал.
+	Unparsed string
+	// Start — начало ответа модели: с него кэш промпта, записанный запросом,
+	// доступен соседним запросам. Ход модели — тоже её ответ.
+	Start     bool
+	Turn      *Turn      // ход модели
+	Replies   []Reply    // ответы инструментов
+	Result    *Result    // итог этапа
+	RateLimit *RateLimit // сведения о лимитах подписки
 }
 
-// Marks — признаки ошибки: у события и у его сообщения.
-type Marks struct {
-	IsError           bool            `json:"is_error"`
-	Error             json.RawMessage `json:"error"`
-	IsAPIErrorMessage bool            `json:"is_api_error_message"`
-	APIErrorStatus    *int            `json:"api_error_status"`
+// Session — начало сессии этапа.
+type Session struct {
+	ID    string
+	Model string   // пусто — драйвер модель не назвал
+	Tools int      // инструментов у сессии
+	MCP   []string // серверы MCP: «имя=статус»
 }
 
-func (m Marks) marked() bool {
-	return m.IsError || (len(m.Error) > 0 && string(m.Error) != "null") || m.IsAPIErrorMessage || m.APIErrorStatus != nil
+// Turn — ход модели: текст, размышления и вызовы инструментов по порядку.
+type Turn struct {
+	MessageID string // пусто — драйвер ходы не нумерует
+	Usage     *Usage // токены запроса хода; nil — не названы
+	Blocks    []Block
 }
 
-type Message struct {
-	ID      string      `json:"id"`
-	Content []Block     `json:"content"`
-	Usage   *TokenUsage `json:"usage"`
-	Marks
-}
-
-type TokenUsage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-}
-
-// Block — блок сообщения: текст, размышление, вызов инструмента или его ответ.
+// Block — часть хода: текст, размышление или вызов инструмента.
 type Block struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text"`
-	Thinking  string         `json:"thinking"`
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Input     map[string]any `json:"input"`
-	ToolUseID string         `json:"tool_use_id"`
-	IsError   bool           `json:"is_error"`
-	// Content у tool_result бывает и строкой, и массивом блоков.
-	Content json.RawMessage `json:"content"`
+	Text     string
+	Thinking string
+	Call     *Call
 }
 
-// ParseEvent — событие строки потока.
-func ParseEvent(raw []byte) (*Event, error) {
-	e := &Event{Raw: raw}
-	if err := json.Unmarshal(raw, e); err != nil {
-		return nil, err
-	}
-	if len(e.RawMessage) > 0 && e.RawMessage[0] == '{' {
-		if err := json.Unmarshal(e.RawMessage, &e.Message); err != nil {
-			return nil, err
-		}
-	}
-	return e, nil
+// Call — вызов инструмента.
+type Call struct {
+	ID    string
+	Name  string
+	Input map[string]any // аргументы, как их показывает лог
+	// Command — команда оболочки; File — файл, который вызов читает; Skill — скилл,
+	// который он грузит. Пусто — вызов не такой.
+	Command, File, Skill string
+}
+
+// Reply — ответ инструмента на вызов CallID.
+type Reply struct {
+	CallID  string
+	Text    string
+	IsError bool
+}
+
+// Result — итог этапа.
+type Result struct {
+	Text      string // ответ или текст ошибки
+	IsError   bool
+	APIStatus *int             // код ответа API, на котором этап сорвался; nil — не назван
+	Cost      *float64         // nil — драйвер цены не назвал
+	Usage     map[string]Usage // токены по моделям; nil — не названы
+}
+
+// RateLimit — сведения драйвера о лимитах подписки.
+type RateLimit struct {
+	Raw      json.RawMessage // как их прислал драйвер: так они ложатся в журнал срыва
+	Limits   *Limits         // nil — не разобраны
+	ResetsAt *int64          // сброс лимита; nil — не назван
 }
 
 // ownEvent — событие llamer о процессе этапа: вывод stderr или неразобранная строка.
 func ownEvent(typ, name, text string) *Event {
 	raw, _ := json.Marshal(map[string]string{"type": typ, "name": name, "text": text})
-	return &Event{Raw: raw, Type: typ, Text: text}
+	if typ == "stage_raw" {
+		return &Event{Raw: raw, Kind: typ, Unparsed: text}
+	}
+	return &Event{Raw: raw, Kind: typ, Stderr: text}
 }
 
 // CommandProtocol — имя команды записи, изменяющие подкоманды и префикс отказа.
@@ -115,11 +108,10 @@ type CommandProtocol struct {
 }
 
 const (
-	grey     = "\x1b[90m"
-	cyan     = "\x1b[36m"
-	yellow   = "\x1b[33m"
-	reset    = "\x1b[0m"
-	thinking = "размышляет…"
+	grey   = "\x1b[90m"
+	cyan   = "\x1b[36m"
+	yellow = "\x1b[33m"
+	reset  = "\x1b[0m"
 )
 
 func paint(color, text string, colors bool) string {
@@ -129,8 +121,8 @@ func paint(color, text string, colors bool) string {
 	return text
 }
 
-// shorten — текст в одну строку не длиннее limit символов.
-func shorten(text string, limit int) string {
+// Shorten — текст в одну строку не длиннее limit символов.
+func Shorten(text string, limit int) string {
 	flat := strings.Join(strings.Fields(text), " ")
 	if r := []rune(flat); len(r) > limit {
 		return string(r[:limit]) + "…"
@@ -180,85 +172,16 @@ func FilesIn(command, cwd string) []string {
 	return found
 }
 
-// toolResultText — блоки ответа не всегда текстовые: ToolSearch отвечает ссылками на инструменты.
-func toolResultText(b Block) string {
-	var text string
-	if json.Unmarshal(b.Content, &text) == nil {
-		return text
+func sessionLine(s *Session) string {
+	model := s.Model
+	if model == "" {
+		model = "модель не названа"
 	}
-	var parts []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		ToolName string `json:"tool_name"`
+	line := fmt.Sprintf("сессия: %s, инструментов %d", model, s.Tools)
+	if len(s.MCP) > 0 {
+		return line + ", MCP " + strings.Join(s.MCP, " ")
 	}
-	if json.Unmarshal(b.Content, &parts) != nil {
-		return string(b.Content)
-	}
-	var texts []string
-	for _, p := range parts {
-		if p.Type == "tool_reference" && p.Text == "" {
-			p.Text = p.ToolName
-		}
-		if p.Text != "" {
-			texts = append(texts, p.Text)
-		}
-	}
-	return strings.Join(texts, " ")
-}
-
-func (e *Event) blocks(typ string) []Block {
-	if e.Type != typ {
-		return nil
-	}
-	return e.Message.Content
-}
-
-func formatSystemEvent(e *Event) (string, bool) {
-	switch {
-	case e.Subtype == "status" && e.Status == "requesting":
-		return "", false
-	case e.Subtype == "thinking_tokens":
-		return thinking, true
-	case e.Subtype == "init":
-		model := e.Model
-		if model == "" {
-			model = "модель не названа"
-		}
-		var mcp []string
-		for _, s := range e.MCPServers {
-			mcp = append(mcp, s.Name+"="+s.Status)
-		}
-		line := fmt.Sprintf("сессия: %s, инструментов %d", model, len(e.Tools))
-		if len(mcp) > 0 {
-			return line + ", MCP " + strings.Join(mcp, " "), true
-		}
-		return line + ", MCP нет", true
-	case e.Subtype == "status":
-		if e.Status == "" {
-			return "статус: " + shorten(string(e.Raw), 160), true
-		}
-		return "статус: " + e.Status, true
-	}
-	detail := e.HookName
-	if detail == "" {
-		json.Unmarshal(e.RawMessage, &detail) // у system сообщение — строка; иначе подробности нет
-	}
-	subtype := e.Subtype
-	if subtype == "" {
-		subtype = "без подтипа"
-	}
-	line := "system/" + subtype
-	if detail != "" {
-		line += ": " + shorten(detail, 80)
-	}
-	return line, true
-}
-
-func errorDump(e *Event) string {
-	if strings.Contains(e.Subtype, "error") || e.marked() || e.Message.marked() {
-		return "ошибка от драйвера: " + shorten(string(e.Raw), 1500)
-	}
-	return ""
+	return line + ", MCP нет"
 }
 
 func describeCall(input map[string]any, cwd string) string {
@@ -287,64 +210,42 @@ func FormatStreamEvent(e *Event, colors bool, cwd, agent string) (string, bool) 
 	if agent != "" {
 		prefix = paint(grey, "["+agent+"] ", colors)
 	}
-	if failure := errorDump(e); failure != "" {
-		return prefix + paint(yellow, failure, colors), true
+	if e.Failed {
+		return prefix + paint(yellow, "ошибка от драйвера: "+Shorten(string(e.Raw), 1500), colors), true
 	}
-	switch e.Type {
-	case "system":
-		line, ok := formatSystemEvent(e)
-		if !ok {
-			return "", false
-		}
-		return prefix + paint(grey, line, colors), true
-	case "stage_stderr":
-		if text := strings.TrimSpace(e.Text); text != "" {
-			return prefix + paint(yellow, "stderr: "+text, colors), true
-		}
-		return "", false
-	case "stage_raw":
-		if strings.TrimSpace(e.Text) != "" {
-			return prefix + paint(yellow, "вывод не разобран: "+shorten(e.Text, 500), colors), true
-		}
-		return "", false
-	case "assistant":
-		var lines []string
-		for _, b := range e.blocks("assistant") {
-			switch b.Type {
-			case "text":
-				if text := strings.TrimSpace(b.Text); text != "" {
-					lines = append(lines, prefix+text)
-				}
-			case "thinking":
-				if strings.TrimSpace(b.Thinking) != "" {
-					lines = append(lines, prefix+paint(grey, "размышление: "+shorten(b.Thinking, 400), colors))
-				}
-			case "tool_use":
-				lines = append(lines, prefix+paint(cyan, "→ "+b.Name+": "+describeCall(b.Input, cwd), colors))
+	var lines []string
+	if e.Session != nil {
+		lines = append(lines, prefix+paint(grey, sessionLine(e.Session), colors))
+	}
+	if e.Note != "" {
+		lines = append(lines, prefix+paint(grey, e.Note, colors))
+	}
+	if text := strings.TrimSpace(e.Stderr); text != "" {
+		lines = append(lines, prefix+paint(yellow, "stderr: "+text, colors))
+	}
+	if strings.TrimSpace(e.Unparsed) != "" {
+		lines = append(lines, prefix+paint(yellow, "вывод не разобран: "+Shorten(e.Unparsed, 500), colors))
+	}
+	if e.Turn != nil {
+		for _, b := range e.Turn.Blocks {
+			switch {
+			case b.Call != nil:
+				lines = append(lines, prefix+paint(cyan, "→ "+b.Call.Name+": "+describeCall(b.Call.Input, cwd), colors))
+			case strings.TrimSpace(b.Text) != "":
+				lines = append(lines, prefix+strings.TrimSpace(b.Text))
+			case strings.TrimSpace(b.Thinking) != "":
+				lines = append(lines, prefix+paint(grey, "размышление: "+Shorten(b.Thinking, 400), colors))
 			}
-		}
-		return strings.Join(lines, "\n"), len(lines) > 0
-	case "user":
-		var lines []string
-		for _, b := range e.blocks("user") {
-			if b.Type != "tool_result" {
-				continue
-			}
-			mark := "←"
-			if b.IsError {
-				mark = paint(yellow, "← ошибка", colors)
-			}
-			lines = append(lines, prefix+mark+" "+shorten(toolResultText(b), 200))
-		}
-		return strings.Join(lines, "\n"), len(lines) > 0
-	case "stream_event":
-		// Пустой thinking-блок — единственный признак, что модель думает, когда
-		// содержимое размышлений не возвращается.
-		if e.Inner.Type == "content_block_start" && e.Inner.ContentBlock.Type == "thinking" {
-			return prefix + paint(grey, thinking, colors), true
 		}
 	}
-	return "", false
+	for _, r := range e.Replies {
+		mark := "←"
+		if r.IsError {
+			mark = paint(yellow, "← ошибка", colors)
+		}
+		lines = append(lines, prefix+mark+" "+Shorten(r.Text, 200))
+	}
+	return strings.Join(lines, "\n"), len(lines) > 0
 }
 
 // Stats — статистика этапа по его событиям.
@@ -381,47 +282,50 @@ func StatsFrom(events []*Event, cwd string, skills, commands []string, protocol 
 }
 
 func (s *Stats) add(e *Event) {
-	if e.Type == "assistant" {
-		if e.Message.ID != "" {
-			s.messages[e.Message.ID] = true
+	if e.Turn != nil {
+		if e.Turn.MessageID != "" {
+			s.messages[e.Turn.MessageID] = true
 		} else {
 			s.looseTurns++
 		}
-	}
-	for _, b := range e.blocks("assistant") {
-		if b.Type != "tool_use" {
-			continue
-		}
-		if _, ok := s.calls[b.Name]; !ok {
-			s.callNames = append(s.callNames, b.Name)
-		}
-		s.calls[b.Name]++
-		if path, ok := b.Input["file_path"].(string); b.Name == "Read" && ok && path != "" {
-			s.files[RelativeToCwd(path, s.cwd)] = true
-		}
-		if command, ok := b.Input["command"].(string); b.Name == "Bash" && ok && command != "" {
-			for _, m := range s.commandCall.FindAllStringSubmatch(command, -1) {
-				if slices.Contains(s.protocol.Writes, m[1]) {
-					s.commandWrites[b.ID] = true
-				}
-			}
-			for _, f := range FilesIn(command, s.cwd) {
-				s.files[f] = true
+		for _, b := range e.Turn.Blocks {
+			if b.Call != nil {
+				s.addCall(b.Call)
 			}
 		}
-		if skill, ok := b.Input["skill"].(string); b.Name == "Skill" && ok && skill != "" {
-			s.skills[skill] = true
-		}
 	}
-	for _, b := range e.blocks("user") {
-		if b.Type != "tool_result" || !b.IsError {
+	for _, r := range e.Replies {
+		if !r.IsError {
 			continue
 		}
 		s.errors++
 		// Отказ команды агент чинит повтором; отказ в запуске теряет запись.
-		if s.commandWrites[b.ToolUseID] && (s.protocol.RefusalPrefix == "" || !s.refusalLine.MatchString(toolResultText(b))) {
+		if s.commandWrites[r.CallID] && (s.protocol.RefusalPrefix == "" || !s.refusalLine.MatchString(r.Text)) {
 			s.LostWrites++
 		}
+	}
+}
+
+func (s *Stats) addCall(c *Call) {
+	if _, ok := s.calls[c.Name]; !ok {
+		s.callNames = append(s.callNames, c.Name)
+	}
+	s.calls[c.Name]++
+	if c.File != "" {
+		s.files[RelativeToCwd(c.File, s.cwd)] = true
+	}
+	if c.Command != "" {
+		for _, m := range s.commandCall.FindAllStringSubmatch(c.Command, -1) {
+			if slices.Contains(s.protocol.Writes, m[1]) {
+				s.commandWrites[c.ID] = true
+			}
+		}
+		for _, f := range FilesIn(c.Command, s.cwd) {
+			s.files[f] = true
+		}
+	}
+	if c.Skill != "" {
+		s.skills[c.Skill] = true
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -230,49 +231,65 @@ func line(event object) []byte {
 	return data
 }
 
-func assistant(block object) [][]byte {
-	return [][]byte{line(object{"type": "assistant", "message": object{"content": []object{block}}})}
+// streamUsage — usage итога в строке артефакта: поля и их порядок — как у `modelUsage` claude.
+type streamUsage struct {
+	InputTokens              int64 `json:"inputTokens"`
+	OutputTokens             int64 `json:"outputTokens"`
+	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
 }
 
-// normalizer — события `codex exec --json` в форме потока claude:
-// телеметрия, статистика этапа и разбор срыва читают один формат. Цены, usage
-// отдельных запросов и лимитов подписки в потоке нет — их после выхода берёт
-// AfterExit из журнала сессии. Строка не JSON уходит как есть: её покажет лог.
-func normalizer(model string) func([]byte) [][]byte {
+// assistant — ход модели из одного блока: content — блок в строке артефакта.
+func assistant(content object, b agent.Block) []*agent.Event {
+	return []*agent.Event{{Raw: line(object{"type": "assistant", "message": object{"content": []object{content}}}), Kind: "assistant",
+		Turn: &agent.Turn{Blocks: []agent.Block{b}}}}
+}
+
+// parser — события `codex exec --json` в общей форме. В артефакты этапа они ложатся
+// строками в форме потока claude: артефакты обоих драйверов читаются одинаково. Цены,
+// usage отдельных запросов и лимитов подписки в потоке нет — их после выхода берёт
+// AfterExit из журнала сессии. Строка не JSON не разбирается: её покажет лог.
+func parser(model string) func([]byte) ([]*agent.Event, error) {
 	lastMessage, turns := "", 0
-	return func(raw []byte) [][]byte {
+	return func(raw []byte) ([]*agent.Event, error) {
 		if !json.Valid(raw) {
-			return [][]byte{raw}
+			return nil, errors.New("строка не JSON")
 		}
 		var e codexEvent
 		if json.Unmarshal(raw, &e) != nil {
-			return nil
+			return nil, nil
 		}
 		item := e.Item
 		switch e.Type {
 		case "thread.started":
-			return [][]byte{line(object{"type": "system", "subtype": "init", "session_id": e.ThreadID})}
+			return []*agent.Event{{Raw: line(object{"type": "system", "subtype": "init", "session_id": e.ThreadID}), Kind: "system/init",
+				Session: &agent.Session{ID: e.ThreadID}}}, nil
 		case "item.started":
 			if item.Type == "command_execution" {
-				return assistant(object{"type": "tool_use", "id": item.ID, "name": "Bash", "input": object{"command": item.Command}})
+				return assistant(object{"type": "tool_use", "id": item.ID, "name": "Bash", "input": object{"command": item.Command}},
+					agent.Block{Call: &agent.Call{ID: item.ID, Name: "Bash", Input: object{"command": item.Command}, Command: item.Command}}), nil
 			}
 		case "item.completed":
 			switch item.Type {
 			case "agent_message":
 				lastMessage = item.Text
 				turns++
-				return assistant(object{"type": "text", "text": lastMessage})
+				return assistant(object{"type": "text", "text": lastMessage}, agent.Block{Text: lastMessage}), nil
 			case "reasoning":
-				return assistant(object{"type": "thinking", "thinking": item.Text})
+				return assistant(object{"type": "thinking", "thinking": item.Text}, agent.Block{Thinking: item.Text}), nil
 			case "command_execution":
-				return [][]byte{line(object{"type": "user", "message": object{"content": []object{{"type": "tool_result",
-					"tool_use_id": item.ID, "is_error": item.ExitCode == nil || *item.ExitCode != 0, "content": item.AggregatedOutput}}}})}
+				failed := item.ExitCode == nil || *item.ExitCode != 0
+				return []*agent.Event{{Raw: line(object{"type": "user", "message": object{"content": []object{{"type": "tool_result",
+					"tool_use_id": item.ID, "is_error": failed, "content": item.AggregatedOutput}}}}), Kind: "user",
+					Replies: []agent.Reply{{CallID: item.ID, Text: item.AggregatedOutput, IsError: failed}}}}, nil
 			}
 		case "turn.completed":
 			u := e.Usage
-			return [][]byte{line(object{"type": "result", "subtype": "success", "is_error": false, "result": lastMessage, "num_turns": turns,
-				"total_cost_usd": nil, "modelUsage": object{model: agent.Usage{InputTokens: u.InputTokens - u.CachedInputTokens,
-					OutputTokens: u.OutputTokens, CacheReadInputTokens: u.CachedInputTokens, CacheCreationInputTokens: u.CacheWriteInputTokens}}})}
+			usage := streamUsage{InputTokens: u.InputTokens - u.CachedInputTokens, OutputTokens: u.OutputTokens,
+				CacheReadInputTokens: u.CachedInputTokens, CacheCreationInputTokens: u.CacheWriteInputTokens}
+			return []*agent.Event{{Raw: line(object{"type": "result", "subtype": "success", "is_error": false, "result": lastMessage, "num_turns": turns,
+				"total_cost_usd": nil, "modelUsage": object{model: usage}}), Kind: "result/success",
+				Result: &agent.Result{Text: lastMessage, Usage: map[string]agent.Usage{model: agent.Usage(usage)}}}}, nil
 		case "turn.failed":
 			var failure struct {
 				Message string `json:"message"`
@@ -280,15 +297,16 @@ func normalizer(model string) func([]byte) [][]byte {
 			if json.Unmarshal(e.Error, &failure) != nil || failure.Message == "" {
 				failure.Message = "turn failed"
 			}
-			return [][]byte{line(object{"type": "result", "subtype": "error", "is_error": true, "result": failure.Message, "total_cost_usd": nil})}
+			return []*agent.Event{{Raw: line(object{"type": "result", "subtype": "error", "is_error": true, "result": failure.Message, "total_cost_usd": nil}),
+				Kind: "result/error", Failed: true, Result: &agent.Result{Text: failure.Message, IsError: true}}}, nil
 		case "error":
 			text := string(raw)
 			if e.Message != nil {
 				text = *e.Message
 			}
-			return [][]byte{line(object{"type": "stage_stderr", "text": text})}
+			return []*agent.Event{{Raw: line(object{"type": "stage_stderr", "text": text}), Kind: "stage_stderr", Stderr: text}}, nil
 		}
-		return nil
+		return nil, nil
 	}
 }
 func skillFiles(dir string, depth int) []string {
@@ -439,7 +457,7 @@ func (c *launcher) sandboxed(a drivers.LaunchArgs) (*agent.Launch, error) {
 	return &agent.Launch{
 		Command: c.settings.Bin, Argv: argv, Env: append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome),
 		Input: a.Prompt, Model: model, Effort: effort,
-		Normalize: normalizer(model),
+		Parse: parser(model),
 		AfterExit: func(sessionID string) agent.Late {
 			return lateOf(model, sessionRecords(codexHome, "-"+sessionID+".jsonl"))
 		},
@@ -519,7 +537,7 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	env := append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome)
 	return &agent.Launch{
 		Command: c.settings.Bin, Argv: argv, Env: env, Input: a.Prompt, Model: model, Effort: effort,
-		Normalize: normalizer(model),
+		Parse:     parser(model),
 		AfterExit: func(string) agent.Late { return lateOf(model, sessionRecords(codexHome, "")) },
 		KeepSession: func(dir, sessionID string) (string, error) {
 			for _, name := range []string{"config.toml", "rules", "sessions"} {
