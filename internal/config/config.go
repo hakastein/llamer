@@ -147,17 +147,22 @@ func (e *Error) Error() string { return e.Message }
 //go:embed schema.json
 var schemaText []byte
 
-var schema = func() *jsonschema.Schema {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaText))
+var schema = mustCompile("schema.json", schemaText)
+
+// mustCompile — встроенная схема под постоянным адресом: относительное имя
+// библиотека считает от текущего каталога и с не-ASCII в его пути не находит добавленную схему.
+func mustCompile(name string, text []byte) *jsonschema.Schema {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(text))
 	if err != nil {
 		panic(err)
 	}
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("schema.json", doc); err != nil {
+	url := "file:///llamer/" + name
+	if err := c.AddResource(url, doc); err != nil {
 		panic(err)
 	}
-	return c.MustCompile("schema.json")
-}()
+	return c.MustCompile(url)
+}
 
 // Проверенный схемой конфиг: nil — ключа нет.
 type (
@@ -194,6 +199,27 @@ type (
 )
 
 type reader struct{ file string }
+
+// caught — ошибка конфига, брошенная reader.fail, становится возвращённой.
+func caught(err *error) {
+	if p := recover(); p != nil {
+		e, ok := p.(*Error)
+		if !ok {
+			panic(p)
+		}
+		*err = e
+	}
+}
+
+// validate — нарушения схемы бросаются ошибкой конфига; иная ошибка проверки возвращается как есть.
+func (r reader) validate(s *jsonschema.Schema, doc any) error {
+	err := s.Validate(doc)
+	var invalid *jsonschema.ValidationError
+	if errors.As(err, &invalid) {
+		r.fail("", strings.Join(schemaError(invalid), "; "))
+	}
+	return err
+}
 
 func (r reader) fail(path, message string) {
 	if path != "" {
@@ -415,26 +441,14 @@ func schemaError(e *jsonschema.ValidationError) []string {
 // останавливает его, а не выключает молча то, что человек думал включить.
 // order — ключи `stages` в порядке файла: свои этапы идут в нём.
 func Parse(data []byte, order []string, file string, env map[string]string, source string) (config *Config, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			e, ok := p.(*Error)
-			if !ok {
-				panic(p)
-			}
-			err = e
-		}
-	}()
+	defer caught(&err)
 	r := reader{source}
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
 	if err != nil {
 		return nil, &Error{fmt.Sprintf("%s: не читается как JSON (%s)", source, err)}
 	}
-	if err := schema.Validate(doc); err != nil {
-		var invalid *jsonschema.ValidationError
-		if !errors.As(err, &invalid) {
-			return nil, err
-		}
-		r.fail("", strings.Join(schemaError(invalid), "; "))
+	if err := r.validate(schema, doc); err != nil {
+		return nil, err
 	}
 	var raw rawConfig
 	if err := json.Unmarshal(data, &raw); err != nil {

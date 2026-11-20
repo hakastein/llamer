@@ -50,6 +50,8 @@ const Help = `llamer — агентное ревью изменений: оце�
   --dry-run                   ничего не публиковать: отчёт вместо --publish (только с --mr)
   --since-last                только изменения после прошлого прогона LLaMer в MR (только с --mr)
 
+Workflow агента: llamer run <каталог workflow> — справка: llamer run --help
+
 Прочее:
   --config <файл>             конфиг вместо .llamer.json в корне репозитория; .llamer.local.json рядом с ним накладывается
   --preflight                 проверить окружение и напечатать YAML пробелов, прогон не начинать
@@ -431,8 +433,8 @@ func main(ctx context.Context, options *Options, stdout io.Writer) (bool, error)
 	return ok, err
 }
 
-// run — прогон llamer; возвращает код выхода.
-func runMain(options *Options, stdout io.Writer) (code int) {
+// runMain — прогон body с отменой по SIGINT и SIGTERM; возвращает код выхода.
+func runMain(body func(ctx context.Context) (bool, error)) (code int) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signals := make(chan os.Signal, 1)
@@ -453,7 +455,7 @@ func runMain(options *Options, stdout io.Writer) (code int) {
 			code = fail(fmt.Sprint(p))
 		}
 	}()
-	ok, err := main(ctx, options, stdout)
+	ok, err := body(ctx)
 	if sig := interrupted.Load(); sig != 0 {
 		return 128 + int(sig)
 	}
@@ -485,7 +487,7 @@ func Execute(argv []string, stdout io.Writer) int {
 			if err := o.check(cmd.Flags().Changed); err != nil {
 				return err
 			}
-			code = runMain(o, stdout)
+			code = runMain(func(ctx context.Context) (bool, error) { return main(ctx, o, stdout) })
 			return nil
 		}}
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -508,6 +510,7 @@ func Execute(argv []string, stdout io.Writer) int {
 	f.StringVar(&o.Config, "config", "", "")
 	f.BoolVar(&o.Preflight, "preflight", false, "")
 	root.AddCommand(
+		runCommand(stdout, &code),
 		&cobra.Command{Use: HarnessCommand, Hidden: true, DisableFlagParsing: true,
 			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
 		&cobra.Command{Use: ClaudeHook, Hidden: true,

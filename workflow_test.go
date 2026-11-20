@@ -1,0 +1,137 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// workflowProject — проект с workflow из двух этапов: writer отвечает по схеме
+// writerAnswer (заглушка отдаёт строку `ANSWER:` задания), checker получает его ответ.
+func workflowProject(t *testing.T, writerPrompt string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, ".llamer.json", `{"version": 2, "driver": "claude"}`)
+	write(t, root, "wf/workflow.json", `{"version": 1, "stages": [
+		{"name": "writer", "driver": "claude", "model": "m", "effort": "low", "prompt": "writer.md", "timeout": "1m", "schema": "joke.schema.json"},
+		{"name": "checker", "driver": "claude", "model": "m", "effort": "low", "prompt": "checker.md", "timeout": "1m"}]}`)
+	write(t, root, "wf/joke.schema.json", `{"type": "object", "additionalProperties": false, "required": ["joke"],
+		"properties": {"joke": {"type": "string"}}}`)
+	write(t, root, "wf/writer.md", writerPrompt)
+	write(t, root, "wf/checker.md", "Проверь: {{.Answers.writer}}\nANSWER: верно\n")
+	return root
+}
+
+var runWorkflowArgs = []string{"run", "wf", "--config", ".llamer.json"}
+
+type workflowResult struct {
+	OK      bool `json:"ok"`
+	Failure *struct {
+		Stage, Reason string
+	} `json:"failure"`
+	Stages []struct {
+		Name   string          `json:"name"`
+		Answer json.RawMessage `json:"answer"`
+	} `json:"stages"`
+}
+
+// lines — строки JSON вывода llamer run по типу.
+func lines(t *testing.T, stdout string) map[string][]map[string]any {
+	t.Helper()
+	out := map[string][]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			t.Fatalf("строка вывода не JSON: %v\n%s", err, line)
+		}
+		out[v["type"].(string)] = append(out[v["type"].(string)], v)
+	}
+	return out
+}
+
+func lastResult(t *testing.T, stdout string) workflowResult {
+	t.Helper()
+	all := strings.Split(strings.TrimSpace(stdout), "\n")
+	var r workflowResult
+	if err := json.Unmarshal([]byte(all[len(all)-1]), &r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestWorkflowAnswerReachesNextStage(t *testing.T) {
+	t.Parallel()
+	root := workflowProject(t, "ANSWER: {\"joke\": \"Штирлиц шёл по коридору\"}\n")
+	r := run(t, root, runWorkflowArgs, nil)
+	equal(t, r.status, 0, "код\n"+r.stderr)
+	res := lastResult(t, r.stdout)
+	equal(t, res.OK, true, "ok")
+	equal(t, string(res.Stages[0].Answer), `{"joke":"Штирлиц шёл по коридору"}`, "ответ writer — JSON по схеме")
+	equal(t, string(res.Stages[1].Answer), `"верно"`, "ответ checker без схемы — строка")
+	equal(t, len(r.launches), 2, "оба этапа запускались")
+	match(t, r.launches[1]["prompt"].(string), `Проверь: \{"joke": "Штирлиц шёл по коридору"\}`, "checker получил ответ writer")
+	equal(t, slices.Contains(argvOf(r.launches[0]), "--json-schema"), true, "схема ушла драйверу writer")
+	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
+	events := lines(t, r.stdout)["event"]
+	equal(t, events[0]["stage"], any("writer"), "событие этапа названо этапом")
+	data := read(t, filepath.Join(lines(t, r.stdout)["result"][0]["run"].(string), "result.json"))
+	equal(t, strings.TrimSpace(data), strings.TrimSpace(r.stdout[strings.LastIndex(strings.TrimSpace(r.stdout), "\n")+1:]), "result.json — последняя строка вывода")
+}
+
+func TestWorkflowAnswerOffSchemaFailsRun(t *testing.T) {
+	t.Parallel()
+	for name, answer := range map[string]string{"не по схеме": `{"joke": 5}`, "не JSON": "Штирлиц"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := run(t, workflowProject(t, "ANSWER: "+answer+"\n"), runWorkflowArgs, nil)
+			equal(t, r.status, 1, "код\n"+r.stderr)
+			res := lastResult(t, r.stdout)
+			equal(t, res.OK, false, "ok")
+			equal(t, res.Failure.Stage+" "+res.Failure.Reason, "writer schema", "сорван writer по схеме")
+			equal(t, string(res.Stages[0].Answer), "null", "ответа нет")
+			equal(t, len(r.launches), 1, "checker не запускался")
+		})
+	}
+}
+
+func TestWorkflowSigterm(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	root := workflowProject(t, "STUB_HANG\n")
+	done := make(chan *result)
+	go func() { done <- run(t, root, runWorkflowArgs, map[string]string{"TMPDIR": tmp}) }()
+	hang := filepath.Join(tmp, "hang.json")
+	for wait := 0; wait < 500; wait++ {
+		if _, err := os.Stat(hang); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var pids struct{ Llamer, Stage, Command int }
+	if err := json.Unmarshal([]byte(read(t, hang)), &pids); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pids.Llamer, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+
+	equal(t, r.status, 143, "код\n"+r.stderr)
+	noMatch(t, r.stdout, `"type":"result"`, "результата нет")
+	alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
+	// Убитые процессы ещё мгновение висят зомби, пока их не приберёт init.
+	for wait := 0; wait < 50 && (alive(pids.Stage) || alive(pids.Command)); wait++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	equal(t, alive(pids.Stage) || alive(pids.Command), false, "этап и его команда остановлены")
+	leftovers, _ := filepath.Glob(filepath.Join(tmp, "llamer-run-*"))
+	equal(t, len(leftovers), 0, "временное прогона убрано")
+}

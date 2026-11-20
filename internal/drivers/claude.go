@@ -204,6 +204,14 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 	if a.Shared != nil {
 		argv = append(argv, "--append-system-prompt-file", a.Shared.Path)
 	}
+	if a.Schema != "" {
+		// --json-schema ждёт текст схемы, а не путь к файлу.
+		schema, err := os.ReadFile(a.Schema)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, "--json-schema", string(schema))
+	}
 	argv = append(argv, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
 	level := a.Level
 	return &agent.Launch{
