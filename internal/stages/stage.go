@@ -8,13 +8,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
+	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
+	"github.com/hakastein/llamer/internal/skills"
 )
 
 // Toolkit — то, чем этапы прогона пользуются сообща.
@@ -22,7 +23,7 @@ type Toolkit struct {
 	Artifacts *artifacts.Run
 	Drivers   map[string]drivers.Driver
 	Materials *materials.Materials
-	Library   *Library
+	Library   *skills.Library
 	Config    *config.Config
 	Shared    *drivers.Shared
 	protocol  protocol
@@ -95,7 +96,7 @@ func (s *Stage) Responding() <-chan struct{} { return s.responding }
 func (s *Stage) markResponding() { s.markResponded.Do(func() { close(s.responding) }) }
 
 func (s *Stage) allow() []string {
-	var out []string
+	out := []string{harness.Name}
 	for _, a := range append(slices.Clone(s.tk.Config.Allow), s.settings.Allow...) {
 		if !slices.Contains(out, a) {
 			out = append(out, a)
@@ -211,7 +212,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), d.Name(), level, launch.Model, launch.Effort, utf8.RuneCountInString(prompt), promptPath)
 	logx.Logf("этап «%s» запускается: %s %s", s.Name(), launch.Command, strings.Join(launch.Argv, " "))
 
-	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding)
+	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding, agent.CommandProtocol{Name: harness.Name, Writes: harness.WriteCommands, RefusalPrefix: "отказ:"})
 	record := agent.Spawn(s.Name(), launch, m.Cwd, telemetry)
 	record.Key, record.Driver = s.settings.Key, s.driver
 	record.Resume = s.keepSession(launch, record.SessionID)

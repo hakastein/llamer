@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 )
 
@@ -30,6 +29,7 @@ type Telemetry struct {
 	cwd        string
 	skills     []string
 	commands   []string
+	protocol   CommandProtocol
 	stream     Stream
 	events     []*Event
 	lastShown  string
@@ -39,9 +39,9 @@ type Telemetry struct {
 	Traffic    *Traffic
 }
 
-func NewTelemetry(name string, commands, skills []string, cwd string, stream Stream, onResponse func()) *Telemetry {
+func NewTelemetry(name string, commands, skills []string, cwd string, stream Stream, onResponse func(), protocol CommandProtocol) *Telemetry {
 	t := &Telemetry{name: name, cwd: cwd, skills: skills, commands: commands, stream: stream, onResponse: onResponse,
-		Traffic: newTraffic(), stop: make(chan struct{})}
+		Traffic: newTraffic(), stop: make(chan struct{}), protocol: protocol}
 	startedAt := time.Now()
 	t.heartbeat = time.NewTicker(silenceReport)
 	go func(ticker *time.Ticker, stop chan struct{}) {
@@ -89,7 +89,7 @@ func (t *Telemetry) Finish(r *Record) *Record {
 	t.stopHeartbeat()
 	t.mu.Unlock()
 	t.stream.End()
-	stats := StatsFrom(t.events, t.cwd, t.skills, t.commands, harness.WriteCommands)
+	stats := StatsFrom(t.events, t.cwd, t.skills, t.commands, t.protocol)
 	for _, line := range stats.Lines() {
 		logx.Logf("[%s] %s", t.name, line)
 	}

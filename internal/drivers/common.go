@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/config"
+
 	"github.com/hakastein/llamer/internal/redact"
 )
 
@@ -104,7 +104,7 @@ type Gap struct {
 	Message string `yaml:"message"`
 }
 
-func binaryGap(name string, settings config.Driver) []Gap {
+func binaryGap(name string, settings Settings) []Gap {
 	err := exec.Command(settings.Bin, "--version").Run()
 	if err == nil {
 		return nil
@@ -126,7 +126,7 @@ type Shared struct{ Text, Path string }
 // LaunchArgs — что этап даёт драйверу для запуска.
 type LaunchArgs struct {
 	Stage         string
-	Level         config.Level
+	Level         Level
 	ProjectMemory bool
 	Allow         []string
 	Shared        *Shared
@@ -149,7 +149,8 @@ type Driver interface {
 
 // Setup — то, что прогон даёт драйверу при подготовке.
 type Setup struct {
-	Settings  config.Driver
+	Settings  Settings
+	Hook      string
 	Env       map[string]string
 	EnvOrder  []string
 	StageBin  string
@@ -166,14 +167,14 @@ func Prepare(name string, s Setup) (Driver, error) {
 }
 
 // Gaps — пробелы драйвера: бинарник и вход.
-func Gaps(name string, settings config.Driver, env map[string]string) []Gap {
+func Gaps(name string, settings Settings, env map[string]string) []Gap {
 	if name == "codex" {
 		return codexGaps(settings, env)
 	}
 	return claudeGaps(settings, env)
 }
 
-func settingsEnv(s config.Driver) []string {
+func settingsEnv(s Settings) []string {
 	var out []string
 	for _, kv := range s.Env {
 		out = append(out, kv[0]+"="+kv[1])

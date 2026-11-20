@@ -14,7 +14,6 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
@@ -23,6 +22,8 @@ import (
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	"github.com/hakastein/llamer/internal/report"
+	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
+	"github.com/hakastein/llamer/internal/skills"
 	"github.com/hakastein/llamer/internal/stages"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
@@ -98,7 +99,7 @@ type gap = drivers.Gap
 type ready struct {
 	root    string
 	config  *config.Config
-	library *stages.Library
+	library *skills.Library
 	gaps    []gap
 }
 
@@ -312,10 +313,14 @@ func (r *run) review() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
 	prepared := map[string]drivers.Driver{}
 	for _, name := range cfg.DriversInUse() {
 		d, err := drivers.Prepare(name, drivers.Setup{Settings: cfg.Drivers[name], Env: r.env, EnvOrder: r.envOrder,
-			StageBin: stageBin, RunSkills: runSkills, Tmp: r.tmp})
+			StageBin: stageBin, RunSkills: runSkills, Tmp: r.tmp, Hook: shellescape.Quote(exe) + " " + drivers.ClaudeHook})
 		if err != nil {
 			return false, err
 		}
@@ -505,7 +510,7 @@ func Execute(argv []string, stdout io.Writer) int {
 		&cobra.Command{Use: HarnessCommand, Hidden: true, DisableFlagParsing: true,
 			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
 		&cobra.Command{Use: drivers.ClaudeHook, Hidden: true,
-			RunE: func(*cobra.Command, []string) error { return drivers.HookMain(os.Stdin, os.Stdout) }},
+			RunE: func(*cobra.Command, []string) error { return harness.HookMain(os.Stdin, os.Stdout) }},
 	)
 	root.SetArgs(argv)
 	root.SetOut(os.Stderr)

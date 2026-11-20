@@ -13,8 +13,7 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/harness"
+
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -189,11 +188,10 @@ func quoteTOML(value any) string {
 }
 
 // RulesFor — разрешённая правилом команда исполняется вне песочницы read-only:
-// только так харнесс пишет журнал прогона, а команды `allow` ходят туда, куда
-// песочница не пускает (сокет демона, сеть).
+// команды `allow` получают доступ за пределами песочницы (сокет демона, сеть).
 func RulesFor(allow []string) string {
 	var rules []string
-	for _, c := range append([]string{harness.Name}, allow...) {
+	for _, c := range allow {
 		rules = append(rules, "prefix_rule(pattern="+quoteTOML(strings.Split(c, " "))+`, decision="allow")`)
 	}
 	return strings.Join(rules, "\n") + "\n"
@@ -315,7 +313,7 @@ func treeSkills(cwd string) []string {
 	return out
 }
 
-func codexGaps(settings config.Driver, env map[string]string) []Gap {
+func codexGaps(settings Settings, env map[string]string) []Gap {
 	if missing := binaryGap("codex", settings); missing != nil {
 		return missing
 	}
@@ -333,7 +331,7 @@ func codexGaps(settings config.Driver, env map[string]string) []Gap {
 }
 
 type codex struct {
-	settings  config.Driver
+	settings  Settings
 	env       []string
 	runSkills string
 	tmp       string
@@ -391,7 +389,7 @@ func (c *codex) Launch(a LaunchArgs) (*agent.Launch, error) {
 	}
 	var config struct {
 		DeveloperInstructions string `toml:"developer_instructions,omitempty"`
-		// Login-шелл читает /etc/profile образа и сбрасывает PATH — команда review из него пропадает.
+		// Login-шелл читает /etc/profile образа и сбрасывает PATH — команды запуска из него пропадают.
 		AllowLoginShell bool `toml:"allow_login_shell"`
 		Skills          struct {
 			Config []skillToggle `toml:"config,omitempty"`

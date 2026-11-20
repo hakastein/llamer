@@ -1,10 +1,7 @@
-// Package artifacts — файловая раскладка одного прогона: журналы этапов,
-// задания, промпты, сырые потоки, стоимость и отчёт — под одним каталогом со
-// штампом времени.
+// Package artifacts — промпты, потоки событий, сессии и расход прогона.
 package artifacts
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -18,8 +15,7 @@ import (
 	"time"
 
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/domain"
-	"github.com/hakastein/llamer/internal/harness"
+
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/redact"
 )
@@ -34,9 +30,7 @@ func StageSlug(name string) string {
 
 // Run — каталог артефактов прогона.
 type Run struct {
-	Path       string
-	journalDir string
-	briefsDir  string
+	Path string
 }
 
 // Open — каталог прогона `<дата>_<время>`, занятое имя — с суффиксом `-2`,
@@ -64,16 +58,9 @@ func Open(root string, startedAt time.Time) (*Run, error) {
 		}
 		path = filepath.Join(base, fmt.Sprintf("%s-%d", stamp, n))
 	}
-	r := &Run{Path: path, journalDir: filepath.Join(path, "journal"), briefsDir: filepath.Join(path, "briefs")}
-	for _, dir := range []string{r.journalDir, r.briefsDir} {
-		if err := os.MkdirAll(dir, 0o777); err != nil {
-			return nil, err
-		}
-	}
+	r := &Run{Path: path}
 	return r, nil
 }
-
-func (r *Run) OpenJournal(name string) *domain.Journal { return domain.OpenJournal(r.journalDir, name) }
 
 type stream struct {
 	mu     sync.Mutex
@@ -135,15 +122,6 @@ func (r *Run) SessionDir(stageName string) string {
 	return filepath.Join(r.Path, "sessions", StageSlug(stageName))
 }
 
-func (r *Run) SaveBrief(stageKey string, brief *harness.Brief) (string, error) {
-	data, err := json.MarshalIndent(brief, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(r.briefsDir, stageKey+".json")
-	return path, os.WriteFile(path, append(data, '\n'), 0o666)
-}
-
 func (r *Run) SaveDiff(name, text string) (string, error) {
 	path := filepath.Join(r.Path, name+".diff")
 	return path, os.WriteFile(path, []byte(text), 0o666)
@@ -152,32 +130,6 @@ func (r *Run) SaveDiff(name, text string) (string, error) {
 func (r *Run) SaveText(name, text string) (string, error) {
 	path := filepath.Join(r.Path, name)
 	return path, os.WriteFile(path, []byte(redact.Secrets(text)), 0o666)
-}
-
-// RedactJournals — журналы пишет харнесс в окружении этапа, где секретов
-// llamer нет, — и вымарать их там нечем. Вымарываются после прогона; сбой —
-// ошибка прогона: невымаранный журнал иначе молча остался бы в артефактах.
-func (r *Run) RedactJournals() error {
-	entries, err := os.ReadDir(r.journalDir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		path := filepath.Join(r.journalDir, e.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if redacted := redact.Secrets(string(data)); redacted != string(data) {
-			if err := os.WriteFile(path, []byte(redacted), 0o666); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func (r *Run) ReportCost(records []*agent.Record, elapsedMs int64) {

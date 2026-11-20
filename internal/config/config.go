@@ -17,6 +17,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	jsonpatch "github.com/evanphx/json-patch/v5"
+	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 )
@@ -70,17 +71,10 @@ func builtinOf(key string) *builtin {
 func IsBuiltin(key string) bool { return builtinOf(key) != nil }
 
 // Level — модель и усилие одного уровня лестницы драйвера.
-type Level struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
-}
+type Level = drivers.Level
 
 // Driver — настройки драйвера.
-type Driver struct {
-	Bin    string
-	Env    [][2]string
-	Levels []Level
-}
+type Driver = drivers.Settings
 
 // Drivers — встроенные драйверы и их умолчания.
 var Drivers = []string{"claude", "codex"}
@@ -88,18 +82,18 @@ var Drivers = []string{"claude", "codex"}
 // Defaults — умолчания драйверов: лестница своя у каждого, номер уровня один.
 var Defaults = map[string]Driver{
 	"claude": {Bin: "claude", Levels: []Level{
-		{"claude-sonnet-5-5", "medium"},
-		{"claude-sonnet-5-5", "high"},
-		{"claude-opus-5-5", "low"},
-		{"claude-opus-5-5", "medium"},
-		{"claude-opus-5-5", "high"},
+		{Model: "claude-sonnet-5-5", Effort: "medium"},
+		{Model: "claude-sonnet-5-5", Effort: "high"},
+		{Model: "claude-opus-5-5", Effort: "low"},
+		{Model: "claude-opus-5-5", Effort: "medium"},
+		{Model: "claude-opus-5-5", Effort: "high"},
 	}},
 	"codex": {Bin: "codex", Levels: []Level{
-		{"gpt-6.1-sol", "medium"},
-		{"gpt-6.1-sol", "high"},
-		{"gpt-6.1-sol", "xhigh"},
-		{"gpt-6.1-sol", "max"},
-		{"gpt-6.1-sol", "ultra"},
+		{Model: "gpt-6.1-sol", Effort: "medium"},
+		{Model: "gpt-6.1-sol", Effort: "high"},
+		{Model: "gpt-6.1-sol", Effort: "xhigh"},
+		{Model: "gpt-6.1-sol", Effort: "max"},
+		{Model: "gpt-6.1-sol", Effort: "ultra"},
 	}},
 }
 
