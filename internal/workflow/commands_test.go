@@ -43,7 +43,12 @@ type journalLine struct {
 // serve — брокер команд workflow с хостами hosts и программами programs на сокете во временном каталоге.
 func serve(t *testing.T, hosts, programs []string) (socket string, failed chan error, journalOf func() []journalLine) {
 	t.Helper()
-	dir := t.TempDir()
+	// Не t.TempDir(): имя теста в пути делает путь сокета длиннее лимита unix-сокета macOS (104 байта).
+	dir, err := os.MkdirTemp("", "wf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	for name, text := range map[string]string{"note.js": noteScript, "probe.js": probeScript} {
 		if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o777); err != nil {
 			t.Fatal(err)
