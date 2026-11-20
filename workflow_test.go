@@ -69,15 +69,15 @@ func lastResult(t *testing.T, stdout string) workflowResult {
 
 func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	t.Parallel()
-	root := workflowProject(t, "ANSWER: {\"joke\": \"Штирлиц шёл по коридору\"}\n")
+	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору\"}\n")
 	r := run(t, root, runWorkflowArgs, nil)
 	equal(t, r.status, 0, "код\n"+r.stderr)
 	res := lastResult(t, r.stdout)
 	equal(t, res.OK, true, "ok")
-	equal(t, string(res.Stages[0].Answer), `{"joke":"Штирлиц шёл по коридору"}`, "ответ writer — JSON по схеме")
+	equal(t, string(res.Stages[0].Answer), `{"joke":"кот шёл по коридору"}`, "ответ writer — JSON по схеме")
 	equal(t, string(res.Stages[1].Answer), `"верно"`, "ответ checker без схемы — строка")
 	equal(t, len(r.launches), 2, "оба этапа запускались")
-	match(t, r.launches[1]["prompt"].(string), `Проверь: \{"joke": "Штирлиц шёл по коридору"\}`, "checker получил ответ writer")
+	match(t, r.launches[1]["prompt"].(string), `Проверь: \{"joke": "кот шёл по коридору"\}`, "checker получил ответ writer")
 	equal(t, slices.Contains(argvOf(r.launches[0]), "--json-schema"), true, "схема ушла драйверу writer")
 	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
 	events := lines(t, r.stdout)["event"]
@@ -88,7 +88,7 @@ func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 
 func TestWorkflowAnswerOffSchemaFailsRun(t *testing.T) {
 	t.Parallel()
-	for name, answer := range map[string]string{"не по схеме": `{"joke": 5}`, "не JSON": "Штирлиц"} {
+	for name, answer := range map[string]string{"не по схеме": `{"joke": 5}`, "не JSON": "кот"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			r := run(t, workflowProject(t, "ANSWER: "+answer+"\n"), runWorkflowArgs, nil)
