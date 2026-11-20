@@ -11,4 +11,6 @@ type Settings struct {
 	Bin    string
 	Env    [][2]string
 	Levels []Level
+	// Readable — каталоги, которые нужны песочнице `llamer run` всегда: сам драйвер и его рантайм.
+	Readable []string
 }

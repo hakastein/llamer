@@ -194,9 +194,10 @@ type (
 		Plan     *string `json:"plan"`
 	}
 	rawDriver struct {
-		Bin    string            `json:"bin"`
-		Env    map[string]string `json:"env"`
-		Levels []Level           `json:"levels"`
+		Bin      string            `json:"bin"`
+		Env      map[string]string `json:"env"`
+		Levels   []Level           `json:"levels"`
+		Readable []string          `json:"readable"`
 	}
 	rawStage struct {
 		Task    string     `json:"task"`
@@ -298,6 +299,9 @@ func (r reader) driver(name string, raw *rawDriver, env map[string]string) Drive
 	}
 	if raw.Levels != nil {
 		d.Levels = raw.Levels
+	}
+	for i, p := range raw.Readable {
+		d.Readable = append(d.Readable, r.expandPath(p, env, filepath.Dir(r.file), fmt.Sprintf("drivers.%s.readable[%d]", name, i)))
 	}
 	return d
 }

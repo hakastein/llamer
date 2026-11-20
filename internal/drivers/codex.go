@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -369,7 +368,7 @@ func (c *codex) SkillRef(name string) string { return "$" + name }
 func (c *codex) Quote() string { return `'"'"'` }
 
 // sandboxed — этап `llamer run`. Песочница — профиль прав codex: чтение только каталога
-// контекста, Readable, скиллов этапа, HOME этапа и установки codex, сеть закрыта прокси без
+// контекста, Readable этапа и драйвера, скиллов этапа и HOME этапа, сеть закрыта прокси без
 // разрешённых доменов, unix-сокеты открыты. --sandbox read-only сокеты закрывает и профиль не
 // применяет. CODEX_HOME общий: копия auth.json разорвала бы цепочку обновления токена входа.
 // Его config.toml и правила этап не читает — настройки llamer идут аргументами -c, — а журнал
@@ -385,19 +384,8 @@ func (c *codex) sandboxed(a LaunchArgs) (*agent.Launch, error) {
 			return nil, err
 		}
 	}
-	bin, err := exec.LookPath(c.settings.Bin)
-	if err == nil {
-		bin, err = filepath.EvalSymlinks(bin)
-	}
-	if err != nil {
-		return nil, err
-	}
-	// Песочница запускает команды самим codex: без его установки в readable bwrap его не найдёт.
-	// shortcut: установка — два уровня над настоящим файлом бинаря (npm: пакет @openai/codex с
-	// нативным codex внутри); обёртка-скрипт вне установки открыла бы чтение своего каталога —
-	// тогда задавать drivers.codex.bin самим codex.
 	readable := []string{`":root" = "deny"`, `":minimal" = "read"`}
-	for _, dir := range append(a.Sandbox.paths(a, c.runSkills), home, filepath.Dir(filepath.Dir(bin))) {
+	for _, dir := range append(append(a.Sandbox.paths(a, c.runSkills), home), c.settings.Readable...) {
 		readable = append(readable, quoteTOML(dir)+` = "read"`)
 	}
 	argv := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",

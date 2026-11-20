@@ -189,7 +189,7 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 		// рабочий каталог и --add-dir. Команды закрывает песочница ОС (bubblewrap и socat), а без
 		// неё этап не стартует.
 		allowed = []string{"Skill"}
-		readable := a.Sandbox.paths(a, c.runSkills)
+		readable := append(a.Sandbox.paths(a, c.runSkills), c.settings.Readable...)
 		if plugin != "" {
 			readable = append(readable, plugin)
 		}
