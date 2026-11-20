@@ -2,6 +2,7 @@ const llamer = require("llamer");
 const repo = require("../lib/repo.js");
 const {number} = require("../lib/diff.js");
 const {files, taskDiff} = require("../lib/task.js");
+const threads = require("../lib/threads.js");
 
 exports.definition = {
   short: "Gather the review materials",
@@ -36,6 +37,11 @@ exports.command = (flags) => {
   }
   parts.push("Every line of the diff starts with its line number in the tree you stand in; a removed line has none." +
     " The file path and that number are the `path:line` the tools and `review` take.\n" + tagged("diff", cut));
+  // Треды merge request записывает `gitlab threads`, если этап с ним идёт раньше.
+  const said = threads.format(llamer.results().find((r) => r.value.type === "threads")?.value.threads ?? []);
+  if (said) {
+    parts.push(tagged("threads", said));
+  }
   if (flags.task) {
     parts.push("The business task, set by the person who asked for the work and written before the code existed." +
       " The change is checked against it.\n" + tagged("business_task", flags.task));

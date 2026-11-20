@@ -16,8 +16,6 @@ what is in it.
 The catalogue is in the skill above. Each file of the change is taken through it,
 and an entry that bites turns into a finding at the line it bites on.
 
-The review is closed by exactly one `review summary`.
-
 ## Your Plan
 
 Present a plan before your first search: the questions this stage has to answer, and where each answer comes from — the diff in front of you, a file to open, or a text search.
