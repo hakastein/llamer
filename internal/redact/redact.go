@@ -1,5 +1,7 @@
 // Package redact вымарывает значения секретных переменных окружения из текста,
 // уходящего наружу.
+//
+// shortcut: остаются секрет на границе токенов JSON верхнего уровня (`secret","tail`), секрет из одних пробелов между токенами JSON и строка JSON в тексте после непарной кавычки, переделать, если такой вывод даст агент или сериализатор.
 package redact
 
 import (
@@ -29,10 +31,13 @@ type set struct {
 	replacer *strings.Replacer
 }
 
-var secrets = sync.OnceValue(func() *set {
+var secrets = sync.OnceValue(func() *set { return newSet(os.Environ()) })
+
+// newSet — секреты из записей окружения вида ИМЯ=значение.
+func newSet(environ []string) *set {
 	s := &set{}
 	var forms []string
-	for _, entry := range os.Environ() {
+	for _, entry := range environ {
 		name, value, _ := strings.Cut(entry, "=")
 		if utf8.RuneCountInString(value) < minSecretLength || !secretName.MatchString(name) {
 			continue
@@ -55,27 +60,31 @@ var secrets = sync.OnceValue(func() *set {
 	}
 	s.replacer = strings.NewReplacer(pairs...)
 	return s
-})
+}
 
 // Secrets — текст без значений секретов окружения процесса. Текст JSON
-// (целиком или построчно) остаётся JSON: вымарываются раскодированные строки.
-func Secrets(s string) string { return secrets().redact(s) }
+// (одно значение или несколько подряд, как JSONL) остаётся JSON: вымарываются
+// раскодированные строки.
+func Secrets(s string) string { return secrets().redact(s, false) }
 
-func (s *set) redact(text string) string {
+// redact — текст без секретов. Буквальная замена идёт после разбора: до него
+// она рвала бы запись строки внутри (`\u0000` и `0…` секрета) и прятала её
+// содержимое от разбора. В сыром JSON её нет вовсе: она ломала бы JSON и
+// ловила кавычку строки как конец секрета. decoded — раскодированная строка
+// JSON: она пишется обратно строкой, поэтому замена в ней безопасна даже для
+// JSON внутри и ловит секрет, который сам — JSON.
+// Глубина ограничена длиной: раскодированная строка короче своей записи.
+func (s *set) redact(text string, decoded bool) string {
 	if s.clean(text) {
 		return text
 	}
 	if redacted, ok := s.json(text); ok {
+		if decoded {
+			return s.replacer.Replace(redacted)
+		}
 		return redacted
 	}
-	if strings.Contains(text, "\n") {
-		lines := strings.Split(text, "\n")
-		for i, line := range lines {
-			lines[i] = s.redact(line)
-		}
-		return strings.Join(lines, "\n")
-	}
-	return s.replacer.Replace(text)
+	return s.replacer.Replace(s.literals(text))
 }
 
 // clean — в тексте нет секрета ни в какой записи: всякая запись, кроме
@@ -112,16 +121,16 @@ func (s *set) json(text string) (string, bool) {
 		if err != nil {
 			return "", false
 		}
-		var value string
+		var value, redacted string
 		switch t := token.(type) {
 		case string:
-			value = t
+			value, redacted = t, s.redact(t, true)
 		case json.Number:
 			value = string(t)
+			redacted = s.replacer.Replace(value) // запись числа и есть значение: разбор бы зациклился
 		default:
 			continue
 		}
-		redacted := s.value(value)
 		if redacted == value {
 			continue
 		}
@@ -140,17 +149,44 @@ func (s *set) json(text string) (string, bool) {
 	return b.String(), true
 }
 
-// value — раскодированная строка: объект или массив JSON в ней разбирается
-// тем же путём. Глубина ограничена длиной: каждый уровень вложения хотя бы
-// удваивает обратные косые черты.
-func (s *set) value(v string) string {
-	if s.clean(v) {
-		return v
-	}
-	if t := strings.TrimLeft(v, " \t\r\n"); t != "" && (t[0] == '{' || t[0] == '[') {
-		if redacted, ok := s.json(v); ok {
-			return redacted
+// literals — текст не JSON, где вымарана каждая строка JSON внутри (JSON после
+// префикса, JSON.stringify в логе). Кавычки спариваются слева направо; перевод
+// строки и другой управляющий символ рвут пару: в строке JSON их не бывает.
+func (s *set) literals(text string) string {
+	var b strings.Builder
+	done := 0
+	for i := strings.IndexByte(text, '"'); i >= 0; {
+		j := i + 1
+		for j < len(text) && text[j] != '"' && text[j] >= 0x20 {
+			if text[j] == '\\' {
+				j++
+			}
+			j++
 		}
+		if j >= len(text) {
+			break
+		}
+		if text[j] == '"' {
+			var v string
+			if json.Unmarshal([]byte(text[i:j+1]), &v) == nil {
+				if redacted := s.redact(v, true); redacted != v {
+					quoted, _ := json.Marshal(redacted)
+					b.WriteString(text[done:i])
+					b.Write(quoted)
+					done = j + 1
+				}
+			}
+			j++
+		}
+		next := strings.IndexByte(text[j:], '"')
+		if next < 0 {
+			break
+		}
+		i = j + next
 	}
-	return s.replacer.Replace(v)
+	if done == 0 {
+		return text
+	}
+	b.WriteString(text[done:])
+	return b.String()
 }
