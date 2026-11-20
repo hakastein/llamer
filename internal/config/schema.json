@@ -156,6 +156,9 @@
         "bin": {
           "$ref": "#/$defs/text"
         },
+        "readable": {
+          "$ref": "#/$defs/texts"
+        },
         "env": {
           "type": "object",
           "additionalProperties": {

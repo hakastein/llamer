@@ -44,10 +44,13 @@ type Workflow struct {
 	Dir     string
 	Library *skills.Library
 	Stages  []*WorkflowStage
+	// Readable — пути сверх каталога контекста, которые агент читает в песочнице: абсолютные.
+	Readable []string
 }
 
 type rawWorkflow struct {
-	Stages []struct {
+	Readable []string
+	Stages   []struct {
 		Name, Driver, Model, Effort, Prompt, Timeout, Schema string
 		Skills                                               []string
 	}
@@ -80,6 +83,15 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 		return nil, err
 	}
 	w = &Workflow{Dir: dir, Library: library}
+	for i, path := range raw.Readable {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if _, err := os.Stat(path); err != nil {
+			r.fail(fmt.Sprintf("readable[%d]", i), err.Error())
+		}
+		w.Readable = append(w.Readable, path)
+	}
 	answers := map[string]string{}
 	for i, s := range raw.Stages {
 		path := fmt.Sprintf("stages[%d]", i)

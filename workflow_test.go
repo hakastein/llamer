@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -151,4 +152,52 @@ func TestWorkflowSigterm(t *testing.T) {
 	equal(t, alive(pids.Stage) || alive(pids.Command), false, "этап и его команда остановлены")
 	leftovers, _ := filepath.Glob(filepath.Join(tmp, "llamer-run-*"))
 	equal(t, len(leftovers), 0, "временное прогона убрано")
+}
+
+// Песочница этапа llamer run доходит до аргументов обоих драйверов: каталог контекста и
+// путь из `readable` workflow открыты на чтение, остальное закрыто; CODEX_HOME — общий с
+// auth.json пользователя, а секреты окружения llamer агенту не передаются.
+func TestWorkflowSandboxReachesDrivers(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, ".llamer.json", `{"version": 2, "drivers": {"claude": {}, "codex": {}}}`)
+	write(t, root, "extra/notes.md", "заметки")
+	write(t, root, "wf/workflow.json", `{"version": 1, "readable": ["../extra"], "stages": [
+		{"name": "writer", "driver": "claude", "model": "m", "effort": "low", "prompt": "writer.md", "timeout": "1m"},
+		{"name": "checker", "driver": "codex", "model": "m", "effort": "low", "prompt": "checker.md", "timeout": "1m"}]}`)
+	write(t, root, "wf/writer.md", "ANSWER: кот\n")
+	write(t, root, "wf/checker.md", "ANSWER: проверено {{.Answers.writer}}\n")
+	extra := filepath.Join(root, "extra")
+
+	r := run(t, root, runWorkflowArgs, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
+
+	equal(t, r.status, 0, "код\n"+r.stderr)
+	equal(t, len(r.launches), 2, "оба этапа запускались")
+	claude, codex := argvOf(r.launches[0]), argvOf(r.launches[1])
+	var settings struct {
+		Sandbox struct {
+			Enabled    bool
+			Filesystem struct{ DenyRead, AllowRead []string }
+		}
+	}
+	if err := json.Unmarshal([]byte(claude[slices.Index(claude, "--settings")+1]), &settings); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, settings.Sandbox.Enabled, true, "песочница claude включена")
+	equal(t, slices.Equal(settings.Sandbox.Filesystem.DenyRead, []string{"/"}), true, "claude: чтение закрыто")
+	equal(t, slices.Contains(settings.Sandbox.Filesystem.AllowRead, root) && slices.Contains(settings.Sandbox.Filesystem.AllowRead, extra), true,
+		"claude: контекст и readable открыты команде")
+	equal(t, slices.Contains(claude, extra), true, "claude: readable открыт инструментам (--add-dir)")
+	equal(t, slices.Contains(strings.Fields(claude[slices.Index(claude, "--allowedTools")+1]), "Read"), false,
+		"claude: голый Read открыл бы любой путь")
+	match(t, strings.Join(codex, "\n"), `permissions\.llamer\.filesystem=\{":root" = "deny", ":minimal" = "read", "`+regexp.QuoteMeta(root)+`" = "read", "`+
+		regexp.QuoteMeta(extra)+`" = "read"`, "codex: чтение закрыто, контекст и readable открыты")
+	equal(t, r.launches[1]["codexHome"], any(r.env["CODEX_HOME"]), "codex: CODEX_HOME общий")
+	for _, l := range r.launches {
+		env := strs(l["env"])
+		equal(t, slices.Contains(env, "WORKFLOW_TOKEN") || slices.Contains(env, "GITLAB_TOKEN"), false, "секрет в окружении агента")
+	}
 }

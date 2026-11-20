@@ -134,7 +134,7 @@ func runWorkflow(ctx context.Context, o *RunOptions, stdout io.Writer) (ok bool,
 	if err != nil {
 		return false, err
 	}
-	result, err := (&workflow.Run{Context: ctx, Workflow: w, Drivers: prepared, Artifacts: run, Allow: cfg.Allow, Cwd: contextDir,
+	result, err := (&workflow.Run{Context: ctx, Workflow: w, Drivers: prepared, Artifacts: run, Cwd: contextDir,
 		Out: stdout}).Execute()
 	if err != nil {
 		return false, err

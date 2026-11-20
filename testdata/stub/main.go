@@ -9,7 +9,7 @@
 // STUB_EVENTS — строки потока, которые заглушка отдаёт этапу до своих;
 // STUB_SESSION — строки журнала сессии codex вместо обычных.
 //
-// Этап `llamer run` (без брифа) отвечает в форме claude строкой `ANSWER: …`
+// Этап `llamer run` (без брифа) отвечает в форме своего драйвера строкой `ANSWER: …`
 // своего задания, а с `STUB_HANG` в задании повисает; `STUB_BLOCK_RESULT` в задании
 // ставит каталог на место result.json прогонов в `.llamer/` рабочего каталога.
 package main
@@ -48,7 +48,7 @@ func main() {
 	}
 	input, _ := io.ReadAll(os.Stdin)
 	if os.Getenv("LLAMER_BRIEF") == "" {
-		os.Exit(workflowStage(args, string(input)))
+		os.Exit(workflowStage(driver, args, string(input)))
 	}
 	var b brief
 	data, err := os.ReadFile(os.Getenv("LLAMER_BRIEF"))
@@ -150,8 +150,8 @@ func hang() int {
 	return 1
 }
 
-func workflowStage(argv []string, prompt string) int {
-	record(m{"argv": argv, "prompt": prompt})
+func workflowStage(driver string, argv []string, prompt string) int {
+	record(m{"driver": driver, "argv": argv, "prompt": prompt, "env": envNames(), "codexHome": os.Getenv("CODEX_HOME")})
 	if strings.Contains(prompt, "STUB_HANG") {
 		return hang()
 	}
@@ -169,6 +169,12 @@ func workflowStage(argv []string, prompt string) int {
 		if text, ok := strings.CutPrefix(line, "ANSWER: "); ok {
 			answer = text
 		}
+	}
+	if driver == "codex" {
+		emit(m{"type": "thread.started", "thread_id": "stub-thread"})
+		emit(m{"type": "item.completed", "item": m{"id": "m0", "type": "agent_message", "text": answer}})
+		emit(m{"type": "turn.completed", "usage": m{"input_tokens": 100, "output_tokens": 10}})
+		return 0
 	}
 	emit(m{"type": "result", "subtype": "success", "is_error": false, "result": answer, "total_cost_usd": 0.25})
 	return 0

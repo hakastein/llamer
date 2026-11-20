@@ -24,7 +24,6 @@ type Run struct {
 	Workflow  *config.Workflow
 	Drivers   map[string]drivers.Driver
 	Artifacts *artifacts.Run
-	Allow     []string
 	Cwd       string    // каталог контекста: рабочий каталог агента
 	Out       io.Writer // события и результат строками JSON
 }
@@ -147,8 +146,8 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 	}
 	promptPath := r.Artifacts.SavePrompt(s.Name, prompt.String())
 	d := r.Drivers[s.Driver]
-	launch, err := d.Launch(drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Allow: r.Allow, Prompt: prompt.String(), Skills: s.Skills,
-		Cwd: r.Cwd, Schema: s.SchemaPath})
+	launch, err := d.Launch(drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Prompt: prompt.String(), Skills: s.Skills,
+		Cwd: r.Cwd, Schema: s.SchemaPath, Sandbox: &drivers.Sandbox{Readable: r.Workflow.Readable}})
 	if err != nil {
 		return nil, "", err
 	}

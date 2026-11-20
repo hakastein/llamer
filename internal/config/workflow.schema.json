@@ -11,6 +11,13 @@
     "version": {
       "const": 1
     },
+    "readable": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
     "stages": {
       "type": "array",
       "minItems": 1,
