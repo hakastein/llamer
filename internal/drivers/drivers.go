@@ -6,7 +6,6 @@ package drivers
 
 import (
 	"context"
-	"io"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -28,19 +27,11 @@ type Driver interface {
 	Quote() string
 	// Prepare — драйвер, готовый к этапам прогона.
 	Prepare(s Setup) (Launcher, error)
-	// Commands — скрытые подкоманды llamer, которые зовёт процесс этапа драйвера.
-	Commands() []Command
 }
 
 // Launcher — драйвер, готовый к прогону: собирает запуск этапа.
 type Launcher interface {
 	Launch(a LaunchArgs) (*agent.Launch, error)
-}
-
-// Command — скрытая подкоманда llamer, которую зовёт процесс этапа, а не человек.
-type Command struct {
-	Name string
-	Run  func(stdin io.Reader, stdout io.Writer) error
 }
 
 var registry = map[string]Driver{}
@@ -102,18 +93,6 @@ type Setup struct {
 	StageBin  string
 	RunSkills string // каталог скиллов прогона или пусто
 	Tmp       string
-	// Calls — вызовы, которые этапы прогона делают сверх префиксов из Allow.
-	Calls Calls
-}
-
-// Calls — вызовы команд, которые этап разрешает по форме, а не только префиксом из
-// Allow: драйвер, чьи правила разрешений пропускают не всякий такой вызов, разрешает
-// его сам. Голова вызова — регулярное выражение RE2.
-type Calls struct {
-	// Commands — головы вызова одной простой командой со словами без раскрытий, любой длины.
-	Commands []string
-	// Loops — головы вызова в теле цикла по литеральным путям: аргументы — пути или переменная цикла.
-	Loops []string
 }
 
 // Shared — общая часть пакета: текст и файл с ним.

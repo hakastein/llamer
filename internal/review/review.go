@@ -37,10 +37,6 @@ type Options struct {
 
 type gap = drivers.Gap
 
-// Calls — вызовы харнесса сверх префикса из Allow: батч находок любой длины одной
-// командой и цикл `review diff` по путям.
-var Calls = drivers.Calls{Commands: []string{harness.Name + ` [a-z]+`}, Loops: []string{harness.Name + ` diff`}}
-
 // ready — итог проверки окружения.
 type ready struct {
 	root    string
@@ -186,7 +182,7 @@ func (r *run) review() (bool, error) {
 	if err := r.env.Wrapper(harness.Name, harness.Subcommand); err != nil {
 		return false, err
 	}
-	prepared, err := r.env.Drivers(cfg.DriversInUse(), cfg.Drivers, library, cfg.SkillsInUse(), r.artifacts.Path, Calls)
+	prepared, err := r.env.Drivers(cfg.DriversInUse(), cfg.Drivers, library, cfg.SkillsInUse(), r.artifacts.Path)
 	if err != nil {
 		return false, err
 	}

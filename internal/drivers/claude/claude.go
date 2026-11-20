@@ -97,10 +97,6 @@ func (driver) Defaults() drivers.Settings {
 	}}
 }
 
-func (driver) Commands() []drivers.Command {
-	return []drivers.Command{{Name: hookCommand, Run: hookMain}}
-}
-
 func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
 	if missing := drivers.BinaryGap(ctx, "claude", settings); missing != nil {
 		return missing
@@ -134,8 +130,6 @@ type launcher struct {
 	tmp         string
 	configDir   string
 	credentials string
-	// hook — команда хука PreToolUse: тот же бинарник llamer, что ведёт прогон; пусто — вызовов по форме у прогона нет.
-	hook string
 }
 
 // Prepare — приватный CLAUDE_CONFIG_DIR с копией кредов: личные
@@ -156,24 +150,6 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 			}
 		}
 	}
-	hook := ""
-	if len(s.Calls.Commands)+len(s.Calls.Loops) > 0 {
-		if _, err := compileForms(s.Calls); err != nil {
-			return nil, err
-		}
-		calls, err := json.Marshal(s.Calls)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(filepath.Join(configDir, callsFile), calls, 0o666); err != nil {
-			return nil, err
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		hook = shellescape.Quote(exe) + " " + hookCommand
-	}
 	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", s.Settings.Bin, configDir)
 	env := s.StageEnv(claudeAuth)
 	env = append(env,
@@ -190,7 +166,7 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 		"CLAUDE_CONFIG_DIR="+configDir,
 	)
 	return &launcher{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
-		credentials: credentials, hook: hook}, nil
+		credentials: credentials}, nil
 }
 
 // Launch — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
@@ -200,11 +176,6 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 // дерева выключены.
 func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
-	// Вызовы, которые правило `Bash(<команда> *)` не пропускает, разрешает хук: см. forms.allowed.
-	if c.hook != "" {
-		hook := map[string]any{"matcher": "Bash", "hooks": []map[string]string{{"type": "command", "command": c.hook}}}
-		settings["hooks"] = map[string]any{"PreToolUse": []any{hook}}
-	}
 	if !a.ProjectMemory {
 		settings["claudeMdExcludes"] = projectMemoryFiles
 	}

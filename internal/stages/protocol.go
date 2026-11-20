@@ -91,6 +91,8 @@ func (p protocol) harness(quote string) string {
 		"A single quote inside the text is closed as `values[" + quote + "severity" + quote + "]`.\n\n" +
 		"Writing to disk is forbidden — no editor tool, no `>` redirect, no temporary " +
 		"file for a long value: the value goes into the call itself.\n\n" +
+		fmt.Sprintf("A call is at most %d characters of arguments, or it is refused: more goes into several "+
+			"calls (`%s diff` takes several paths per call). No loops and no `$(...)` substitutions in a call.\n\n", harness.MaxCallChars, h) +
 		"A REFUSAL DOES NOT CANCEL A FINDING, and a refusal says what to fix. What a " +
 		"command does is in `" + h + " <command> --help`; the harness sources answer " +
 		"nothing beyond that.\n\n" +
@@ -99,7 +101,7 @@ func (p protocol) harness(quote string) string {
 		"- `cd` to a path outside this tree — the permission boundary is the tree itself.\n" +
 		"- a backslash-newline continuation in a call carrying a long text value — the " +
 		"call gets judged by its content, and review texts read as dangerous there; write " +
-		"the call as ONE line, whatever its length.\n" +
+		"the call as ONE line.\n" +
 		"- finding text inside any command other than `" + h + "` (an `echo` of it " +
 		"is denied in every form) — such text travels only as a `" + h + "` argument."
 }

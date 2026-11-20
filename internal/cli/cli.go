@@ -13,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/hakastein/llamer/internal/broker"
-	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/review"
@@ -158,12 +157,6 @@ func Execute(argv []string, stdout io.Writer) int {
 		&cobra.Command{Use: broker.Subcommand, Hidden: true, DisableFlagParsing: true, Args: cobra.MinimumNArgs(1),
 			Run: func(_ *cobra.Command, args []string) { code = broker.Main(args[0], args[1:], os.Stdout, os.Stderr) }},
 	)
-	for _, name := range drivers.Names() {
-		for _, c := range drivers.Get(name).Commands() {
-			root.AddCommand(&cobra.Command{Use: c.Name, Hidden: true,
-				RunE: func(*cobra.Command, []string) error { return c.Run(os.Stdin, os.Stdout) }})
-		}
-	}
 	root.SetArgs(argv)
 	root.SetOut(os.Stderr)
 	root.SetErr(os.Stderr)

@@ -353,9 +353,6 @@ func (driver) Defaults() drivers.Settings {
 	}}
 }
 
-// Commands — команды llamer codex разрешает правилами, без своих подкоманд: см. rulesFor.
-func (driver) Commands() []drivers.Command { return nil }
-
 func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
 	if missing := drivers.BinaryGap(ctx, "codex", settings); missing != nil {
 		return missing

@@ -525,7 +525,7 @@ Stdout — строки JSON. Пока идут этапы, каждое соб�
 | | `claude` | `codex` |
 |---|---|---|
 | Запуск | `claude -p`, задание в stdin, `--output-format stream-json` | `codex exec --json`, задание в stdin. Команды идут через `bash -c`, не login-шелл (`allow_login_shell = false`): профиль образа сбросил бы `PATH`, и `review` пропал бы |
-| Песочница | `--permission-mode dontAsk`; `--allowedTools` — чтение, `Skill`, `review` и `allow`. Хук `PreToolUse` пропускает вызов `review` длиннее 10 000 символов, который Claude Code не разбирает, и цикл `for f in <пути>; do review diff "$f"; done` по литеральным путям. Запись, веб, агенты и MCP запрещены | `--sandbox read-only`; `review` и `allow` — правилами `prefix_rule` |
+| Песочница | `--permission-mode dontAsk`; `--allowedTools` — чтение, `Skill`, `review` и `allow`. Запись, веб, агенты и MCP запрещены | `--sandbox read-only`; `review` и `allow` — правилами `prefix_rule` |
 | Изоляция | Свой `CLAUDE_CONFIG_DIR` с копией `~/.claude/.credentials.json` (заданный снаружи `CLAUDE_CONFIG_DIR` берётся как есть), `--setting-sources project` | Свои `HOME` и `CODEX_HOME` на этап с копией `auth.json` и своим `config.toml` |
 | Скиллы | Только `always` и `onDemand` этапа, плагином этапа (`--plugin-dir`), имена `stage:<скилл>`. Скиллы `.claude/skills` дерева выключены через `skillOverrides` | Только `always` и `onDemand` этапа, в `$HOME/.agents/skills` этапа. Встроенные скиллы codex и скиллы дерева (`.codex/skills`, `.agents/skills`) выключены в `config.toml`. `always` подключается упоминанием `$<скилл>` |
 | Общая часть задания | Системный промпт: `--append-system-prompt-file` | Developer-сообщение: `developer_instructions` в `config.toml` (аргумент `-c` ограничен 128 КиБ) |

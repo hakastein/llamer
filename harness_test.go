@@ -12,9 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/hakastein/llamer/internal/drivers"
-	"github.com/hakastein/llamer/internal/review"
 )
 
 // Команда `review` этапа — скрытая подкоманда llamer: её зовёт агент, задание
@@ -394,108 +391,16 @@ func TestRenamedFileThreadPosition(t *testing.T) {
 	equal(t, position["new_line"], any(float64(21)), "строка")
 }
 
-// hook — ответ хука на вызов command: драйвер claude готовит его вызовами ревью, как для этапа.
-func hook(t *testing.T, command string) called {
-	t.Helper()
-	configDir := t.TempDir()
-	if _, err := drivers.Get("claude").Prepare(drivers.Setup{Env: map[string]string{"CLAUDE_CONFIG_DIR": configDir}, Calls: review.Calls}); err != nil {
-		t.Fatal(err)
-	}
-	input, _ := json.Marshal(obj{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": obj{"command": command}})
-	cmd := exec.Command(llamer, "__claude-hook")
-	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+configDir)
-	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("%v: %s", err, stderr.String())
-	}
-	return called{stdout: stdout.String(), stderr: stderr.String()}
-}
-
-func allowed(t *testing.T, command string) bool {
-	t.Helper()
-	answer := hook(t, command).stdout
-	if answer == "" {
-		return false
-	}
-	var decision struct {
-		HookSpecificOutput struct{ PermissionDecision string }
-	}
-	if err := json.Unmarshal([]byte(answer), &decision); err != nil {
-		t.Fatal(err)
-	}
-	return decision.HookSpecificOutput.PermissionDecision == "allow"
-}
-
-// Хук — ровно тот, что драйвер кладёт в --settings этапа: его команду проверяют прогоны claude.
-func TestHookAllowsLongMultilineBatch(t *testing.T) {
+// Вызов сверх предела отклоняется целиком: правила разрешений агента такую команду не разбирают.
+func TestHarnessRefusesCallOverLimit(t *testing.T) {
 	t.Parallel()
-	// Форма батча из срыва: многострочный JSON с кириллицей и кодом, длиннее
-	// 10 000 символов — предела, за которым Claude Code команду не разбирает.
-	var items []string
-	for n := range 120 {
-		items = append(items, fmt.Sprintf(`{"type":"finding","file":"src/A.php","line":%d,"text":"Ключ '"'"'identity'"'"' => $analysis['\''map'\''] и \"кавычки\" в `+"`коде`"+`"}`, n))
-	}
-	batch := "review batch --json '[\n" + strings.Join(items, ",\n") + "\n]'"
-	equal(t, len(batch) > 10_000, true, "батч длиннее предела")
-	equal(t, allowed(t, batch), true, "батч разрешён")
-}
+	s := stage(t, []string{"finding", "list", "stop"}, stageOpts{})
+	args := finding("3")
+	args[slices.Index(args, "--text")+1] = strings.Repeat("я", 8000)
 
-func TestHookSilentOnAnythingButSimpleCall(t *testing.T) {
-	t.Parallel()
-	for _, command := range []string{
-		"review batch --json 'x'; rm -rf ~",
-		"review batch --json 'x'\nrm -rf ~",
-		"review batch --json 'x' && id",
-		"review batch --json 'x' ; id",
-		`review batch --json 'x'$'\x41'`,
-		"review batch --json 'x' | sh",
-		"review batch --json 'x' > /tmp/f",
-		`review batch --json "$(id)"`,
-		"review batch --json 'x'$(id)",
-		"review batch --json 'x'`id`",
-		"review batch --json $HOME",
-		"review batch --json 'незакрытая",
-		"cat x | review batch --json 'x'",
-		"reviewer batch --json 'x'",
-	} {
-		equal(t, hook(t, command).stdout, "", command)
-	}
-}
+	refused := s.call(args...)
 
-func TestHookAllowsDiffLoop(t *testing.T) {
-	t.Parallel()
-	for _, command := range []string{
-		`for f in src/A.php src/B.php; do review diff "$f"; done`,
-		"for file in src/A.php\ndo\n  review diff $file\ndone\n",
-		`for f in a b; do review diff "$f" src/C.php "$f"; done | head -50`,
-		`for f in @x/y+z_1.mjs -a; do review diff "$f"; done | tail -20`,
-	} {
-		equal(t, allowed(t, command), true, command)
-	}
-}
-
-func TestHookSilentOnOtherLoops(t *testing.T) {
-	t.Parallel()
-	commands := []string{
-		`for f in a; do review diff "$f"; rm x; done`,
-		`for f in $(ls); do review diff "$f"; done`,
-		`for f in a; do cat "$f"; done`,
-		`for f in a; do review diff "$g"; done`,
-		`for f in a; do review diff "$f$(id)"; done`,
-		`for f in a; do review diff "$f" > /tmp/x; done`,
-		`for f in a; do review diff "$f"; done | sh`,
-		`for f in a; do review diff "$f"; done | head -5; id`,
-		`for f in a; do review diff "$f"; done; id`,
-		`for f in a; do review diff "$f"; done && id`,
-		`id; for f in a; do review diff "$f"; done`,
-		`for f in a; do review batch "$f"; done`,
-	}
-	for _, word := range []string{"$HOME", `"a"`, "'a'", "`id`", "*.php", "a?", "(a)", "a;id", "a|id", "a&id", "a<b", "a>b"} {
-		commands = append(commands, `for f in a `+word+`; do review diff "$f"; done`)
-	}
-	for _, command := range commands {
-		equal(t, hook(t, command).stdout, "", command)
-	}
+	equal(t, refused.status, 1, "отказ")
+	match(t, refused.stderr, `отказ: вызов на \d+ символов длиннее предела 8000: раздели его на несколько вызовов`, "текст отказа")
+	equal(t, len(s.events("finding")), 0, "ничего не записано")
 }
