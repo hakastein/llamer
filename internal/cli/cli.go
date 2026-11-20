@@ -203,6 +203,28 @@ func prepareStageBin(dir string) (string, error) {
 	return dir, os.Chmod(path, 0o755)
 }
 
+// prepareDrivers — драйверы прогона по именам: скиллы прогона копируются в
+// <runPath>/stage-plugin, каждый драйвер получает setup со своими настройками.
+func prepareDrivers(names []string, settings map[string]drivers.Settings, library *skills.Library, skillNames []string, runPath string,
+	setup drivers.Setup) (map[string]drivers.Driver, error) {
+	if len(skillNames) > 0 {
+		var err error
+		if setup.RunSkills, err = library.Materialize(filepath.Join(runPath, "stage-plugin"), skillNames); err != nil {
+			return nil, err
+		}
+	}
+	prepared := map[string]drivers.Driver{}
+	for _, name := range names {
+		setup.Settings = settings[name]
+		d, err := drivers.Prepare(name, setup)
+		if err != nil {
+			return nil, err
+		}
+		prepared[name] = d
+	}
+	return prepared, nil
+}
+
 func readTask(path string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -285,12 +307,6 @@ func (r *run) review() (bool, error) {
 	if err := os.WriteFile(shared.Path, []byte(shared.Text), 0o666); err != nil {
 		return false, err
 	}
-	runSkills := ""
-	if skills := cfg.SkillsInUse(); len(skills) > 0 {
-		if runSkills, err = library.Materialize(filepath.Join(r.artifacts.Path, "stage-plugin"), skills); err != nil {
-			return false, err
-		}
-	}
 	stageBin, err := prepareStageBin(filepath.Join(r.tmp, "bin"))
 	if err != nil {
 		return false, err
@@ -299,14 +315,10 @@ func (r *run) review() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	prepared := map[string]drivers.Driver{}
-	for _, name := range cfg.DriversInUse() {
-		d, err := drivers.Prepare(name, drivers.Setup{Settings: cfg.Drivers[name], Env: r.env, EnvOrder: r.envOrder,
-			StageBin: stageBin, RunSkills: runSkills, Tmp: r.tmp, Hook: shellescape.Quote(exe) + " " + ClaudeHook})
-		if err != nil {
-			return false, err
-		}
-		prepared[name] = d
+	prepared, err := prepareDrivers(cfg.DriversInUse(), cfg.Drivers, library, cfg.SkillsInUse(), r.artifacts.Path,
+		drivers.Setup{Env: r.env, EnvOrder: r.envOrder, StageBin: stageBin, Tmp: r.tmp, Hook: shellescape.Quote(exe) + " " + ClaudeHook})
+	if err != nil {
+		return false, err
 	}
 	outcome, err := stages.Run(&stages.Toolkit{Context: r.ctx, Artifacts: r.artifacts, Drivers: prepared, Materials: m, Library: library,
 		Config: cfg, Shared: shared})

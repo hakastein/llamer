@@ -3,13 +3,13 @@
 package redact
 
 import (
-	"bytes"
-	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -21,45 +21,86 @@ const minSecretLength = 7
 
 const placeholder = "***REDACTED***"
 
-// Значения секретных переменных, от длинных к коротким: если одно — подстрока
-// другого, плейсхолдер иначе разорвал бы внешнее значение на видимые куски.
-// Вместе с каждым — его запись внутри строки JSON (и с экранированием HTML,
-// как пишет encoding/json): вымарывается и готовый JSON.
-var secrets = sync.OnceValue(func() []string {
-	var values []string
-	seen := map[string]bool{}
-	add := func(v string) {
-		if !seen[v] {
-			seen[v] = true
-			values = append(values, v)
-		}
-	}
-	for _, entry := range os.Environ() {
-		name, value, _ := strings.Cut(entry, "=")
-		if utf8.RuneCountInString(value) < minSecretLength || !secretName.MatchString(name) {
+// Короткие экранирования JSON для управляющих символов.
+var shortEscapes = map[rune]string{'\b': "b", '\f': "f", '\n': "n", '\r': "r", '\t': "t"}
+
+// plain — символ, который кодировщики JSON не экранируют: внутри строк JSON
+// любой вложенности он записан как есть.
+func plain(r rune) bool {
+	return r > 0x1f && r < 0x7f && !strings.ContainsRune(`"\/<>&'`, r)
+}
+
+// secret — значение секрета в любой записи внутри строк JSON любой вложенности
+// и его самый длинный кусок из plain-символов: текст без куска выражение не проверяет.
+type secret struct {
+	core string
+	re   *regexp.Regexp
+}
+
+// compile — каждый уровень вложенности удваивает обратные косые черты перед
+// экранированием, а не plain-символ бывает записан как есть, коротким
+// экранированием или `\uXXXX` (HTML-символы у encoding/json, не-ASCII у
+// ensure_ascii, суррогатные пары вне BMP).
+func compile(value string) secret {
+	var b strings.Builder
+	core, run := "", ""
+	for _, r := range value {
+		if plain(r) {
+			b.WriteString(regexp.QuoteMeta(string(r)))
+			if run += string(r); len(run) > len(core) {
+				core = run
+			}
 			continue
 		}
-		add(value)
-		var plain bytes.Buffer
-		enc := json.NewEncoder(&plain)
-		enc.SetEscapeHTML(false)
-		enc.Encode(value) // строка кодируется всегда
-		quoted := strings.TrimSpace(plain.String())
-		add(quoted[1 : len(quoted)-1])
-		escaped, _ := json.Marshal(value)
-		add(string(escaped[1 : len(escaped)-1]))
+		run = ""
+		alts := []string{regexp.QuoteMeta(string(r))}
+		switch r {
+		case '\\':
+			alts[0] = `\\+`
+		case '"', '/':
+			alts[0] = `\\*` + alts[0]
+		}
+		if short, ok := shortEscapes[r]; ok {
+			alts = append(alts, `\\+`+short)
+		}
+		units := []rune{r}
+		if r > 0xFFFF {
+			hi, lo := utf16.EncodeRune(r)
+			units = []rune{hi, lo}
+		}
+		var escaped strings.Builder
+		for _, u := range units {
+			fmt.Fprintf(&escaped, `\\+(?i:u%04x)`, u)
+		}
+		b.WriteString("(?:" + strings.Join(append(alts, escaped.String()), "|") + ")")
+	}
+	return secret{core: core, re: regexp.MustCompile(b.String())}
+}
+
+// Секреты окружения от длинных к коротким: если одно значение — подстрока
+// другого, плейсхолдер иначе разорвал бы внешнее на видимые куски.
+var secrets = sync.OnceValue(func() []secret {
+	var values []string
+	for _, entry := range os.Environ() {
+		name, value, _ := strings.Cut(entry, "=")
+		if utf8.RuneCountInString(value) >= minSecretLength && secretName.MatchString(name) {
+			values = append(values, value)
+		}
 	}
 	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	return values
+	out := make([]secret, len(values))
+	for i, v := range values {
+		out[i] = compile(v)
+	}
+	return out
 })
 
-// Secrets — текст без значений секретов окружения процесса; замена буквальная.
+// Secrets — текст без значений секретов окружения процесса.
 func Secrets(s string) string {
-	if s == "" {
-		return s
-	}
-	for _, value := range secrets() {
-		s = strings.ReplaceAll(s, value, placeholder)
+	for _, secret := range secrets() {
+		if strings.Contains(s, secret.core) {
+			s = secret.re.ReplaceAllLiteralString(s, placeholder)
+		}
 	}
 	return s
 }

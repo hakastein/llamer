@@ -101,6 +101,9 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 		if err != nil {
 			r.fail(path+".timeout", err.Error())
 		}
+		if timeout <= 0 {
+			r.fail(path+".timeout", "должен быть больше нуля")
+		}
 		if missing := library.Missing(s.Skills); len(missing) > 0 {
 			r.fail(path+".skills", fmt.Sprintf("в %s нет скиллов %v", filepath.Join(dir, "skills"), missing))
 		}

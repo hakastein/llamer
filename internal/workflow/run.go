@@ -68,17 +68,22 @@ type out struct {
 	w  io.Writer
 }
 
-func (o *out) emit(v any) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	line := redact.Secrets(string(data)) + "\n"
+func (o *out) emit(v any) { o.write(line(v)) }
+
+func (o *out) write(line string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	// Читатель вывода — сервис; закрытый им вывод прогон не останавливает: итог останется в result.json.
 	io.WriteString(o.w, line)
-	return line
+}
+
+// line — строка вывода: JSON без секретов.
+func line(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return redact.Secrets(string(data)) + "\n"
 }
 
 // stream — поток этапа: в артефакты как есть и в вывод событием с именем этапа.
@@ -125,9 +130,12 @@ func (r *Run) Execute() (*Result, error) {
 	}
 	result.Cost = agent.Summarize(records)
 	r.Artifacts.ReportCost(records, logx.SinceStart())
-	if _, err := r.Artifacts.SaveText("result.json", o.emit(result)); err != nil {
+	// Результат в выводе — только записанный: незаписанный срывает прогон.
+	text := line(result)
+	if _, err := r.Artifacts.SaveText("result.json", text); err != nil {
 		return nil, err
 	}
+	o.write(text)
 	return result, nil
 }
 

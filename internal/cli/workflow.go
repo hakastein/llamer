@@ -62,7 +62,7 @@ func projectConfig(ctx context.Context, cwd, flag string, env map[string]string)
 		}
 		file = filepath.Join(root, config.File)
 	}
-	cfg, err := config.Load(file, env)
+	cfg, err := config.LoadShared(file, env)
 	var cfgErr *config.Error
 	if errors.As(err, &cfgErr) {
 		return "", nil, &InputError{cfgErr.Message}
@@ -116,8 +116,12 @@ func runWorkflow(ctx context.Context, o *RunOptions, stdout io.Writer) (ok bool,
 		return false, err
 	}
 	defer func() {
-		if rmErr := os.RemoveAll(tmp); rmErr != nil && err == nil {
-			ok, err = false, fmt.Errorf("временный каталог с копиями учётных данных не удалён: %w", rmErr)
+		if rmErr := os.RemoveAll(tmp); rmErr != nil {
+			rmErr = fmt.Errorf("временный каталог с копиями учётных данных не удалён: %w", rmErr)
+			logx.Log(rmErr.Error())
+			if err == nil {
+				ok, err = false, rmErr
+			}
 		}
 	}()
 	// Каталог команд этапа первым в PATH: пустой, но не пустая строка — та значила бы текущий каталог.
@@ -125,20 +129,10 @@ func runWorkflow(ctx context.Context, o *RunOptions, stdout io.Writer) (ok bool,
 	if err := os.MkdirAll(stageBin, 0o777); err != nil {
 		return false, err
 	}
-	runSkills := ""
-	if names := w.Skills(); len(names) > 0 {
-		if runSkills, err = w.Library.Materialize(filepath.Join(run.Path, "stage-plugin"), names); err != nil {
-			return false, err
-		}
-	}
-	prepared := map[string]drivers.Driver{}
-	for _, name := range w.Drivers() {
-		d, err := drivers.Prepare(name, drivers.Setup{Settings: cfg.Drivers[name], Env: env, EnvOrder: order,
-			StageBin: stageBin, RunSkills: runSkills, Tmp: tmp})
-		if err != nil {
-			return false, err
-		}
-		prepared[name] = d
+	prepared, err := prepareDrivers(w.Drivers(), cfg.Drivers, w.Library, w.Skills(), run.Path,
+		drivers.Setup{Env: env, EnvOrder: order, StageBin: stageBin, Tmp: tmp})
+	if err != nil {
+		return false, err
 	}
 	result, err := (&workflow.Run{Context: ctx, Workflow: w, Drivers: prepared, Artifacts: run, Allow: cfg.Allow, Cwd: contextDir,
 		Out: stdout}).Execute()

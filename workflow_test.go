@@ -12,21 +12,21 @@ import (
 )
 
 // workflowProject — проект с workflow из двух этапов: writer отвечает по схеме
-// writerAnswer (заглушка отдаёт строку `ANSWER:` задания), checker получает его ответ.
+// writerAnswer (заглушка отдаёт строку `ANSWER:` задания), checker отвечает его ответом.
 func workflowProject(t *testing.T, writerPrompt string) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(t, root, ".llamer.json", `{"version": 2, "driver": "claude"}`)
+	write(t, root, ".llamer.json", `{"version": 2, "drivers": {"claude": {}}}`)
 	write(t, root, "wf/workflow.json", `{"version": 1, "stages": [
 		{"name": "writer", "driver": "claude", "model": "m", "effort": "low", "prompt": "writer.md", "timeout": "1m", "schema": "joke.schema.json"},
 		{"name": "checker", "driver": "claude", "model": "m", "effort": "low", "prompt": "checker.md", "timeout": "1m"}]}`)
 	write(t, root, "wf/joke.schema.json", `{"type": "object", "additionalProperties": false, "required": ["joke"],
 		"properties": {"joke": {"type": "string"}}}`)
 	write(t, root, "wf/writer.md", writerPrompt)
-	write(t, root, "wf/checker.md", "Проверь: {{.Answers.writer}}\nANSWER: верно\n")
+	write(t, root, "wf/checker.md", "ANSWER: проверено {{.Answers.writer}}\n")
 	return root
 }
 
@@ -67,23 +67,41 @@ func lastResult(t *testing.T, stdout string) workflowResult {
 	return r
 }
 
+// Секрет в ответе writer: в ответе checker он вложен глубже, чем в ответе writer, а символы
+// JSON и HTML в нём экранируются на каждом уровне по-своему.
+const workflowSecret = `wf<"\leak-value-1234`
+
 func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	t.Parallel()
-	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору\"}\n")
-	r := run(t, root, runWorkflowArgs, nil)
+	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору wf<\\\"\\\\leak-value-1234\"}\n")
+	r := run(t, root, runWorkflowArgs, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
 	equal(t, r.status, 0, "код\n"+r.stderr)
 	res := lastResult(t, r.stdout)
 	equal(t, res.OK, true, "ok")
-	equal(t, string(res.Stages[0].Answer), `{"joke":"кот шёл по коридору"}`, "ответ writer — JSON по схеме")
-	equal(t, string(res.Stages[1].Answer), `"верно"`, "ответ checker без схемы — строка")
+	equal(t, string(res.Stages[0].Answer), `{"joke":"кот шёл по коридору ***REDACTED***"}`, "ответ writer — JSON по схеме")
+	equal(t, string(res.Stages[1].Answer), `"проверено {\"joke\": \"кот шёл по коридору ***REDACTED***\"}"`, "ответ checker без схемы — строка")
 	equal(t, len(r.launches), 2, "оба этапа запускались")
-	match(t, r.launches[1]["prompt"].(string), `Проверь: \{"joke": "кот шёл по коридору"\}`, "checker получил ответ writer")
+	match(t, r.launches[1]["prompt"].(string), `проверено \{"joke": "кот шёл по коридору wf<\\"\\\\leak-value-1234"\}`, "checker получил ответ writer как есть")
 	equal(t, slices.Contains(argvOf(r.launches[0]), "--json-schema"), true, "схема ушла драйверу writer")
 	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
 	events := lines(t, r.stdout)["event"]
 	equal(t, events[0]["stage"], any("writer"), "событие этапа названо этапом")
 	data := read(t, filepath.Join(lines(t, r.stdout)["result"][0]["run"].(string), "result.json"))
 	equal(t, strings.TrimSpace(data), strings.TrimSpace(r.stdout[strings.LastIndex(strings.TrimSpace(r.stdout), "\n")+1:]), "result.json — последняя строка вывода")
+	noMatch(t, r.stdout+r.stderr, `leak-value`, "секрет в выводе")
+	filepath.WalkDir(lines(t, r.stdout)["result"][0]["run"].(string), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			noMatch(t, read(t, path), `leak-value`, "секрет в артефакте "+path)
+		}
+		return err
+	})
+}
+
+func TestWorkflowResultNotSavedFailsRun(t *testing.T) {
+	t.Parallel()
+	r := run(t, workflowProject(t, "STUB_BLOCK_RESULT\nANSWER: {\"joke\": \"кот\"}\n"), runWorkflowArgs, nil)
+	equal(t, r.status, 1, "код\n"+r.stderr)
+	noMatch(t, r.stdout, `(?m)^\{"type":"result"`, "результата в выводе нет")
 }
 
 func TestWorkflowAnswerOffSchemaFailsRun(t *testing.T) {

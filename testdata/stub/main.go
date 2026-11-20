@@ -10,7 +10,8 @@
 // STUB_SESSION — строки журнала сессии codex вместо обычных.
 //
 // Этап `llamer run` (без брифа) отвечает в форме claude строкой `ANSWER: …`
-// своего задания, а с `STUB_HANG` в задании повисает.
+// своего задания, а с `STUB_HANG` в задании повисает; `STUB_BLOCK_RESULT` в задании
+// ставит каталог на место result.json прогонов в `.llamer/` рабочего каталога.
 package main
 
 import (
@@ -153,6 +154,15 @@ func workflowStage(argv []string, prompt string) int {
 	record(m{"argv": argv, "prompt": prompt})
 	if strings.Contains(prompt, "STUB_HANG") {
 		return hang()
+	}
+	if strings.Contains(prompt, "STUB_BLOCK_RESULT") {
+		runs, err := filepath.Glob(filepath.Join(".llamer", "*"))
+		must(err)
+		for _, dir := range runs {
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				must(os.MkdirAll(filepath.Join(dir, "result.json"), 0o777))
+			}
+		}
 	}
 	answer := ""
 	for _, line := range strings.Split(prompt, "\n") {
