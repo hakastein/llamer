@@ -224,33 +224,12 @@ type codexEvent struct {
 	Message *string         `json:"message"`
 }
 
-type object = map[string]any
-
-func line(event object) []byte {
-	data, _ := json.Marshal(event)
-	return data
-}
-
-// streamUsage — usage итога в строке артефакта: поля и их порядок — как у `modelUsage` claude.
-type streamUsage struct {
-	InputTokens              int64 `json:"inputTokens"`
-	OutputTokens             int64 `json:"outputTokens"`
-	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
-}
-
-// assistant — ход модели из одного блока: content — блок в строке артефакта.
-func assistant(content object, b agent.Block) []*agent.Event {
-	return []*agent.Event{{Raw: line(object{"type": "assistant", "message": object{"content": []object{content}}}), Kind: "assistant",
-		Turn: &agent.Turn{Blocks: []agent.Block{b}}}}
-}
-
-// parser — события `codex exec --json` в общей форме. В артефакты этапа они ложатся
-// строками в форме потока claude: артефакты обоих драйверов читаются одинаково. Цены,
-// usage отдельных запросов и лимитов подписки в потоке нет — их после выхода Run берёт
-// из журнала сессии. Строка не JSON не разбирается: её покажет лог.
+// parser — события `codex exec --json` в общей форме; тип события — тип codex, у
+// события элемента — с типом элемента. Цены, usage отдельных запросов и лимитов
+// подписки в потоке нет — их после выхода Run берёт из журнала сессии. Строка не
+// JSON не разбирается: её покажет лог.
 func parser(model string) func([]byte) ([]*agent.Event, error) {
-	lastMessage, turns := "", 0
+	lastMessage := ""
 	return func(raw []byte) ([]*agent.Event, error) {
 		if !json.Valid(raw) {
 			return nil, errors.New("строка не JSON")
@@ -260,53 +239,45 @@ func parser(model string) func([]byte) ([]*agent.Event, error) {
 			return nil, nil
 		}
 		item := e.Item
-		switch e.Type {
-		case "thread.started":
-			return []*agent.Event{{Raw: line(object{"type": "system", "subtype": "init", "session_id": e.ThreadID}), Kind: "system/init",
-				Session: &agent.Session{ID: e.ThreadID}}}, nil
-		case "item.started":
-			if item.Type == "command_execution" {
-				return assistant(object{"type": "tool_use", "id": item.ID, "name": "Bash", "input": object{"command": item.Command}},
-					agent.Block{Call: &agent.Call{ID: item.ID, Name: "Bash", Input: object{"command": item.Command}, Command: item.Command}}), nil
-			}
-		case "item.completed":
-			switch item.Type {
-			case "agent_message":
-				lastMessage = item.Text
-				turns++
-				return assistant(object{"type": "text", "text": lastMessage}, agent.Block{Text: lastMessage}), nil
-			case "reasoning":
-				return assistant(object{"type": "thinking", "thinking": item.Text}, agent.Block{Thinking: item.Text}), nil
-			case "command_execution":
-				failed := item.ExitCode == nil || *item.ExitCode != 0
-				return []*agent.Event{{Raw: line(object{"type": "user", "message": object{"content": []object{{"type": "tool_result",
-					"tool_use_id": item.ID, "is_error": failed, "content": item.AggregatedOutput}}}}), Kind: "user",
-					Replies: []agent.Reply{{CallID: item.ID, Text: item.AggregatedOutput, IsError: failed}}}}, nil
-			}
-		case "turn.completed":
+		out := &agent.Event{Raw: raw, Kind: e.Type}
+		if item.Type != "" {
+			out.Kind += "/" + item.Type
+		}
+		switch {
+		case e.Type == "thread.started":
+			out.Session = &agent.Session{ID: e.ThreadID}
+		case e.Type == "item.started" && item.Type == "command_execution":
+			call := &agent.Call{ID: item.ID, Name: "Bash", Input: map[string]any{"command": item.Command}, Command: item.Command}
+			out.Turn = &agent.Turn{Blocks: []agent.Block{{Call: call}}}
+		case e.Type == "item.completed" && item.Type == "agent_message":
+			lastMessage = item.Text
+			out.Turn = &agent.Turn{Blocks: []agent.Block{{Text: item.Text}}}
+		case e.Type == "item.completed" && item.Type == "reasoning":
+			out.Turn = &agent.Turn{Blocks: []agent.Block{{Thinking: item.Text}}}
+		case e.Type == "item.completed" && item.Type == "command_execution":
+			failed := item.ExitCode == nil || *item.ExitCode != 0
+			out.Replies = []agent.Reply{{CallID: item.ID, Text: item.AggregatedOutput, IsError: failed}}
+		case e.Type == "turn.completed":
 			u := e.Usage
-			usage := streamUsage{InputTokens: u.InputTokens - u.CachedInputTokens, OutputTokens: u.OutputTokens,
-				CacheReadInputTokens: u.CachedInputTokens, CacheCreationInputTokens: u.CacheWriteInputTokens}
-			return []*agent.Event{{Raw: line(object{"type": "result", "subtype": "success", "is_error": false, "result": lastMessage, "num_turns": turns,
-				"total_cost_usd": nil, "modelUsage": object{model: usage}}), Kind: "result/success",
-				Result: &agent.Result{Text: lastMessage, Usage: map[string]agent.Usage{model: agent.Usage(usage)}}}}, nil
-		case "turn.failed":
+			out.Result = &agent.Result{Text: lastMessage, Usage: map[string]agent.Usage{model: {InputTokens: u.InputTokens - u.CachedInputTokens,
+				OutputTokens: u.OutputTokens, CacheReadInputTokens: u.CachedInputTokens, CacheCreationInputTokens: u.CacheWriteInputTokens}}}
+		case e.Type == "turn.failed":
 			var failure struct {
 				Message string `json:"message"`
 			}
 			if json.Unmarshal(e.Error, &failure) != nil || failure.Message == "" {
 				failure.Message = "turn failed"
 			}
-			return []*agent.Event{{Raw: line(object{"type": "result", "subtype": "error", "is_error": true, "result": failure.Message, "total_cost_usd": nil}),
-				Kind: "result/error", Failed: true, Result: &agent.Result{Text: failure.Message, IsError: true}}}, nil
-		case "error":
-			text := string(raw)
+			out.Failed, out.Result = true, &agent.Result{Text: failure.Message, IsError: true}
+		case e.Type == "error":
+			out.Stderr = string(raw)
 			if e.Message != nil {
-				text = *e.Message
+				out.Stderr = *e.Message
 			}
-			return []*agent.Event{{Raw: line(object{"type": "stage_stderr", "text": text}), Kind: "stage_stderr", Stderr: text}}, nil
+		default:
+			return nil, nil
 		}
-		return nil, nil
+		return []*agent.Event{out}, nil
 	}
 }
 func skillFiles(dir string, depth int) []string {

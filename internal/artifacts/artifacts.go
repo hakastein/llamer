@@ -2,6 +2,7 @@
 package artifacts
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -59,51 +60,82 @@ func Open(root string, startedAt time.Time) (*Run, error) {
 	return r, nil
 }
 
-type stream struct {
-	mu     sync.Mutex
+// lineFile — файл строк потока этапа. Сбой записи прогон не роняет: разбор и
+// публикация от потока не зависят, — о нём один раз говорит лог.
+type lineFile struct {
 	file   *os.File
 	failed bool
-	name   string
+	stage  string
+	what   string
 }
 
-func (s *stream) fail(err error) {
-	if !s.failed {
-		s.failed = true
-		logx.Logf("[%s] сырой поток этапа не пишется (%s) — в артефакты не ляжет", s.name, err)
+func openLines(path, stage, what string) *lineFile {
+	f := &lineFile{stage: stage, what: what}
+	file, err := os.Create(path)
+	if err != nil {
+		f.fail(err)
+		return f
+	}
+	f.file = file
+	return f
+}
+
+func (f *lineFile) fail(err error) {
+	if !f.failed {
+		f.failed = true
+		logx.Logf("[%s] %s этапа не пишется (%s) — в артефакты не ляжет", f.stage, f.what, err)
 	}
 }
 
-func (s *stream) Write(line []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.file == nil {
+func (f *lineFile) write(line string) {
+	if f.file == nil {
 		return
 	}
-	if _, err := s.file.WriteString(redact.Secrets(string(line)) + "\n"); err != nil {
-		s.fail(err)
+	if _, err := f.file.WriteString(redact.Secrets(line) + "\n"); err != nil {
+		f.fail(err)
 	}
+}
+
+func (f *lineFile) close() {
+	if f.file != nil {
+		f.file.Close()
+		f.file = nil
+	}
+}
+
+// stream — поток этапа: события llamer в `<этап>.jsonl`, вывод процесса как есть — в `<этап>.raw.jsonl`.
+type stream struct {
+	mu          sync.Mutex
+	events, raw *lineFile
+}
+
+func (s *stream) Write(e *agent.Event) {
+	data, err := json.Marshal(e)
+	if err != nil {
+		panic(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events.write(string(data))
+}
+
+func (s *stream) Raw(line []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.raw.write(string(line))
 }
 
 func (s *stream) End() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.file != nil {
-		s.file.Close()
-		s.file = nil
-	}
+	s.events.close()
+	s.raw.close()
 }
 
-// OpenStream — сырой поток этапа. Сбой записи потока прогон не роняет:
-// разбор и публикация от него не зависят.
+// OpenStream — поток этапа в артефактах.
 func (r *Run) OpenStream(stageName string) agent.Stream {
-	s := &stream{name: stageName}
-	f, err := os.Create(filepath.Join(r.Path, StageSlug(stageName)+".jsonl"))
-	if err != nil {
-		s.fail(err)
-		return s
-	}
-	s.file = f
-	return s
+	base := filepath.Join(r.Path, StageSlug(stageName))
+	return &stream{events: openLines(base+".jsonl", stageName, "поток"), raw: openLines(base+".raw.jsonl", stageName, "сырой вывод")}
 }
 
 func (r *Run) SavePrompt(stageName, text string) string {

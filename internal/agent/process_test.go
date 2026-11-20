@@ -2,7 +2,6 @@ package agent_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,13 +16,13 @@ type processStream struct {
 	once  sync.Once
 }
 
-func (s *processStream) Write(raw []byte) {
-	var e struct{ Type, Text string }
-	if json.Unmarshal(raw, &e) == nil && e.Type == "stage_stderr" && e.Text == "ready" {
+func (s *processStream) Write(e *agent.Event) {
+	if e.Kind == "stage_stderr" && e.Stderr == "ready" {
 		s.once.Do(func() { close(s.ready) })
 	}
 }
-func (*processStream) End() {}
+func (*processStream) Raw([]byte) {}
+func (*processStream) End()       {}
 
 // run — исход процесса и его строки stdout.
 type run struct {

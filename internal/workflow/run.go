@@ -92,16 +92,16 @@ func line(v any) string {
 	return redact.Secrets(string(data)) + "\n"
 }
 
-// stream — поток этапа: в артефакты как есть и в вывод событием с именем этапа.
+// stream — поток этапа: в артефакты и в вывод событием с именем этапа.
 type stream struct {
 	agent.Stream
 	out   *out
 	stage string
 }
 
-func (s *stream) Write(line []byte) {
-	s.Stream.Write(line)
-	s.out.emit(map[string]any{"type": "event", "stage": s.stage, "event": json.RawMessage(line)})
+func (s *stream) Write(e *agent.Event) {
+	s.Stream.Write(e)
+	s.out.emit(map[string]any{"type": "event", "stage": s.stage, "event": e})
 }
 
 // Execute — этапы по порядку до первого сорванного. Прерванный прогон

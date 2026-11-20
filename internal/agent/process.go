@@ -156,8 +156,8 @@ func Start(ctx context.Context, c Command, t *Telemetry) *Process {
 	return p
 }
 
-// Lines — непустые строки stdout без краевых пробелов. Читается до конца: иначе Wait ждёт процесс,
-// которому некуда писать.
+// Lines — непустые строки stdout без краевых пробелов; все строки как есть уходят в сырой
+// поток этапа. Читается до конца: иначе Wait ждёт процесс, которому некуда писать.
 func (p *Process) Lines() iter.Seq[[]byte] {
 	return func(yield func([]byte) bool) {
 		if p.stdout == nil {
@@ -170,6 +170,7 @@ func (p *Process) Lines() iter.Seq[[]byte] {
 			// в хвосте, и успешный этап отчитается упавшим.
 			line, err := r.ReadString('\n')
 			if len(line) > 0 {
+				p.t.stream.Raw([]byte(strings.TrimSuffix(line, "\n")))
 				traffic.mu.Lock()
 				traffic.stdoutBytes += len(line)
 				if traffic.firstByteMs < 0 {

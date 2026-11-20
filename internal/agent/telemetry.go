@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,9 +14,10 @@ const silenceReport = 30 * time.Second
 // доступен соседним запросам.
 func isResponseStart(e *Event) bool { return e.Start || e.Turn != nil }
 
-// Stream — сырой поток этапа в артефактах.
+// Stream — поток этапа: его события и сырой вывод процесса строками.
 type Stream interface {
-	Write(line []byte)
+	Write(e *Event)
+	Raw(line []byte)
 	End()
 }
 
@@ -83,11 +83,10 @@ func (t *Telemetry) Accept(e *Event) {
 func (t *Telemetry) Unparsed(text string) { t.own("stage_raw", text) }
 
 // own — событие llamer о процессе этапа: вывод stderr или неразобранная строка.
-func (t *Telemetry) own(typ, text string) {
-	raw, _ := json.Marshal(map[string]string{"type": typ, "name": t.name, "text": text})
-	e := &Event{Raw: raw, Kind: typ, Stderr: text}
-	if typ == "stage_raw" {
-		e = &Event{Raw: raw, Kind: typ, Unparsed: text}
+func (t *Telemetry) own(kind, text string) {
+	e := &Event{Kind: kind, Stderr: text}
+	if kind == "stage_raw" {
+		e = &Event{Kind: kind, Unparsed: text}
 	}
 	t.record(e)
 }
@@ -99,7 +98,7 @@ func (t *Telemetry) record(event *Event) {
 		t.onResponse()
 	}
 	t.stopHeartbeat()
-	t.stream.Write(event.Raw)
+	t.stream.Write(event)
 	t.events = append(t.events, event)
 	// Цвет в логе всегда, и без терминала: так у JS-версии (isTTY вне терминала — undefined, и срабатывал colors = true по умолчанию).
 	shown, ok := FormatStreamEvent(event, true, t.cwd, t.name)

@@ -4,10 +4,10 @@ import "encoding/json"
 
 // Usage — токены модели: вход без кэша, выход, чтение и запись кэша.
 type Usage struct {
-	InputTokens              int64
-	OutputTokens             int64
-	CacheReadInputTokens     int64
-	CacheCreationInputTokens int64
+	InputTokens              int64 `json:"inputTokens"`
+	OutputTokens             int64 `json:"outputTokens"`
+	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
 }
 
 // Window — окно лимита подписки: использовано в процентах, сброс — unix-секунды.
