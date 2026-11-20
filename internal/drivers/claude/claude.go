@@ -1,4 +1,4 @@
-// Package claude — драйвер этапов Claude Code.
+// Package claude — драйвер Claude Code.
 package claude
 
 import (
@@ -15,7 +15,11 @@ import (
 	"github.com/hakastein/llamer/internal/logx"
 )
 
-func init() { drivers.Register("claude", driver{}) }
+// Claude Code — бинарник `claude` из PATH, пока конфиг не задал иной.
+func init() {
+	drivers.Register("claude", drivers.Factory{Defaults: drivers.Settings{Bin: "claude"}, Gaps: Gaps,
+		New: func(s drivers.Settings, setup drivers.Setup) (drivers.Driver, error) { return New(s, setup) }})
+}
 
 var claudeAuth = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
 
@@ -23,12 +27,12 @@ var claudeAuth = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHR
 // выписывать нужно только то, чего он read-only не считает.
 var allowedTools = []string{"Read", "Grep", "Glob", "Skill"}
 
-// systemDirs — что команде в песочнице этапа `llamer run` нужно для запуска: программы,
+// systemDirs — что команде в строгой песочнице нужно для запуска: программы,
 // библиотеки и настройки системы.
 var systemDirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc"}
 
 // Инструменты вне read-only запуска: их описания едут в каждый промпт, а вызов
-// стоит хода. Skill остаётся — им грузится метод этапа.
+// стоит хода. Skill остаётся — им грузятся скиллы запуска.
 var disallowedTools = []string{
 	"Edit", "Write", "NotebookEdit", "Task", "Agent", "Workflow", "ToolSearch", "ListAgents",
 	"ReportFindings", "WebFetch", "WebSearch",
@@ -38,15 +42,15 @@ var disallowedTools = []string{
 	"DesignSync", "EnterWorktree", "ExitWorktree",
 }
 
-// Серверы MCP этапу не даются вовсе: без строгого флага он подхватил бы
+// Серверы MCP агенту не даются вовсе: без строгого флага он подхватил бы
 // .mcp.json дерева и коннекторы аккаунта.
 var noMCP = []string{"--mcp-config", `{"mcpServers":{}}`, "--strict-mcp-config"}
 
 // Память проекта: Claude Code читает AGENTS.md сам, не только через импорт из
-// CLAUDE.md, поэтому исключать для тощих этапов нужно оба.
+// CLAUDE.md, поэтому исключать без инструкций проекта нужно оба.
 var projectMemoryFiles = []string{"**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md"}
 
-// Имя плагина этапа — пространство имён скиллов в Skill: одноимённый скилл
+// Имя плагина со скиллами запуска — пространство имён скиллов в Skill: одноимённый скилл
 // из `.claude/skills` дерева иначе перехватил бы голое имя.
 const stagePlugin = "stage"
 
@@ -84,20 +88,8 @@ func bashRules(allow []string) []string {
 	return rules
 }
 
-// driver — драйвер claude до прогона.
-type driver struct{}
-
-func (driver) Defaults() drivers.Settings {
-	return drivers.Settings{Bin: "claude", Levels: []drivers.Level{
-		{Model: "claude-sonnet-5-5", Effort: "medium"},
-		{Model: "claude-sonnet-5-5", Effort: "high"},
-		{Model: "claude-opus-5-5", Effort: "low"},
-		{Model: "claude-opus-5-5", Effort: "medium"},
-		{Model: "claude-opus-5-5", Effort: "high"},
-	}}
-}
-
-func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
+// Gaps — чего не хватает окружению env для claude: рабочего бинарника или входа.
+func Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
 	if missing := drivers.BinaryGap(ctx, "claude", settings); missing != nil {
 		return missing
 	}
@@ -114,16 +106,8 @@ func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[strin
 		" и не задана ни одна из " + strings.Join(claudeAuth, ", ") + " — claude /login"}}
 }
 
-func (driver) SkillsHow() string {
-	return "Load each of these with the Skill tool before you start."
-}
-
-func (driver) SkillRef(name string) string { return stagePlugin + ":" + name }
-
-func (driver) Quote() string { return `'\''` }
-
-// launcher — драйвер claude, готовый к прогону.
-type launcher struct {
+// Driver запускает Claude Code.
+type Driver struct {
 	settings    drivers.Settings
 	env         []string
 	runSkills   string
@@ -132,14 +116,14 @@ type launcher struct {
 	credentials string
 }
 
-// Prepare — приватный CLAUDE_CONFIG_DIR с копией кредов: личные
-// настройки, хуки и плагины разработчика в этап не попадают. Заданный снаружи
+// New готовит драйвер: приватный CLAUDE_CONFIG_DIR с копией кредов, чтобы личные
+// настройки, хуки и плагины разработчика в запуск не попали. Заданный снаружи
 // каталог берётся как есть — его готовил запускающий.
-func (driver) Prepare(s drivers.Setup) (drivers.Runner, error) {
-	credentials := filepath.Join(claudeConfigDir(s.Env), ".credentials.json")
-	configDir := s.Env["CLAUDE_CONFIG_DIR"]
+func New(settings drivers.Settings, setup drivers.Setup) (*Driver, error) {
+	credentials := filepath.Join(claudeConfigDir(setup.Env), ".credentials.json")
+	configDir := setup.Env["CLAUDE_CONFIG_DIR"]
 	if configDir == "" {
-		dir, err := os.MkdirTemp(s.Tmp, "claude-")
+		dir, err := os.MkdirTemp(setup.Tmp, "claude-")
 		if err != nil {
 			return nil, err
 		}
@@ -150,37 +134,37 @@ func (driver) Prepare(s drivers.Setup) (drivers.Runner, error) {
 			}
 		}
 	}
-	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", s.Settings.Bin, configDir)
-	env := s.StageEnv(claudeAuth)
+	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", settings.Bin, configDir)
+	env := setup.Environ(settings, claudeAuth)
 	env = append(env,
-		// Потолок ожидания фоновых задач снят: верхняя граница и так есть — таймаут этапа.
+		// Потолок ожидания фоновых задач снят: верхняя граница и так есть — таймаут запуска.
 		"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0",
-		// Встроенные скиллы Claude Code этапу не нужны, а их описания едут в каждый промпт.
+		// Встроенные скиллы Claude Code агенту не нужны, а их описания едут в каждый промпт.
 		"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1",
 		// Заголовок атрибуции — первый блок системного промпта, и в нём отпечаток
 		// задания: префикс кэша расходился бы на первом же блоке.
 		"CLAUDE_CODE_ATTRIBUTION_HEADER=0",
 		// Кэш промпта на 5 минут вместо часа: запись стоит 1.25 базовой цены
-		// вместо 2, а ходы этапа идут с паузой в секунды.
+		// вместо 2, а ходы агента идут с паузой в секунды.
 		"FORCE_PROMPT_CACHING_5M=1",
 		"CLAUDE_CONFIG_DIR="+configDir,
 	)
-	return &launcher{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
+	return &Driver{settings: settings, env: env, runSkills: setup.RunSkills, tmp: setup.Tmp, configDir: configDir,
 		credentials: credentials}, nil
 }
 
-// Run — этап на Claude Code; журнал сессии сохраняется в a.SessionDir, если он задан.
-func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telemetry) (*agent.Outcome, error) {
+// Run запускает Claude Code; журнал сессии сохраняется в a.SessionDir, если он задан.
+func (c *Driver) Run(ctx context.Context, a drivers.Args, t *agent.Telemetry) (*agent.Outcome, error) {
 	cmd, err := c.command(a)
 	if err != nil {
 		return nil, err
 	}
 	p := agent.Start(ctx, cmd, t)
 	tally := drivers.Read(p, t, parse)
-	o := tally.Outcome(p.Wait(), a.Level.Model, a.Level.Effort)
+	o := tally.Outcome(p.Wait(), a.Model, a.Effort)
 	if a.SessionDir != "" && tally.SessionID != "" {
-		// Без журнала сессии этап не хуже: сбой сохранения его не роняет.
-		if o.Resume, err = c.keepSession(a.SessionDir, tally.SessionID, a.Level); err != nil {
+		// Без журнала сессии запуск не хуже: сбой сохранения его не роняет.
+		if o.Resume, err = c.keepSession(a, tally.SessionID); err != nil {
 			t.Logf("журнал сессии не сохранён (%s)", err)
 		}
 	}
@@ -188,18 +172,18 @@ func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telem
 }
 
 // command — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
-// командной строки в Linux ограничен 128 килобайтами. Общая часть пакета — в
-// системном промпте: он у этапов одной модели одинаковый, и кэш, записанный
-// первым этапом, читают остальные. Скиллы этапа — его плагин `stage`, скиллы
+// командной строки в Linux ограничен 128 килобайтами. SystemPromptFile — в
+// системном промпте: у запусков одной модели с одним файлом он одинаковый, и кэш,
+// записанный первым запуском, читают остальные. Скиллы запуска — его плагин `stage`, скиллы
 // дерева выключены.
-func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
+func (c *Driver) command(a drivers.Args) (agent.Command, error) {
 	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
-	if !a.ProjectMemory {
+	if !a.ProjectInstructions {
 		settings["claudeMdExcludes"] = projectMemoryFiles
 	}
 	plugin := ""
 	if c.runSkills != "" {
-		plugin = filepath.Join(c.tmp, "claude-plugin-"+a.Stage)
+		plugin = filepath.Join(c.tmp, "claude-plugin-"+a.Name)
 		if err := os.MkdirAll(filepath.Join(plugin, ".claude-plugin"), 0o777); err != nil {
 			return agent.Command{}, err
 		}
@@ -215,7 +199,7 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 	if a.Sandbox != nil {
 		// Голые Read, Grep и Glob открыли бы чтение любого пути: без них Claude Code читает только
 		// рабочий каталог и --add-dir. Команды закрывает песочница ОС (bubblewrap и socat), а без
-		// неё этап не стартует.
+		// неё запуск не стартует.
 		allowed = []string{"Skill"}
 		readable := append(a.Sandbox.Paths(a, c.runSkills), c.settings.Readable...)
 		if plugin != "" {
@@ -237,8 +221,8 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 		// Без dontAsk список ниже ничего не запрещает: в headless всё, что в
 		// интерактиве спросило бы подтверждение, молча исполняется.
 		"--permission-mode", "dontAsk",
-		"--model", a.Level.Model,
-		"--effort", a.Level.Effort,
+		"--model", a.Model,
+		"--effort", a.Effort,
 		"--allowedTools", strings.Join(append(slices.Clone(allowed), bashRules(a.Allow)...), " "),
 		"--disallowedTools", strings.Join(disallowedTools, " "),
 	}
@@ -250,10 +234,10 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 		argv = append(argv, "--add-dir", dir)
 	}
 	// Состояние git и окружения Claude Code иначе пишет в системный промпт, и
-	// запись артефактов прогона меняла бы его между этапами.
+	// запись артефактов прогона меняла бы его между запусками.
 	argv = append(argv, "--exclude-dynamic-system-prompt-sections")
-	if a.Shared != nil {
-		argv = append(argv, "--append-system-prompt-file", a.Shared.Path)
+	if a.SystemPromptFile != "" {
+		argv = append(argv, "--append-system-prompt-file", a.SystemPromptFile)
 	}
 	if a.Schema != "" {
 		// --json-schema ждёт текст схемы, а не путь к файлу.
@@ -269,7 +253,8 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 }
 
 // keepSession — сессия лежит в projects/<каталог>/<id>.jsonl конфига; по ней же Claude Code её и продолжает.
-func (c *launcher) keepSession(dir, sessionID string, level drivers.Level) (string, error) {
+func (c *Driver) keepSession(a drivers.Args, sessionID string) (string, error) {
+	dir := a.SessionDir
 	projects := filepath.Join(c.configDir, "projects")
 	file := sessionID + ".jsonl"
 	entries, _ := os.ReadDir(projects)
@@ -292,5 +277,5 @@ func (c *launcher) keepSession(dir, sessionID string, level drivers.Level) (stri
 		auth = "ln -sf " + shellescape.Quote(c.credentials) + " " + shellescape.Quote(filepath.Join(dir, ".credentials.json")) + " && "
 	}
 	return auth + "CLAUDE_CONFIG_DIR=" + shellescape.Quote(dir) + " " + c.settings.Bin + " -p --resume " + sessionID +
-		" --model " + shellescape.Quote(level.Model) + " --effort " + shellescape.Quote(level.Effort), nil
+		" --model " + shellescape.Quote(a.Model) + " --effort " + shellescape.Quote(a.Effort), nil
 }

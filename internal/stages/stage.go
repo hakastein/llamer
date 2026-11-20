@@ -25,11 +25,11 @@ import (
 type Toolkit struct {
 	Context   context.Context
 	Artifacts *artifacts.Run
-	Drivers   map[string]drivers.Runner
+	Drivers   map[string]drivers.Driver
 	Materials *materials.Materials
 	Library   *skills.Library
 	Config    *config.Config
-	Shared    *drivers.Shared
+	Shared    string // файл общей части пакета
 	protocol  protocol
 }
 
@@ -116,11 +116,30 @@ func (s *Stage) template() *template {
 	return s.tmpl
 }
 
-// style — как задание этапа пишется под его драйвер.
-type style interface {
-	SkillsHow() string
-	SkillRef(name string) string
-	Quote() string
+// style — как задание этапа пишется под CLI его драйвера: как этап берёт скиллы
+// метода, как скилл назван в задании и как пишется одинарная кавычка внутри
+// текста в вызове.
+type style struct {
+	skillsHow string
+	skillRef  func(name string) string
+	quote     string
+}
+
+var styles = map[string]style{
+	// Скиллы этапа claude получает плагином `stage`: имя плагина — пространство имён скиллов в Skill.
+	"claude": {
+		skillsHow: "Load each of these with the Skill tool before you start.",
+		skillRef:  func(name string) string { return "stage:" + name },
+		quote:     `'\''`,
+	},
+	// Скиллы этапа codex находит сам в `$HOME/.agents/skills`, а упоминание `$имя` в
+	// задании подключает скилл целиком ещё до первого хода. Кавычка — не '\'': правило
+	// codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
+	"codex": {
+		skillsHow: "Each of these is attached by its mention below — its text is already with you, follow it from the start.",
+		skillRef:  func(name string) string { return "$" + name },
+		quote:     `'"'"'`,
+	},
 }
 
 func (s *Stage) skillsBlock(d style) (string, error) {
@@ -135,9 +154,9 @@ func (s *Stage) skillsBlock(d style) (string, error) {
 	}
 	refs := make([]string, len(skills.Always))
 	for i, name := range skills.Always {
-		refs[i] = d.SkillRef(name)
+		refs[i] = d.skillRef(name)
 	}
-	return "## Your Method\n\n" + d.SkillsHow() + " They are your method,\n" +
+	return "## Your Method\n\n" + d.skillsHow + " They are your method,\n" +
 		"they are not optional, and nothing below repeats what is in them.\n\n" + bullets(refs), nil
 }
 
@@ -150,7 +169,7 @@ func (s *Stage) prompt(d style, journal *domain.State) (string, error) {
 	}
 	values := map[string]string{
 		"PROTOCOL": p.protocol(s.settings.Prompt.Protocol),
-		"HARNESS":  p.harness(d.Quote()),
+		"HARNESS":  p.harness(d.quote),
 		"COMMANDS": "The recording command is `" + harness.Name + "`; its commands and their formats are in `" + harness.Name + " --help`.",
 		"SKILLS":   skills,
 	}
@@ -204,20 +223,21 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 	if level == config.Assessed {
 		level = assessed
 	}
-	settings := s.tk.Config.Drivers[s.driver].Levels[level-1]
-	prompt, err := s.prompt(drivers.Get(s.driver), journal)
+	settings := s.tk.Config.Levels[s.driver][level-1]
+	prompt, err := s.prompt(styles[s.driver], journal)
 	if err != nil {
 		return err
 	}
 	promptPath := s.tk.Artifacts.SavePrompt(s.Name(), prompt)
-	var shared *drivers.Shared
+	shared := ""
 	if s.sharesPack() {
 		shared = s.tk.Shared
 	}
 	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, settings.Model, settings.Effort, utf8.RuneCountInString(prompt), promptPath)
 	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding)
-	outcome, err := s.tk.Drivers[s.driver].Run(s.tk.Context, drivers.LaunchArgs{
-		Stage: s.ID(), Level: settings, ProjectMemory: s.projectMemory, Allow: s.allow(), Shared: shared, Prompt: prompt,
+	outcome, err := s.tk.Drivers[s.driver].Run(s.tk.Context, drivers.Args{
+		Name: s.ID(), Model: settings.Model, Effort: settings.Effort, ProjectInstructions: s.projectMemory, Allow: s.allow(),
+		SystemPromptFile: shared, Prompt: prompt,
 		Env: []string{harness.BriefEnv + "=" + briefPath}, Skills: append(slices.Clone(s.settings.Skills.Always), s.settings.Skills.OnDemand...),
 		Cwd: m.Cwd, Timeout: 20 * time.Minute, SessionDir: s.tk.Artifacts.SessionDir(s.ID()),
 	}, telemetry)

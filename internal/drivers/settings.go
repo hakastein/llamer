@@ -1,16 +1,9 @@
 package drivers
 
-// Level — модель и усилие одного запуска.
-type Level struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
-}
-
-// Settings — исполняемая программа, её окружение и модели.
+// Settings — программа драйвера и её окружение из конфига.
 type Settings struct {
-	Bin    string
-	Env    [][2]string
-	Levels []Level
-	// Readable — каталоги, которые нужны песочнице `llamer run` всегда: сам драйвер и его рантайм.
+	Bin string
+	Env [][2]string // переменные сверх белого списка, в порядке конфига
+	// Readable — каталоги, открытые строгой песочнице всегда: сам драйвер и его рантайм.
 	Readable []string
 }

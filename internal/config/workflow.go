@@ -33,13 +33,13 @@ type PromptData struct{ Answers map[string]string }
 
 // WorkflowStage — этап workflow.
 type WorkflowStage struct {
-	Name, Driver string
-	Level        Level
-	Template     *template.Template
-	Skills       []string
-	Timeout      time.Duration
-	SchemaPath   string             // пусто — ответ свободным текстом
-	Schema       *jsonschema.Schema // nil — ответ свободным текстом
+	Name, Driver  string
+	Model, Effort string
+	Template      *template.Template
+	Skills        []string
+	Timeout       time.Duration
+	SchemaPath    string             // пусто — ответ свободным текстом
+	Schema        *jsonschema.Schema // nil — ответ свободным текстом
 }
 
 // Workflow — проверенный конфиг workflow: этапы в порядке файла и скиллы из `skills/` его каталога.
@@ -130,7 +130,7 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 		if missing := library.Missing(s.Skills); len(missing) > 0 {
 			r.fail(path+".skills", fmt.Sprintf("в %s нет скиллов %v", filepath.Join(dir, "skills"), missing))
 		}
-		stage := &WorkflowStage{Name: s.Name, Driver: s.Driver, Level: Level{Model: s.Model, Effort: s.Effort}, Template: tmpl,
+		stage := &WorkflowStage{Name: s.Name, Driver: s.Driver, Model: s.Model, Effort: s.Effort, Template: tmpl,
 			Skills: s.Skills, Timeout: timeout}
 		if s.Schema != "" {
 			stage.SchemaPath = filepath.Join(dir, s.Schema)

@@ -7,7 +7,7 @@ import (
 	"github.com/hakastein/llamer/internal/agent"
 )
 
-// Tally — свод потока этапа: итог, сессия, ходы, токены по ходам и лимиты — то, что драйверы собирают одинаково.
+// Tally — свод потока запуска: итог, сессия, ходы, токены по ходам и лимиты — то, что драйверы собирают одинаково.
 type Tally struct {
 	t         *agent.Telemetry
 	events    []*agent.Event
@@ -15,15 +15,16 @@ type Tally struct {
 	SessionID string
 	turns     int
 	// Токены по ходам — страховка на случай гибели процесса без итога: у убитого
-	// этапа счётчики иначе теряются, и отчёт показывает ноль при сожжённых миллионах.
+	// запуска счётчики иначе теряются, и отчёт показывает ноль при сожжённых миллионах.
 	usage         agent.Usage
 	sawUsage      bool
 	contextTokens int64
 	rateLimit     *agent.RateLimit
 }
 
-// Read — строки процесса p в общих событиях: каждое — в телеметрию t и в свод.
-// Строку, которую parse не разобрал, телеметрия показывает как есть.
+// Read читает строки процесса p до конца, разбирает их parse в общие события и
+// отдаёт каждое в телеметрию t и в свод. Строку, которую parse не разобрал,
+// телеметрия показывает как есть.
 func Read(p *agent.Process, t *agent.Telemetry, parse func(line []byte) ([]*agent.Event, error)) *Tally {
 	y := &Tally{t: t}
 	for line := range p.Lines() {
@@ -64,7 +65,7 @@ func (y *Tally) add(e *agent.Event) {
 	}
 }
 
-// Outcome — исход этапа по выходу его процесса и своду потока. Цена этапа без
+// Outcome — исход запуска по выходу его процесса и своду потока. Цена запуска без
 // итога — ноль; токены без итога — сумма ходов, оценка снизу.
 func (y *Tally) Outcome(exit agent.Exit, model, effort string) *agent.Outcome {
 	r := y.result
@@ -104,7 +105,7 @@ func (y *Tally) Outcome(exit agent.Exit, model, effort string) *agent.Outcome {
 
 var rateLimitText = regexp.MustCompile(`(?i)usage limit reached|rate limit|out of credits`)
 
-// failureReason — причина срыва этапа. Код 0 не значит успех — при ошибке
+// failureReason — причина срыва запуска. Код 0 не значит успех — при ошибке
 // причина читается из итога, а текст ловит исчерпание подписки и без статуса.
 func failureReason(r *agent.Result, exit agent.Exit) string {
 	if r != nil {

@@ -26,7 +26,7 @@ import (
 type Run struct {
 	Context   context.Context
 	Workflow  *config.Workflow
-	Drivers   map[string]drivers.Runner
+	Drivers   map[string]drivers.Driver
 	Artifacts *artifacts.Run
 	Cwd       string    // каталог контекста: рабочий каталог агента
 	Out       io.Writer // события и результат строками JSON
@@ -174,9 +174,9 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 			return nil, "", err
 		}
 	}
-	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Level.Model, s.Level.Effort, promptPath)
+	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Model, s.Effort, promptPath)
 	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {})
-	outcome, err := d.Run(r.Context, drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Prompt: prompt.String(), Skills: s.Skills,
+	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: prompt.String(), Skills: s.Skills,
 		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()
 	if err != nil {

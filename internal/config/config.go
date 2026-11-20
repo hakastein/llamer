@@ -71,7 +71,28 @@ func builtinOf(key string) *builtin {
 func IsBuiltin(key string) bool { return builtinOf(key) != nil }
 
 // Level — модель и усилие одного уровня лестницы драйвера.
-type Level = drivers.Level
+type Level struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
+// defaultLevels — лестницы драйверов, пока `drivers.<имя>.levels` их не заменил.
+var defaultLevels = map[string][]Level{
+	"claude": {
+		{Model: "claude-sonnet-5-5", Effort: "medium"},
+		{Model: "claude-sonnet-5-5", Effort: "high"},
+		{Model: "claude-opus-5-5", Effort: "low"},
+		{Model: "claude-opus-5-5", Effort: "medium"},
+		{Model: "claude-opus-5-5", Effort: "high"},
+	},
+	"codex": {
+		{Model: "gpt-6.1-sol", Effort: "medium"},
+		{Model: "gpt-6.1-sol", Effort: "high"},
+		{Model: "gpt-6.1-sol", Effort: "xhigh"},
+		{Model: "gpt-6.1-sol", Effort: "max"},
+		{Model: "gpt-6.1-sol", Effort: "ultra"},
+	},
+}
 
 // Driver — настройки драйвера.
 type Driver = drivers.Settings
@@ -101,7 +122,8 @@ type Config struct {
 	SkillPaths []string
 	Allow      []string
 	Drivers    map[string]Driver
-	Stages     []*Stage // встроенные первыми, свои — в порядке конфига
+	Levels     map[string][]Level // лестница уровней каждого драйвера: уровень N — элемент N-1
+	Stages     []*Stage           // встроенные первыми, свои — в порядке конфига
 }
 
 // Stage — этап по ключу.
@@ -256,7 +278,7 @@ func (r reader) expandPath(raw string, env map[string]string, base, path string)
 }
 
 func (r reader) driver(name string, raw *rawDriver, env map[string]string) Driver {
-	d := drivers.Get(name).Defaults()
+	d := drivers.Get(name).Defaults
 	if raw == nil {
 		return d
 	}
@@ -275,9 +297,6 @@ func (r reader) driver(name string, raw *rawDriver, env map[string]string) Drive
 	}
 	if raw.Bin != "" {
 		d.Bin = raw.Bin
-	}
-	if raw.Levels != nil {
-		d.Levels = raw.Levels
 	}
 	for i, p := range raw.Readable {
 		d.Readable = append(d.Readable, r.expandPath(p, env, filepath.Dir(r.file), fmt.Sprintf("drivers.%s.readable[%d]", name, i)))
@@ -452,9 +471,13 @@ func Parse(data []byte, order []string, file string, env map[string]string, sour
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	driverSettings := map[string]Driver{}
+	driverSettings, levels := map[string]Driver{}, map[string][]Level{}
 	for _, name := range drivers.Names() {
 		driverSettings[name] = r.driver(name, raw.Drivers[name], env)
+		levels[name] = defaultLevels[name]
+		if d := raw.Drivers[name]; d != nil && d.Levels != nil {
+			levels[name] = d.Levels
+		}
 	}
 	base := prompt(raw.Prompt, Prompt{})
 	var keys []string
@@ -478,7 +501,7 @@ func Parse(data []byte, order []string, file string, env map[string]string, sour
 	if raw.Allow == nil {
 		raw.Allow = []string{}
 	}
-	return &Config{Source: source, SkillPaths: skillPaths, Allow: raw.Allow, Drivers: driverSettings, Stages: stages}, nil
+	return &Config{Source: source, SkillPaths: skillPaths, Allow: raw.Allow, Drivers: driverSettings, Levels: levels, Stages: stages}, nil
 }
 
 // stageOrder — ключи объекта `stages` в порядке текста: карта JSON его теряет.

@@ -62,7 +62,7 @@ type tokenUsage struct {
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
-// modelUsage — токены модели за этап в `modelUsage` итога.
+// modelUsage — токены модели за запуск в `modelUsage` итога.
 type modelUsage struct {
 	InputTokens              int64 `json:"inputTokens"`
 	OutputTokens             int64 `json:"outputTokens"`

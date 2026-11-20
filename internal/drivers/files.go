@@ -8,7 +8,7 @@ import (
 	"github.com/hakastein/llamer/internal/redact"
 )
 
-// LinkSkills — каталог dir со ссылками на скиллы этапа из каталога скиллов прогона — и ни на какие больше.
+// LinkSkills создаёт каталог dir со ссылками на скиллы names из каталога скиллов прогона — и ни на какие больше.
 func LinkSkills(dir, runSkills string, names []string) error {
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return err
@@ -21,7 +21,7 @@ func LinkSkills(dir, runSkills string, names []string) error {
 	return nil
 }
 
-// Exists — путь есть.
+// Exists — путь существует.
 func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -40,8 +40,8 @@ func UpToRepoRoot(cwd, rel string) []string {
 	}
 }
 
-// KeepRedacted — копия файла или каталога с вымаранными секретами: журнал
-// сессии этапа уходит в артефакты, а в нём вывод команд агента.
+// KeepRedacted копирует файл или каталог, вымарывая секреты: журнал сессии
+// уходит в артефакты, а в нём вывод команд агента.
 func KeepRedacted(from, to string) error {
 	info, err := os.Stat(from)
 	if err != nil {
@@ -70,7 +70,7 @@ func KeepRedacted(from, to string) error {
 	return os.WriteFile(to, []byte(redact.Secrets(strings.ToValidUTF8(string(data), "\uFFFD"))), 0o666)
 }
 
-// CopyFile — копия с правами исходника: копия кредов читается только владельцем, как оригинал.
+// CopyFile копирует файл с правами исходника: копия кредов читается только владельцем, как оригинал.
 func CopyFile(from, to string) error {
 	info, err := os.Stat(from)
 	if err != nil {

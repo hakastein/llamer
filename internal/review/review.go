@@ -176,8 +176,8 @@ func (r *run) review() (bool, error) {
 	}
 	// Драйвер получает пакет как есть, а в артефакты ложится копия с вымаранными секретами.
 	r.artifacts.SavePrompt("общий пакет", m.SharedPack())
-	shared := &drivers.Shared{Text: m.SharedPack(), Path: filepath.Join(r.env.Tmp, "request-materials.md")}
-	if err := os.WriteFile(shared.Path, []byte(shared.Text), 0o666); err != nil {
+	shared := filepath.Join(r.env.Tmp, "request-materials.md")
+	if err := os.WriteFile(shared, []byte(m.SharedPack()), 0o666); err != nil {
 		return false, err
 	}
 	if err := r.env.Wrapper(harness.Name, harness.Subcommand); err != nil {

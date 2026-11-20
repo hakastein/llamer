@@ -57,7 +57,7 @@ func NewTelemetry(name string, commands, skills []string, cwd string, stream Str
 	return t
 }
 
-// Logf — строка лога об этапе.
+// Logf пишет в лог строку об этапе.
 func (t *Telemetry) Logf(format string, args ...any) {
 	logx.Logf("этап «%s»: %s", t.name, fmt.Sprintf(format, args...))
 }
@@ -70,7 +70,7 @@ func (t *Telemetry) stopHeartbeat() {
 	}
 }
 
-// Accept — событие драйвера.
+// Accept записывает событие драйвера в поток и лог этапа и учитывает его в сообщениях о молчании.
 func (t *Telemetry) Accept(e *Event) {
 	t.traffic.mu.Lock()
 	t.traffic.events++
@@ -82,7 +82,7 @@ func (t *Telemetry) Accept(e *Event) {
 // Unparsed — строка вывода, которую драйвер не разобрал, или иное сообщение о выводе этапа.
 func (t *Telemetry) Unparsed(text string) { t.own("stage_raw", text) }
 
-// own — событие llamer о процессе этапа: вывод stderr или неразобранная строка.
+// own записывает событие llamer о процессе этапа: вывод stderr или неразобранную строку.
 func (t *Telemetry) own(kind, text string) {
 	e := &Event{Kind: kind, Stderr: text}
 	if kind == "stage_raw" {
@@ -100,7 +100,7 @@ func (t *Telemetry) record(event *Event) {
 	t.stopHeartbeat()
 	t.stream.Write(event)
 	t.events = append(t.events, event)
-	// Цвет в логе всегда, и без терминала: так у JS-версии (isTTY вне терминала — undefined, и срабатывал colors = true по умолчанию).
+	// Лог раскрашен всегда, и вне терминала.
 	shown, ok := formatEvent(event, true, t.cwd, t.name)
 	if !ok || shown == "" || shown == t.lastShown {
 		return

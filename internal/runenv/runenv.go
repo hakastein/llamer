@@ -106,10 +106,10 @@ func (e *Env) Wrapper(name string, args ...string) error {
 	return os.Chmod(path, 0o755)
 }
 
-// Drivers — драйверы names, готовые к прогону: скиллы skillNames из library
-// копируются в <runPath>/stage-plugin, каждый драйвер получает свои настройки.
+// Drivers создаёт драйверы names со своими настройками; скиллы skillNames из
+// library копируются в <runPath>/stage-plugin.
 func (e *Env) Drivers(names []string, settings map[string]drivers.Settings, library *skills.Library, skillNames []string,
-	runPath string) (map[string]drivers.Runner, error) {
+	runPath string) (map[string]drivers.Driver, error) {
 	setup := drivers.Setup{Env: e.Vars, EnvOrder: e.Order, StageBin: e.Bin, Tmp: e.Tmp}
 	if len(skillNames) > 0 {
 		var err error
@@ -117,5 +117,5 @@ func (e *Env) Drivers(names []string, settings map[string]drivers.Settings, libr
 			return nil, err
 		}
 	}
-	return drivers.Prepare(names, settings, setup)
+	return drivers.New(names, settings, setup)
 }

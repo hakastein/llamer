@@ -51,6 +51,7 @@ type Traffic struct {
 
 func newTraffic() *Traffic { return &Traffic{firstByteMs: -1, promptSentMs: -1} }
 
+// Describe — одна строка о вводе-выводе этапа: отдан ли промпт, сколько пришло байт и событий.
 func (t *Traffic) Describe() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -64,7 +65,7 @@ func (t *Traffic) Describe() string {
 	return fmt.Sprintf("%s, %d байт, событий %d, первый байт на %sс, последнее событие «%s»", sent, t.stdoutBytes, t.events, seconds(t.firstByteMs), t.lastEventType)
 }
 
-// lookPath — команда в PATH окружения этапа, как у spawn Node.
+// lookPath ищет команду в PATH окружения этапа, а не llamer: у этапа PATH свой.
 func lookPath(command string, env []string) (string, error) {
 	if strings.Contains(command, "/") {
 		return command, nil

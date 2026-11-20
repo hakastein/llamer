@@ -1,4 +1,4 @@
-// Package codex — драйвер этапов Codex CLI.
+// Package codex — драйвер Codex CLI.
 package codex
 
 import (
@@ -21,7 +21,11 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-func init() { drivers.Register("codex", driver{}) }
+// Codex CLI — бинарник `codex` из PATH, пока конфиг не задал иной.
+func init() {
+	drivers.Register("codex", drivers.Factory{Defaults: drivers.Settings{Bin: "codex"}, Gaps: Gaps,
+		New: func(s drivers.Settings, setup drivers.Setup) (drivers.Driver, error) { return New(s, setup) }})
+}
 
 var codexAuth = []string{"CODEX_API_KEY", "OPENAI_API_KEY"}
 
@@ -94,7 +98,7 @@ var rolloutFile = regexp.MustCompile(`rollout-[^/]*\.jsonl$`)
 func sessionRecords(codexHome, suffix string) []sessionRecord {
 	var records []sessionRecord
 	sessions := filepath.Join(codexHome, "sessions")
-	// Каталога сессий нет — этап не дошёл до запроса: записей нет.
+	// Каталога сессий нет — запуск не дошёл до запроса: записей нет.
 	filepath.WalkDir(sessions, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !rolloutFile.MatchString(path) || !strings.HasSuffix(path, suffix) {
 			return nil
@@ -114,7 +118,7 @@ func sessionRecords(codexHome, suffix string) []sessionRecord {
 	return records
 }
 
-// sessionRequests — usage каждого запроса этапа (`token_usage_record`): `--json`
+// sessionRequests — usage каждого запроса (`token_usage_record`): `--json`
 // отдаёт только сумму за ход, а размер контекста и надбавка за длинный промпт
 // считаются по запросам.
 func sessionRequests(records []sessionRecord) []json.RawMessage {
@@ -160,7 +164,7 @@ func sessionLimits(records []sessionRecord) *agent.Limits {
 	return nil
 }
 
-// sessionTotals — пик контекста и цена этапа по его запросам; цена nil, если хоть один не оценить.
+// sessionTotals — пик контекста и цена запуска по его запросам; цена nil, если хоть один не оценить.
 func sessionTotals(model string, requests []json.RawMessage) (int64, *float64) {
 	var peak int64
 	total, known := 0.0, len(requests) > 0
@@ -311,20 +315,8 @@ func treeSkills(cwd string) []string {
 	return out
 }
 
-// driver — драйвер codex до прогона.
-type driver struct{}
-
-func (driver) Defaults() drivers.Settings {
-	return drivers.Settings{Bin: "codex", Levels: []drivers.Level{
-		{Model: "gpt-6.1-sol", Effort: "medium"},
-		{Model: "gpt-6.1-sol", Effort: "high"},
-		{Model: "gpt-6.1-sol", Effort: "xhigh"},
-		{Model: "gpt-6.1-sol", Effort: "max"},
-		{Model: "gpt-6.1-sol", Effort: "ultra"},
-	}}
-}
-
-func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
+// Gaps — чего не хватает окружению env для codex: рабочего бинарника или входа.
+func Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
 	if missing := drivers.BinaryGap(ctx, "codex", settings); missing != nil {
 		return missing
 	}
@@ -341,19 +333,8 @@ func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[strin
 		" и не задана ни одна из " + strings.Join(codexAuth, ", ") + " — codex login"}}
 }
 
-// SkillsHow — скиллы этапа codex находит сам в `$HOME/.agents/skills` этапа, а
-// упоминание `$имя` в задании подключает скилл целиком ещё до первого хода.
-func (driver) SkillsHow() string {
-	return "Each of these is attached by its mention below — its text is already with you, follow it from the start."
-}
-
-func (driver) SkillRef(name string) string { return "$" + name }
-
-// Quote — не '\”: правило codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
-func (driver) Quote() string { return `'"'"'` }
-
-// launcher — драйвер codex, готовый к прогону.
-type launcher struct {
+// Driver запускает Codex CLI.
+type Driver struct {
 	settings  drivers.Settings
 	env       []string
 	runSkills string
@@ -361,25 +342,26 @@ type launcher struct {
 	auth      string
 }
 
-func (driver) Prepare(s drivers.Setup) (drivers.Runner, error) {
-	auth := filepath.Join(codexHomeOf(s.Env), "auth.json")
+// New готовит драйвер; вход codex берёт из auth.json общего CODEX_HOME или из окружения.
+func New(settings drivers.Settings, setup drivers.Setup) (*Driver, error) {
+	auth := filepath.Join(codexHomeOf(setup.Env), "auth.json")
 	from := "из окружения"
 	if drivers.Exists(auth) {
 		from = auth
 	}
-	logx.Logf("драйвер codex: %s, вход %s", s.Settings.Bin, from)
-	return &launcher{settings: s.Settings, env: s.StageEnv(codexAuth),
-		runSkills: s.RunSkills, tmp: s.Tmp, auth: auth}, nil
+	logx.Logf("драйвер codex: %s, вход %s", settings.Bin, from)
+	return &Driver{settings: settings, env: setup.Environ(settings, codexAuth),
+		runSkills: setup.RunSkills, tmp: setup.Tmp, auth: auth}, nil
 }
 
-// sandboxed — этап `llamer run`. Песочница — профиль прав codex: чтение только каталога
-// контекста, Readable этапа и драйвера, скиллов этапа и HOME этапа, сеть закрыта прокси без
+// sandboxed — запуск в строгой песочнице. Песочница — профиль прав codex: чтение только рабочего
+// каталога, Readable запуска и драйвера, скиллов запуска и его HOME, сеть закрыта прокси без
 // разрешённых доменов, unix-сокеты открыты. --sandbox read-only сокеты закрывает и профиль не
 // применяет. CODEX_HOME общий: копия auth.json разорвала бы цепочку обновления токена входа.
-// Его config.toml и правила этап не читает — настройки llamer идут аргументами -c, — а журнал
+// Его config.toml и правила запуск не читает — настройки llamer идут аргументами -c, — а журнал
 // сессии codex пишет туда же, и он находится по id сессии.
-func (c *launcher) sandboxed(a drivers.LaunchArgs) (agent.Command, error) {
-	model, effort := a.Level.Model, a.Level.Effort
+func (c *Driver) sandboxed(a drivers.Args) (agent.Command, error) {
+	model, effort := a.Model, a.Effort
 	home := c.home(a)
 	if err := os.MkdirAll(home, 0o777); err != nil {
 		return agent.Command{}, err
@@ -424,16 +406,16 @@ func (c *launcher) sandboxed(a drivers.LaunchArgs) (agent.Command, error) {
 }
 
 // codexHome — общий CODEX_HOME пользователя.
-func (c *launcher) codexHome() string { return filepath.Dir(c.auth) }
+func (c *Driver) codexHome() string { return filepath.Dir(c.auth) }
 
-// home — HOME этапа.
-func (c *launcher) home(a drivers.LaunchArgs) string { return filepath.Join(c.tmp, "codex-"+a.Stage) }
+// home — HOME запуска.
+func (c *Driver) home(a drivers.Args) string { return filepath.Join(c.tmp, "codex-"+a.Name) }
 
-// Run — этап на codex. Цены, usage отдельных запросов и лимитов подписки в потоке
+// Run запускает codex. Цены, usage отдельных запросов и лимитов подписки в потоке
 // `--json` нет: исход берёт их из журнала сессии после выхода. Журнал сессии
-// сохраняется в a.SessionDir, если он задан, — у этапа вне строгой песочницы.
-func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telemetry) (*agent.Outcome, error) {
-	model, effort := a.Level.Model, a.Level.Effort
+// сохраняется в a.SessionDir, если он задан, — у запуска вне строгой песочницы.
+func (c *Driver) Run(ctx context.Context, a drivers.Args, t *agent.Telemetry) (*agent.Outcome, error) {
+	model, effort := a.Model, a.Effort
 	var cmd agent.Command
 	var err error
 	if a.Sandbox != nil {
@@ -447,7 +429,7 @@ func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telem
 	p := agent.Start(ctx, cmd, t)
 	tally := drivers.Read(p, t, parser(model))
 	o := tally.Outcome(p.Wait(), model, effort)
-	// Журнал этапа вне песочницы — единственный в его CODEX_HOME; в общем CODEX_HOME он находится по id сессии.
+	// Журнал запуска вне песочницы — единственный в его CODEX_HOME; в общем CODEX_HOME он находится по id сессии.
 	codexHome, suffix := filepath.Join(c.home(a), ".codex"), ""
 	if a.Sandbox != nil {
 		codexHome, suffix = c.codexHome(), "-"+tally.SessionID+".jsonl"
@@ -456,12 +438,12 @@ func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telem
 	o.Requests = sessionRequests(records)
 	peak, cost := sessionTotals(model, o.Requests)
 	o.ContextTokens = max(o.ContextTokens, peak)
-	if o.Result != nil { // этап без итога стоит ноль, как у любого драйвера
+	if o.Result != nil { // запуск без итога стоит ноль, как у любого драйвера
 		o.Cost = cost
 	}
 	o.Limits = sessionLimits(records)
 	if a.Sandbox == nil && a.SessionDir != "" && tally.SessionID != "" {
-		// Без журнала сессии этап не хуже: сбой сохранения его не роняет.
+		// Без журнала сессии запуск не хуже: сбой сохранения его не роняет.
 		if o.Resume, err = c.keepSession(a, tally.SessionID); err != nil {
 			t.Logf("журнал сессии не сохранён (%s)", err)
 		}
@@ -469,8 +451,8 @@ func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telem
 	return o, nil
 }
 
-// keepSession — конфиг, правила и журнал сессии этапа и команда её продолжения.
-func (c *launcher) keepSession(a drivers.LaunchArgs, sessionID string) (string, error) {
+// keepSession сохраняет конфиг, правила и журнал сессии запуска и возвращает команду её продолжения.
+func (c *Driver) keepSession(a drivers.Args, sessionID string) (string, error) {
 	codexHome, dir := filepath.Join(c.home(a), ".codex"), a.SessionDir
 	for _, name := range []string{"config.toml", "rules", "sessions"} {
 		if err := drivers.KeepRedacted(filepath.Join(codexHome, name), filepath.Join(dir, name)); err != nil {
@@ -483,17 +465,17 @@ func (c *launcher) keepSession(a drivers.LaunchArgs, sessionID string) (string, 
 		auth = "ln -sf " + shellescape.Quote(c.auth) + " " + shellescape.Quote(filepath.Join(dir, "auth.json")) + " && "
 	}
 	return auth + "CODEX_HOME=" + shellescape.Quote(dir) + " " + c.settings.Bin + " exec resume --skip-git-repo-check -c " +
-		shellescape.Quote("model="+quoteTOML(a.Level.Model)) + " -c " + shellescape.Quote("model_reasoning_effort="+quoteTOML(a.Level.Effort)) + " " + sessionID, nil
+		shellescape.Quote("model="+quoteTOML(a.Model)) + " -c " + shellescape.Quote("model_reasoning_effort="+quoteTOML(a.Effort)) + " " + sessionID, nil
 }
 
-// command — свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME —
-// там только скиллы этапа; конфиг и правила — из CODEX_HOME, а правила у этапов
-// разные. Журнал сессии остаётся в CODEX_HOME этапа: по нему считаются цена и
-// размер контекста. Общая часть пакета — `developer_instructions` в config.toml:
+// command — свой HOME и CODEX_HOME на запуск: личные скиллы codex берёт из HOME —
+// там только скиллы запуска; конфиг и правила — из CODEX_HOME, а правила у запусков
+// разные. Журнал сессии остаётся в CODEX_HOME запуска: по нему считаются цена и
+// размер контекста. SystemPromptFile — `developer_instructions` в config.toml:
 // developer-сообщение поверх базового промпта, и кэш префикса делится между
-// этапами. Аргументом `-c` пакет не пройдёт: один аргумент в Linux ограничен 128 килобайтами.
-func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
-	model, effort := a.Level.Model, a.Level.Effort
+// запусками. Аргументом `-c` текст не пройдёт: один аргумент в Linux ограничен 128 килобайтами.
+func (c *Driver) command(a drivers.Args) (agent.Command, error) {
+	model, effort := a.Model, a.Effort
 	home := c.home(a)
 	codexHome := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(filepath.Join(codexHome, "rules"), 0o777); err != nil {
@@ -519,8 +501,12 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 			Config []skillToggle `toml:"config,omitempty"`
 		} `toml:"skills,omitempty"`
 	}
-	if a.Shared != nil {
-		config.DeveloperInstructions = a.Shared.Text
+	if a.SystemPromptFile != "" {
+		text, err := os.ReadFile(a.SystemPromptFile)
+		if err != nil {
+			return agent.Command{}, err
+		}
+		config.DeveloperInstructions = string(text)
 	}
 	for _, path := range treeSkills(a.Cwd) {
 		config.Skills.Config = append(config.Skills.Config, skillToggle{Path: path})
@@ -539,7 +525,7 @@ func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 	}
 	argv := []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "-c", "skills.bundled.enabled=false",
 		"-m", model, "-c", "model_reasoning_effort=" + quoteTOML(effort), "-c", `approval_policy="never"`}
-	if !a.ProjectMemory {
+	if !a.ProjectInstructions {
 		argv = append(argv, "-c", "project_doc_max_bytes=0")
 	}
 	if a.Schema != "" {
