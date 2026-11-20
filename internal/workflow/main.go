@@ -96,7 +96,7 @@ func Main(ctx context.Context, o *Options, stdout io.Writer) (ok bool, err error
 	if err != nil {
 		return false, err
 	}
-	prepared, err := env.Drivers(w.Drivers(), cfg.Drivers, w.Library, w.Skills(), run.Path)
+	prepared, err := env.Drivers(w.Drivers(), cfg.Drivers, w.Library, w.Skills(), run.Path, drivers.Calls{})
 	if err != nil {
 		return false, err
 	}

@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hakastein/llamer/internal/drivers"
+	"github.com/hakastein/llamer/internal/review"
 )
 
 // Команда `review` этапа — скрытая подкоманда llamer: её зовёт агент, задание
@@ -391,10 +394,16 @@ func TestRenamedFileThreadPosition(t *testing.T) {
 	equal(t, position["new_line"], any(float64(21)), "строка")
 }
 
+// hook — ответ хука на вызов command: драйвер claude готовит его вызовами ревью, как для этапа.
 func hook(t *testing.T, command string) called {
 	t.Helper()
+	configDir := t.TempDir()
+	if _, err := drivers.Get("claude").Prepare(drivers.Setup{Env: map[string]string{"CLAUDE_CONFIG_DIR": configDir}, Calls: review.Calls}); err != nil {
+		t.Fatal(err)
+	}
 	input, _ := json.Marshal(obj{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": obj{"command": command}})
 	cmd := exec.Command(llamer, "__claude-hook")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+configDir)
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

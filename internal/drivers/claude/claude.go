@@ -12,7 +12,6 @@ import (
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/drivers"
-	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 )
 
@@ -127,7 +126,7 @@ type launcher struct {
 	tmp         string
 	configDir   string
 	credentials string
-	// hook — команда хука PreToolUse: тот же бинарник llamer, что ведёт прогон.
+	// hook — команда хука PreToolUse: тот же бинарник llamer, что ведёт прогон; пусто — вызовов по форме у прогона нет.
 	hook string
 }
 
@@ -149,9 +148,23 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 			}
 		}
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
+	hook := ""
+	if len(s.Calls.Commands)+len(s.Calls.Loops) > 0 {
+		if _, err := compileForms(s.Calls); err != nil {
+			return nil, err
+		}
+		calls, err := json.Marshal(s.Calls)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(configDir, callsFile), calls, 0o666); err != nil {
+			return nil, err
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		hook = shellescape.Quote(exe) + " " + hookCommand
 	}
 	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", s.Settings.Bin, configDir)
 	env := s.StageEnv(claudeAuth)
@@ -169,7 +182,7 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 		"CLAUDE_CONFIG_DIR="+configDir,
 	)
 	return &launcher{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
-		credentials: credentials, hook: shellescape.Quote(exe) + " " + hookCommand}, nil
+		credentials: credentials, hook: hook}, nil
 }
 
 func (c *launcher) Name() string { return "claude" }
@@ -189,8 +202,8 @@ func (c *launcher) Quote() string { return `'\''` }
 // дерева выключены.
 func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
-	// Вызовы харнесса, которые правило `Bash(review *)` не пропускает, разрешает хук: см. isHarnessCall.
-	if slices.Contains(a.Allow, harness.Name) {
+	// Вызовы, которые правило `Bash(<команда> *)` не пропускает, разрешает хук: см. forms.allowed.
+	if c.hook != "" {
 		hook := map[string]any{"matcher": "Bash", "hooks": []map[string]string{{"type": "command", "command": c.hook}}}
 		settings["hooks"] = map[string]any{"PreToolUse": []any{hook}}
 	}
