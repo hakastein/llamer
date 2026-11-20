@@ -11,13 +11,13 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	"github.com/hakastein/llamer/internal/redact"
+	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
 )
 
 const (

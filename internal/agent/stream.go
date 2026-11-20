@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-
-	"github.com/hakastein/llamer/internal/harness"
 )
 
 // Event — событие потока этапа в форме claude: поля, которые читает llamer, и
@@ -109,9 +107,12 @@ func ownEvent(typ, name, text string) *Event {
 	return &Event{Raw: raw, Type: typ, Text: text}
 }
 
-// Вызов харнесса в команде Bash, в том числе после `;`, `&&`, `|` и внутри
-// `bash -lc '…'`, в которую codex заворачивает команды: имя его команды.
-var harnessCall = regexp.MustCompile(`(?:^|[;&|\n'"])\s*` + harness.Name + `\s+(\S+)`)
+// CommandProtocol — имя команды записи, изменяющие подкоманды и префикс отказа.
+type CommandProtocol struct {
+	Name          string
+	Writes        []string
+	RefusalPrefix string
+}
 
 const (
 	grey     = "\x1b[90m"
@@ -355,18 +356,21 @@ type Stats struct {
 	calls         map[string]int
 	files         map[string]bool
 	errors        int
-	writes        []string
-	harnessWrites map[string]bool
+	protocol      CommandProtocol
+	commandCall   *regexp.Regexp
+	refusalLine   *regexp.Regexp
+	commandWrites map[string]bool
 	LostWrites    int
 	messages      map[string]bool
 	looseTurns    int
 }
 
-// StatsFrom — статистика событий; writes — команды харнесса, которые пишут в
-// журнал: только их сорванный вызов теряет запись.
-func StatsFrom(events []*Event, cwd string, skills, commands, writes []string) *Stats {
+// StatsFrom — статистика событий и недоставленных записей команд.
+func StatsFrom(events []*Event, cwd string, skills, commands []string, protocol CommandProtocol) *Stats {
 	s := &Stats{cwd: cwd, skills: map[string]bool{}, commands: commands, calls: map[string]int{}, files: map[string]bool{},
-		writes: writes, harnessWrites: map[string]bool{}, messages: map[string]bool{}}
+		protocol:    protocol,
+		commandCall: regexp.MustCompile(`(?:^|[;&|\n'"])\s*` + regexp.QuoteMeta(protocol.Name) + `\s+(\S+)`),
+		refusalLine: regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(protocol.RefusalPrefix)), commandWrites: map[string]bool{}, messages: map[string]bool{}}
 	for _, name := range skills {
 		s.skills[name] = true
 	}
@@ -375,8 +379,6 @@ func StatsFrom(events []*Event, cwd string, skills, commands, writes []string) *
 	}
 	return s
 }
-
-var refusalLine = regexp.MustCompile(`(?m)^отказ:`)
 
 func (s *Stats) add(e *Event) {
 	if e.Type == "assistant" {
@@ -398,9 +400,9 @@ func (s *Stats) add(e *Event) {
 			s.files[RelativeToCwd(path, s.cwd)] = true
 		}
 		if command, ok := b.Input["command"].(string); b.Name == "Bash" && ok && command != "" {
-			for _, m := range harnessCall.FindAllStringSubmatch(command, -1) {
-				if slices.Contains(s.writes, m[1]) {
-					s.harnessWrites[b.ID] = true
+			for _, m := range s.commandCall.FindAllStringSubmatch(command, -1) {
+				if slices.Contains(s.protocol.Writes, m[1]) {
+					s.commandWrites[b.ID] = true
 				}
 			}
 			for _, f := range FilesIn(command, s.cwd) {
@@ -416,9 +418,8 @@ func (s *Stats) add(e *Event) {
 			continue
 		}
 		s.errors++
-		// Отказ харнесса агент чинит повтором; вызов, не дошедший до харнесса
-		// (права, песочница, сбой), уносит запись с собой.
-		if s.harnessWrites[b.ToolUseID] && !refusalLine.MatchString(toolResultText(b)) {
+		// Отказ команды агент чинит повтором; отказ в запуске теряет запись.
+		if s.commandWrites[b.ToolUseID] && (s.protocol.RefusalPrefix == "" || !s.refusalLine.MatchString(toolResultText(b))) {
 			s.LostWrites++
 		}
 	}
@@ -450,7 +451,7 @@ func (s *Stats) Lines() []string {
 		lines = append(lines, fmt.Sprintf("отказов: %d", s.errors))
 	}
 	if s.LostWrites > 0 {
-		lines = append(lines, fmt.Sprintf("вызовов %s, не дошедших до журнала: %d", harness.Name, s.LostWrites))
+		lines = append(lines, fmt.Sprintf("вызовов %s, не дошедших до журнала: %d", s.protocol.Name, s.LostWrites))
 	}
 	if skills := sortedKeys(s.skills); len(skills) > 0 {
 		lines = append(lines, "скиллы: "+strings.Join(skills, ", "))

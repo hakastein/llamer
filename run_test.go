@@ -819,7 +819,7 @@ func TestAssessorFailure(t *testing.T) {
 func TestSigtermMidStage(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	root := makeRepo(t, with(config(), "drivers", stubEnvOf("STUB_HANG_STAGE", "assess")))
+	root := makeRepo(t, with(config(), "drivers", stubEnvOf("STUB_HANG_STAGE", "skeptic")))
 	git(t, root, "checkout", "-q", "-f", "main")
 	done := make(chan *result)
 	// Голова — не HEAD: llamer выкладывает её отдельным worktree.
@@ -827,7 +827,8 @@ func TestSigtermMidStage(t *testing.T) {
 		done <- run(t, root, []string{"--exclude", "main", "--head", "feature/dev-7-orders"}, map[string]string{"TMPDIR": tmp})
 	}()
 	hang := filepath.Join(tmp, "hang.json")
-	for wait := 0; wait < 500; wait++ {
+	// Скептик — последний этап: под -race прогон доходит до него не за секунды.
+	for wait := 0; wait < 3000; wait++ {
 		if _, err := os.Stat(hang); err == nil {
 			break
 		}
@@ -856,6 +857,7 @@ func TestSigtermMidStage(t *testing.T) {
 	r := <-done
 
 	equal(t, r.status, 143, "код\n"+r.stderr)
+	equal(t, r.stdout, "", "результата нет")
 	alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
 	// Убитые процессы ещё мгновение висят зомби, пока их не приберёт init.
 	for wait := 0; wait < 50 && (alive(pids.Stage) || alive(pids.Command)); wait++ {
@@ -865,9 +867,79 @@ func TestSigtermMidStage(t *testing.T) {
 	sameList(t, temporaries(), nil, "временное убрано")
 	equal(t, len(strings.Split(git(t, root, "worktree", "list"), "\n")), 1, "worktree головы снят с учёта git")
 	runs, _ := filepath.Glob(filepath.Join(root, ".llamer", "2*"))
-	for _, name := range []string{"оценщик.prompt.md", "оценщик.jsonl"} {
+	for _, name := range []string{"скептик.prompt.md", "скептик.jsonl"} {
 		if _, err := os.Stat(filepath.Join(runs[0], name)); err != nil {
 			t.Errorf("записанные артефакты на месте: %v", err)
 		}
+	}
+}
+
+// Отмена прогона завершает внешнюю команду подготовки вместе с её потомками:
+// потомок, держащий трубы команды, не задерживает выход, worktree головы снят с учёта.
+func TestSigtermDuringExternalCommand(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"driver", "git"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			llamerPid, childPid := filepath.Join(tmp, "llamer.pid"), filepath.Join(tmp, "child.pid")
+			record := func(value, path string) string {
+				return "echo " + value + " > " + path + ".part && mv " + path + ".part " + path + "\n"
+			}
+			// Проверка драйвера висит в потомке оболочки.
+			driver := "#!/bin/sh\n" + record("$PPID", llamerPid) + "sleep 30 &\n" + record("$!", childPid) + "wait\n"
+			if name == "git" {
+				driver = "#!/bin/sh\n[ \"$1\" = --version ] && " + record("$PPID", llamerPid) + "exec " + filepath.Join(stubs, "claude") + " \"$@\"\n"
+			}
+			write(t, tmp, "claude", driver)
+			if err := os.Chmod(filepath.Join(tmp, "claude"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			root := makeRepo(t, with(config(), "drivers", obj{"claude": obj{"bin": filepath.Join(tmp, "claude")}}))
+			args := append(slices.Clone(worktree), "--preflight")
+			if name == "git" {
+				// Выкладка головы висит в smudge-фильтре — потомке git.
+				write(t, root, ".gitattributes", "src/Order.php filter=hang\n")
+				git(t, root, "add", "-A")
+				git(t, root, "commit", "-qm", "filter")
+				args = []string{"--base", "main", "--head", git(t, root, "rev-parse", "HEAD")}
+				git(t, root, "checkout", "-q", "-f", "main")
+				write(t, tmp, "filter", "#!/bin/sh\n"+record("$$", childPid)+"exec sleep 30\n")
+				if err := os.Chmod(filepath.Join(tmp, "filter"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				git(t, root, "config", "filter.hang.smudge", filepath.Join(tmp, "filter"))
+			}
+			done := make(chan *result)
+			go func() { done <- run(t, root, args, nil) }()
+			for wait := 0; wait < 500; wait++ {
+				if _, err := os.Stat(childPid); err == nil {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			var pid, child int
+			if _, err := fmt.Sscan(read(t, llamerPid)+read(t, childPid), &pid, &child); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { syscall.Kill(child, syscall.SIGKILL) })
+			signalled := time.Now()
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			r := <-done
+
+			equal(t, r.status, 143, "код\n"+r.stderr)
+			equal(t, r.stdout, "", "результата нет")
+			if waited := time.Since(signalled); waited > 10*time.Second {
+				t.Errorf("после сигнала прогон ждал внешнюю команду: %s", waited)
+			}
+			// Убитый потомок ещё мгновение висит зомби, пока его не приберёт init.
+			for wait := 0; wait < 50 && syscall.Kill(child, 0) == nil; wait++ {
+				time.Sleep(20 * time.Millisecond)
+			}
+			equal(t, syscall.Kill(child, 0) != nil, true, "потомок команды остановлен")
+			equal(t, len(strings.Split(git(t, root, "worktree", "list", "--porcelain"), "\n\n")), 1, "worktree головы снят с учёта git\n"+r.stderr)
+		})
 	}
 }

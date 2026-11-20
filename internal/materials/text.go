@@ -1,11 +1,11 @@
 package materials
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/hakastein/llamer/internal/git"
 )
 
 var numberedHunk = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -153,8 +154,8 @@ func (s Signals) Summary() string {
 }
 
 // CollectRiskSignals — размер, механика и тесты изменений.
-func CollectRiskSignals(diff *Diff) (Signals, error) {
-	narrow, err := diff.Text(0)
+func CollectRiskSignals(ctx context.Context, diff *Diff) (Signals, error) {
+	narrow, err := diff.Text(ctx, 0)
 	if err != nil {
 		return Signals{}, err
 	}
@@ -222,15 +223,12 @@ func restoreOldVersion(newLines []string, added, removed *Lines) []string {
 	return old
 }
 
-func gitDiffFiles(oldPath, newPath string, context int) (string, error) {
-	out, err := exec.Command("git", "diff", "--no-index", "-U"+strconv.Itoa(context), oldPath, newPath).Output()
-	if err == nil {
-		return "", nil
-	}
+func gitDiffFiles(ctx context.Context, oldPath, newPath string, context int) (string, error) {
+	_, err := git.Raw(ctx, []string{"diff", "--no-index", "-U" + strconv.Itoa(context), oldPath, newPath}, "")
 	// Различия git отдаёт кодом 1 — текст диффа лежит в stdout.
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return string(out), nil
+	var gitErr *git.Error
+	if errors.As(err, &gitErr) && gitErr.Status == 1 {
+		return gitErr.Stdout, nil
 	}
 	return "", err
 }
@@ -256,7 +254,7 @@ func retitle(diff, file string, born bool) string {
 	return strings.TrimRightFunc(strings.Join(out, "\n"), unicode.IsSpace)
 }
 
-func widenFromWorkTree(files []string, added, removed *Side, read func(string) (string, bool), context int) (string, error) {
+func widenFromWorkTree(ctx context.Context, files []string, added, removed *Side, read func(string) (string, bool), context int) (string, error) {
 	dir, err := os.MkdirTemp("", "review-widen-")
 	if err != nil {
 		return "", err
@@ -291,7 +289,7 @@ func widenFromWorkTree(files []string, added, removed *Side, read func(string) (
 		if err := os.WriteFile(newPath, []byte(strings.Join(newLines, "\n")+"\n"), 0o666); err != nil {
 			return "", err
 		}
-		diff, err := gitDiffFiles(oldPath, newPath, context)
+		diff, err := gitDiffFiles(ctx, oldPath, newPath, context)
 		if err != nil {
 			return "", err
 		}

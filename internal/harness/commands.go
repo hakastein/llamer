@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -536,7 +537,7 @@ func thread(v values, c *Context) (Result, error) {
 
 func blame(v values, _ *Context) (Result, error) {
 	file, line := v.str("file"), v.str("line")
-	out, err := git.Raw([]string{"blame", "-L", line + "," + line, "--porcelain", "--", file}, "")
+	out, err := git.Raw(context.Background(), []string{"blame", "-L", line + "," + line, "--porcelain", "--", file}, "")
 	if err != nil {
 		return Result{}, domain.Refuse("git blame не ответил по %s:%s (%s)", file, line, git.FirstLine(err))
 	}
@@ -581,7 +582,7 @@ type changed struct{ line, from string }
 // changedFiles — файлы изменений задачи по ревизиям задания: путь → строка перечня и путь до переименования.
 func changedFiles(revs []string, cwd string) ([]string, map[string]changed, error) {
 	lines := func(args ...string) ([]string, error) {
-		out, err := git.Git(append(append([]string{"diff"}, args...), revs...), cwd)
+		out, err := git.Git(context.Background(), append(append([]string{"diff"}, args...), revs...), cwd)
 		if err != nil {
 			return nil, err
 		}
@@ -657,7 +658,7 @@ func diff(v values, c *Context) (Result, error) {
 		}
 		// Тот же вызов, что строит дифф пакета, с первой — полной — шириной контекста.
 		d := materials.NewDiff(revs[0], []string{path}, revs, c.cwd, map[string]string{path: f.from})
-		text, err := d.Text(materials.DiffWidths[0])
+		text, err := d.Text(context.Background(), materials.DiffWidths[0])
 		if err != nil {
 			return Result{}, err
 		}

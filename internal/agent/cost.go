@@ -42,7 +42,8 @@ type Record struct {
 	OK, TimedOut        bool
 	ExitCode            *int
 	Signal              string
-	Result              *Event // итоговое событие result или nil
+	Result              *Event   // итоговое событие result или nil
+	Events              []*Event // поток событий запуска
 	DurationMs          int64
 	Cost                *float64 // nil — драйвер цены не назвал: в отчёте это `$?`, а не $0
 	Usage               map[string]Usage

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -20,34 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Повисший драйвер (модель молчит, сеть висит) иначе держит волну до общего
-// таймаута джобы. По истечении срока этап возвращается невыполненным.
-const stageTimeout = 20 * time.Minute
-
 var rateLimitText = regexp.MustCompile(`(?i)usage limit reached|rate limit|out of credits`)
-
-// Живые этапы. Каждый — своя группа процессов и убивается группой: убитая одна
-// обёртка драйвера (codex на node) оставила бы жить сам драйвер и его команды.
-var (
-	runningMu sync.Mutex
-	running   = map[int]bool{}
-)
-
-func killGroup(pid int) {
-	// Группа уже вымерла, а ожидание ещё не вернулось — ESRCH не ошибка.
-	syscall.Kill(-pid, syscall.SIGKILL)
-}
-
-// StopStages — прогон прерван: все поднятые этапы гибнут вместе со своими
-// процессами. Замок остаётся взятым до выхода процесса: этап, дождавшийся
-// смерти своего процесса, встаёт на нём и не продолжает прогон, пока прерывание
-// убирает за собой, — как у Node, где обработчик сигнала завершает процесс сразу.
-func StopStages() {
-	runningMu.Lock()
-	for pid := range running {
-		killGroup(pid)
-	}
-}
 
 // FailureReason — причина срыва этапа. exitCode 0 не значит успех — при
 // is_error причина читается из result, а текст ловит исчерпание подписки и без статуса.
@@ -116,6 +89,7 @@ func (t *Traffic) Describe() string {
 // разбор потока в события claude.
 type Launch struct {
 	Command     string
+	Timeout     time.Duration
 	Argv        []string
 	Env         []string
 	Input       string
@@ -159,7 +133,12 @@ func lookPath(command string, env []string) (string, error) {
 
 // Spawn — процесс этапа по спецификации драйвера. Каждая строка потока
 // проходит через launch.Normalize — дальше все драйверы говорят событиями claude.
-func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
+func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Telemetry) *Record {
+	if launch.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, launch.Timeout)
+		defer cancel()
+	}
 	traffic := t.Traffic
 	startedAt := time.Now()
 	since := func() int64 { return time.Since(startedAt).Milliseconds() }
@@ -216,11 +195,13 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 	}
 
 	path, lookErr := lookPath(launch.Command, launch.Env)
-	cmd := &exec.Cmd{Path: path, Args: append([]string{launch.Command}, launch.Argv...), Dir: cwd, Env: launch.Env,
-		SysProcAttr: &syscall.SysProcAttr{Setsid: true}}
+	cmd := exec.CommandContext(ctx, path, launch.Argv...)
+	// Путь уже найден в PATH запуска, а не в окружении llamer.
+	cmd.Path, cmd.Err = path, nil
+	cmd.Args[0], cmd.Dir, cmd.Env = launch.Command, cwd, launch.Env
+	Group(cmd)
 	var exitCode *int
 	signal := ""
-	var timedOut atomic.Bool
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -235,10 +216,6 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 		traffic.promptSentMs = since()
 		traffic.mu.Unlock()
 	} else {
-		pid := cmd.Process.Pid
-		runningMu.Lock()
-		running[pid] = true
-		runningMu.Unlock()
 		go func() {
 			io.WriteString(stdin, launch.Input)
 			stdin.Close()
@@ -246,11 +223,6 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 			traffic.promptSentMs = since()
 			traffic.mu.Unlock()
 		}()
-		timer := time.AfterFunc(stageTimeout, func() {
-			timedOut.Store(true)
-			// SIGKILL, а не SIGTERM: драйвер может игнорировать мягкий сигнал.
-			killGroup(pid)
-		})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
@@ -289,10 +261,6 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 		}()
 		wg.Wait()
 		cmd.Wait() // исход — в ProcessState: код или сигнал
-		timer.Stop()
-		runningMu.Lock()
-		delete(running, pid)
-		runningMu.Unlock()
 		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			signal = unix.SignalName(status.Signal())
 		} else {
@@ -318,9 +286,9 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 		late = launch.AfterExit()
 	}
 	r := &Record{
-		Name: name, Model: launch.Model, Effort: launch.Effort,
-		OK:       exitCode != nil && *exitCode == 0 && result != nil && !result.IsError && !timedOut.Load(),
-		TimedOut: timedOut.Load(), ExitCode: exitCode, Signal: signal, Result: result,
+		Name: name, Model: launch.Model, Effort: launch.Effort, Events: t.events,
+		OK:       exitCode != nil && *exitCode == 0 && result != nil && !result.IsError && ctx.Err() == nil,
+		TimedOut: errors.Is(ctx.Err(), context.DeadlineExceeded), ExitCode: exitCode, Signal: signal, Result: result,
 		DurationMs: since(), ContextTokens: max(contextTokens, late.ContextTokens),
 		Requests: late.Requests, Limits: late.Limits, Turns: turns, SessionID: sessionID,
 	}
@@ -340,4 +308,20 @@ func Spawn(name string, launch *Launch, cwd string, t *Telemetry) *Record {
 		r.UsageApprox = true
 	}
 	return r
+}
+
+// Group — команда из CommandContext в своей группе процессов: отмена контекста
+// завершает всю группу (обёртка или git могут оставить дочерние команды), а
+// ожидание труб после этого ограничено.
+func Group(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	// Трубы может держать потомок, ушедший из группы.
+	cmd.WaitDelay = time.Second
 }

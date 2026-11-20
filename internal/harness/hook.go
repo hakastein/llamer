@@ -1,11 +1,9 @@
-package drivers
+package harness
 
 import (
 	"encoding/json"
 	"io"
 	"regexp"
-
-	"github.com/hakastein/llamer/internal/harness"
 )
 
 const (
@@ -22,9 +20,9 @@ const (
 )
 
 var (
-	harnessCallForm = regexp.MustCompile(`^` + harness.Name + ` [a-z]+(?:[ \t]+(?:` + quotedWord + `|` + word + `))*[ \t]*$`)
+	harnessCallForm = regexp.MustCompile(`^` + Name + ` [a-z]+(?:[ \t]+(?:` + quotedWord + `|` + word + `))*[ \t]*$`)
 	harnessLoop     = regexp.MustCompile(`^for[ \t]+(` + loopVar + `)[ \t]+in(?:[ \t]+` + loopPath + `)+` + loopSep + `do\s+` +
-		harness.Name + ` diff((?:[ \t]+` + loopArg + `)+)` + loopSep + `done(?:[ \t]*\|[ \t]*(?:head|tail) -\d+)?\s*$`)
+		Name + ` diff((?:[ \t]+` + loopArg + `)+)` + loopSep + `done(?:[ \t]*\|[ \t]*(?:head|tail) -\d+)?\s*$`)
 	loopVarRef = regexp.MustCompile(`\$(` + loopVar + `)`)
 )
 
@@ -66,5 +64,5 @@ func HookMain(stdin io.Reader, stdout io.Writer) error {
 		return nil
 	}
 	return json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]string{
-		"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "вызов " + harness.Name}})
+		"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "вызов " + Name}})
 }

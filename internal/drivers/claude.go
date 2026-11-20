@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,8 +10,6 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 )
 
@@ -20,7 +19,7 @@ var claudeAuth = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHR
 // выписывать нужно только то, чего он read-only не считает.
 var allowedTools = []string{"Read", "Grep", "Glob", "Skill"}
 
-// Всё, чему в ревью нечего делать: их описания едут в каждый промпт, а вызов
+// Инструменты вне read-only запуска: их описания едут в каждый промпт, а вызов
 // стоит хода. Skill остаётся — им грузится метод этапа.
 var disallowedTools = []string{
 	"Edit", "Write", "NotebookEdit", "Task", "Agent", "Workflow", "ToolSearch", "ListAgents",
@@ -42,9 +41,6 @@ var projectMemoryFiles = []string{"**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGEN
 // Имя плагина этапа — пространство имён скиллов в Skill: одноимённый скилл
 // из `.claude/skills` дерева иначе перехватил бы голое имя.
 const stagePlugin = "stage"
-
-// ClaudeHook — скрытая подкоманда llamer, которой Claude Code зовёт хук PreToolUse этапа.
-const ClaudeHook = "__claude-hook"
 
 // treeSkillsOff — скиллы дерева из `.claude/skills` Claude Code грузит вместе с
 // памятью проекта, и выключаются они только поштучно, по имени.
@@ -71,19 +67,17 @@ func claudeConfigDir(env map[string]string) string {
 }
 
 // Шаблон со звёздочкой — префикс, и вызов без аргументов ему не отвечает:
-// каждая команда разрешается обеими формами. Харнесс разрешён целиком: чужую
-// этапу команду он отклоняет сам и называет команды этапа, а отказ Claude Code
-// агент читает как запрет Bash вообще и бросает работу.
+// каждая команда разрешается обеими формами.
 func bashRules(allow []string) []string {
 	var rules []string
-	for _, c := range append([]string{harness.Name}, allow...) {
+	for _, c := range allow {
 		rules = append(rules, "Bash("+c+")", "Bash("+c+" *)")
 	}
 	return rules
 }
 
-func claudeGaps(settings config.Driver, env map[string]string) []Gap {
-	if missing := binaryGap("claude", settings); missing != nil {
+func claudeGaps(ctx context.Context, settings Settings, env map[string]string) []Gap {
+	if missing := binaryGap(ctx, "claude", settings); missing != nil {
 		return missing
 	}
 	credentials := filepath.Join(claudeConfigDir(env), ".credentials.json")
@@ -100,7 +94,7 @@ func claudeGaps(settings config.Driver, env map[string]string) []Gap {
 }
 
 type claude struct {
-	settings    config.Driver
+	settings    Settings
 	env         []string
 	runSkills   string
 	tmp         string
@@ -128,10 +122,6 @@ func prepareClaude(s Setup) (Driver, error) {
 		}
 	}
 	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", s.Settings.Bin, configDir)
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
 	env := append(stageEnvOf(s.Env, s.EnvOrder, s.StageBin, claudeAuth), settingsEnv(s.Settings)...)
 	env = append(env,
 		// Потолок ожидания фоновых задач снят: верхняя граница и так есть — таймаут этапа.
@@ -147,7 +137,7 @@ func prepareClaude(s Setup) (Driver, error) {
 		"CLAUDE_CONFIG_DIR="+configDir,
 	)
 	return &claude{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
-		credentials: credentials, hook: shellescape.Quote(exe) + " " + ClaudeHook}, nil
+		credentials: credentials, hook: s.Hook}, nil
 }
 
 func (c *claude) Name() string { return "claude" }
@@ -166,9 +156,12 @@ func (c *claude) Quote() string { return `'\''` }
 // первым этапом, читают остальные. Скиллы этапа — его плагин `stage`, скиллы
 // дерева выключены.
 func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
-	// Вызов харнесса длиннее предела разбора Claude Code разрешает хук — см. hook.go.
-	hook := map[string]any{"matcher": "Bash", "hooks": []map[string]string{{"type": "command", "command": c.hook}}}
-	settings := map[string]any{"hooks": map[string]any{"PreToolUse": []any{hook}}, "skillOverrides": treeSkillsOff(a.Cwd)}
+	// Хук разрешений задаётся вызывающим кодом.
+	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
+	if c.hook != "" {
+		hook := map[string]any{"matcher": "Bash", "hooks": []map[string]string{{"type": "command", "command": c.hook}}}
+		settings["hooks"] = map[string]any{"PreToolUse": []any{hook}}
+	}
 	if !a.ProjectMemory {
 		settings["claudeMdExcludes"] = projectMemoryFiles
 	}
@@ -222,7 +215,7 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 }
 
 // keepSession — сессия лежит в projects/<каталог>/<id>.jsonl конфига; по ней же Claude Code её и продолжает.
-func (c *claude) keepSession(dir, sessionID string, level config.Level) (string, error) {
+func (c *claude) keepSession(dir, sessionID string, level Level) (string, error) {
 	projects := filepath.Join(c.configDir, "projects")
 	file := sessionID + ".jsonl"
 	entries, _ := os.ReadDir(projects)

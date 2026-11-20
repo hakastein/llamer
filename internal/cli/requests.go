@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,8 +21,8 @@ type InputError struct{ Message string }
 
 func (e *InputError) Error() string { return e.Message }
 
-func resolveRevision(rev, flag, cwd string) (string, error) {
-	sha, ok := git.Try([]string{"rev-parse", "--verify", "--quiet", rev + "^{commit}"}, cwd)
+func resolveRevision(ctx context.Context, rev, flag, cwd string) (string, error) {
+	sha, ok := git.Try(ctx, []string{"rev-parse", "--verify", "--quiet", rev + "^{commit}"}, cwd)
 	if !ok || sha == "" {
 		return "", &InputError{flag + " " + rev + ": такой ревизии в репозитории нет"}
 	}
@@ -43,12 +45,12 @@ type gitlabRequest struct {
 	excludes []string
 }
 
-func openGitlab(ref string, env map[string]string, cwd string, exclude []string) (*gitlabRequest, error) {
+func openGitlab(ctx context.Context, ref string, env map[string]string, cwd string, exclude []string) (*gitlabRequest, error) {
 	r, err := gitlab.ParseRef(ref, env)
 	if err != nil {
 		return nil, err
 	}
-	mr, err := gitlab.NewMergeRequest(r, env["GITLAB_TOKEN"])
+	mr, err := gitlab.NewMergeRequest(ctx, r, env["GITLAB_TOKEN"])
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +63,11 @@ func openGitlab(ref string, env map[string]string, cwd string, exclude []string)
 		return nil, &InputError{"у MR !" + r.IID + " нет diff_refs — разбирать нечего"}
 	}
 	excludes := append([]string{"origin/" + info.TargetBranch}, exclude...)
-	if _, err := resolveRevision(excludes[0], "целевая ветка MR", cwd); err != nil {
+	if _, err := resolveRevision(ctx, excludes[0], "целевая ветка MR", cwd); err != nil {
 		return nil, err
 	}
 	for _, rev := range exclude {
-		if _, err := resolveRevision(rev, "--exclude", cwd); err != nil {
+		if _, err := resolveRevision(ctx, rev, "--exclude", cwd); err != nil {
 			return nil, err
 		}
 	}
@@ -84,11 +86,11 @@ func (g *gitlabRequest) Label() string {
 
 // RequestDiff — GitLab сводит ветку с целевой сам; локальный git diff от базы
 // MR на ветке с влитой целевой тянет чужие правки.
-func (g *gitlabRequest) RequestDiff(cwd string) (*materials.Diff, error) {
+func (g *gitlabRequest) RequestDiff(ctx context.Context, cwd string) (*materials.Diff, error) {
 	files, err := g.mr.MergeDiff()
 	if err != nil {
 		logx.Log("дифф у GitLab не спросился (" + strings.Split(err.Error(), "\n")[0] + ") — считаем локально от базы MR")
-		return materials.OverRange(g.BaseSha(), []string{g.BaseSha(), g.HeadSha()}, cwd)
+		return materials.OverRange(ctx, g.BaseSha(), []string{g.BaseSha(), g.HeadSha()}, cwd)
 	}
 	logx.Logf("дифф реквеста от GitLab: %d файлов", len(files))
 	return materials.FromMergeDiff(files, g.BaseSha(), cwd)
@@ -101,14 +103,14 @@ func (g *gitlabRequest) Discussions() ([]*gl.Discussion, error) { return g.mr.Di
 // `git add -A`, ни `write-tree` не трогали индекс человека. Копия сохраняет время
 // изменения: по нему git узнаёт записи, изменённые в ту же секунду, что и
 // индекс, и перечитывает их — со свежим временем правка той же длины потерялась бы.
-func snapshot(cwd, what string) (string, error) {
+func snapshot(ctx context.Context, cwd, what string) (string, error) {
 	dir, err := os.MkdirTemp("", "llamer-index-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(dir)
 	index := filepath.Join(dir, "index")
-	gitPath, err := git.Git([]string{"rev-parse", "--git-path", "index"}, cwd)
+	gitPath, err := git.Git(ctx, []string{"rev-parse", "--git-path", "index"}, cwd)
 	if err != nil {
 		return "", err
 	}
@@ -130,11 +132,11 @@ func snapshot(cwd, what string) (string, error) {
 	}
 	env := append(slices.Clone(materials.MachineAuthor), "GIT_INDEX_FILE="+index)
 	if what == "worktree" {
-		if _, err := git.Git([]string{"add", "-A", "--", ":/"}, cwd, env...); err != nil {
+		if _, err := git.Git(ctx, []string{"add", "-A", "--", ":/"}, cwd, env...); err != nil {
 			return "", err
 		}
 	}
-	tree, err := git.Git([]string{"write-tree"}, cwd, env...)
+	tree, err := git.Git(ctx, []string{"write-tree"}, cwd, env...)
 	if err != nil {
 		return "", err
 	}
@@ -142,7 +144,7 @@ func snapshot(cwd, what string) (string, error) {
 	if what == "worktree" {
 		label = "рабочего дерева"
 	}
-	return git.Git([]string{"commit-tree", tree, "-p", "HEAD", "-m", "llamer: снимок " + label}, cwd, env...)
+	return git.Git(ctx, []string{"commit-tree", tree, "-p", "HEAD", "-m", "llamer: снимок " + label}, cwd, env...)
 }
 
 // revisionRequest — ревизии репозитория: `--head` и `--base` или `--exclude`.
@@ -154,31 +156,31 @@ type revisionRequest struct {
 	headSha, baseSha string
 }
 
-func openRevisions(cwd, base, head string, exclude []string) (*revisionRequest, error) {
+func openRevisions(ctx context.Context, cwd, base, head string, exclude []string) (*revisionRequest, error) {
 	var headSha string
 	var err error
 	if head == "worktree" || head == "index" {
-		headSha, err = snapshot(cwd, head)
+		headSha, err = snapshot(ctx, cwd, head)
 	} else {
-		headSha, err = resolveRevision(head, "--head", cwd)
+		headSha, err = resolveRevision(ctx, head, "--head", cwd)
 	}
 	if err != nil {
 		return nil, err
 	}
 	for _, rev := range exclude {
-		if _, err := resolveRevision(rev, "--exclude", cwd); err != nil {
+		if _, err := resolveRevision(ctx, rev, "--exclude", cwd); err != nil {
 			return nil, err
 		}
 	}
 	var baseSha string
 	if base != "" {
-		if baseSha, err = resolveRevision(base, "--base", cwd); err != nil {
+		if baseSha, err = resolveRevision(ctx, base, "--base", cwd); err != nil {
 			return nil, err
 		}
 	} else {
-		sha, ok := git.Try([]string{"merge-base", headSha, exclude[0]}, cwd)
+		sha, ok := git.Try(ctx, []string{"merge-base", headSha, exclude[0]}, cwd)
 		if !ok || sha == "" {
-			return nil, &InputError{git.NoCommonHistory(headSha, exclude[0], cwd)}
+			return nil, &InputError{git.NoCommonHistory(ctx, headSha, exclude[0], cwd)}
 		}
 		baseSha = sha
 	}
@@ -211,8 +213,8 @@ func (r *revisionRequest) Label() string {
 	return r.head + " без " + strings.Join(r.exclude, ", ")
 }
 
-func (r *revisionRequest) RequestDiff(cwd string) (*materials.Diff, error) {
-	return materials.OverRange(r.baseSha, []string{r.baseSha, r.headSha}, cwd)
+func (r *revisionRequest) RequestDiff(ctx context.Context, cwd string) (*materials.Diff, error) {
+	return materials.OverRange(ctx, r.baseSha, []string{r.baseSha, r.headSha}, cwd)
 }
 
 func (r *revisionRequest) Discussions() ([]*gl.Discussion, error) { return nil, nil }
@@ -226,25 +228,35 @@ type tree struct {
 // openTree — рабочая копия годится, если стоит на голове; иначе голова
 // выкладывается отдельным worktree во временный каталог (объекты общие с
 // основным `.git`) и убирается после прогона.
-func openTree(r request, root string) (*tree, error) {
-	if head, err := git.CurrentHead(root); r.workTree() || (err == nil && head == r.HeadSha()) {
+func openTree(ctx context.Context, r request, root string) (*tree, error) {
+	if head, err := git.CurrentHead(ctx, root); r.workTree() || (err == nil && head == r.HeadSha()) {
 		return &tree{root, func() {}}, nil
 	}
-	if _, ok := git.Try([]string{"cat-file", "-e", r.HeadSha() + "^{commit}"}, root); !ok {
+	if _, ok := git.Try(ctx, []string{"cat-file", "-e", r.HeadSha() + "^{commit}"}, root); !ok {
 		return nil, &InputError{"коммита " + git.Short(r.HeadSha()) + " в репозитории нет — сделай git fetch"}
 	}
 	path, err := os.MkdirTemp("", "llamer-tree-")
 	if err != nil {
 		return nil, err
 	}
+	// Уборка — и после отмены прогона: без своего контекста. Прерванный
+	// worktree add оставляет запись заблокированной — её снимает второй --force.
+	t := &tree{path, func() {
+		args := []string{"worktree", "remove", "--force", "--force", path}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			args = []string{"worktree", "prune"}
+		}
+		if _, err := git.Git(context.Background(), args, root); err != nil {
+			logx.Logf("worktree головы %s не убран: %s", path, git.FirstLine(err))
+		}
+		os.RemoveAll(path)
+	}}
 	// Без hooksPath post-checkout-хук (lfs и подобные) может вернуть ненулевой
 	// код, и выкладка сочтётся упавшей.
-	if _, err := git.Git([]string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", path, r.HeadSha()}, root); err != nil {
+	if _, err := git.Git(ctx, []string{"-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", path, r.HeadSha()}, root); err != nil {
+		t.close()
 		return nil, err
 	}
 	logx.Logf("голова %s выложена в %s", git.Short(r.HeadSha()), path)
-	return &tree{path, func() {
-		git.Try([]string{"worktree", "remove", "--force", path}, root)
-		os.RemoveAll(path)
-	}}, nil
+	return t, nil
 }

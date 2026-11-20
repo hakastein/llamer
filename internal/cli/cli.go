@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
@@ -23,6 +24,8 @@ import (
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	"github.com/hakastein/llamer/internal/report"
+	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
+	"github.com/hakastein/llamer/internal/skills"
 	"github.com/hakastein/llamer/internal/stages"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
@@ -98,7 +101,7 @@ type gap = drivers.Gap
 type ready struct {
 	root    string
 	config  *config.Config
-	library *stages.Library
+	library *skills.Library
 	gaps    []gap
 }
 
@@ -125,8 +128,8 @@ func resolvePath(cwd, path string) string {
 // checkReadiness — проверяет только своё: git, драйверы этапов и их вход, токен
 // GitLab при GitLab-входе и наличие скиллов. Софт скиллов, навигацию и docker
 // готовит запускающий. Любой пробел останавливает прогон.
-func checkReadiness(cwd string, o *Options, env map[string]string) (*ready, error) {
-	root, err := git.RepoRoot(cwd)
+func checkReadiness(ctx context.Context, cwd string, o *Options, env map[string]string) (*ready, error) {
+	root, err := git.RepoRoot(ctx, cwd)
 	if err != nil {
 		return &ready{gaps: []gap{{ID: "git", Message: "git не нашёл репозиторий в " + cwd + " (" + git.FirstLine(err) + ")"}}}, nil
 	}
@@ -144,7 +147,7 @@ func checkReadiness(cwd string, o *Options, env map[string]string) (*ready, erro
 	}
 	r := &ready{root: root, config: cfg, gaps: []gap{}}
 	for _, name := range cfg.DriversInUse() {
-		r.gaps = append(r.gaps, drivers.Gaps(name, cfg.Drivers[name], env)...)
+		r.gaps = append(r.gaps, drivers.Gaps(ctx, name, cfg.Drivers[name], env)...)
 	}
 	if o.Input == "gitlab" {
 		r.gaps = append(r.gaps, gitlabGaps(o, env)...)
@@ -173,37 +176,11 @@ func formatGaps(gaps []gap) string {
 	return strings.Join(lines, "\n")
 }
 
-// Что убрать, если прогон прервут: этапы с моделями жили бы дальше, копии
-// кредов и выложенная голова остались бы.
-var (
-	interruptMu sync.Mutex
-	onInterrupt []func()
-)
-
-func pushCleanup(f func()) {
-	interruptMu.Lock()
-	defer interruptMu.Unlock()
-	onInterrupt = append(onInterrupt, f)
-}
-
-func watchSignals() {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-signals
-		name := map[os.Signal]string{syscall.SIGINT: "SIGINT", syscall.SIGTERM: "SIGTERM"}[sig]
-		logx.Logf("прогон прерван: %s — этапы остановлены", name)
-		agent.StopStages()
-		interruptMu.Lock()
-		for i := len(onInterrupt) - 1; i >= 0; i-- {
-			onInterrupt[i]()
-		}
-		os.Exit(128 + int(sig.(syscall.Signal)))
-	}()
-}
-
 // HarnessCommand — скрытая подкоманда llamer, которой обёртка `review` этапа зовёт харнесс.
 const HarnessCommand = "__harness"
+
+// ClaudeHook — скрытая подкоманда llamer для хука PreToolUse.
+const ClaudeHook = "__claude-hook"
 
 // prepareStageBin — каталог команд этапа: обёртка `review` над тем же
 // бинарником, что ведёт прогон. Пишется на каждый прогон: `review` в PATH
@@ -237,6 +214,7 @@ func readTask(path string) (string, error) {
 }
 
 type run struct {
+	ctx       context.Context
 	options   *Options
 	ready     *ready
 	env       map[string]string
@@ -250,9 +228,9 @@ type run struct {
 func (r *run) openRequest() (request, error) {
 	o := r.options
 	if o.Input == "gitlab" {
-		return openGitlab(o.MR, r.env, r.ready.root, o.Exclude)
+		return openGitlab(r.ctx, o.MR, r.env, r.ready.root, o.Exclude)
 	}
-	return openRevisions(r.ready.root, o.Base, o.Head, o.Exclude)
+	return openRevisions(r.ctx, r.ready.root, o.Base, o.Head, o.Exclude)
 }
 
 func (r *run) review() (bool, error) {
@@ -267,14 +245,17 @@ func (r *run) review() (bool, error) {
 	} else {
 		delivery = &report.ReportDelivery{Request: req, Artifacts: r.artifacts, Stdout: r.stdout}
 	}
-	t, err := openTree(req, r.ready.root)
+	t, err := openTree(r.ctx, req, r.ready.root)
 	if err != nil {
 		return false, err
 	}
-	pushCleanup(t.close)
 	defer t.close()
 
-	scope, err := materials.PlanReviewScope(req, t.path, r.options.SinceLast)
+	scope, err := materials.PlanReviewScope(r.ctx, req, t.path, r.options.SinceLast)
+	// Прерванный прогон результата не выдаёт: отказ git от отмены — не срыв разбора.
+	if r.ctx.Err() != nil {
+		return false, r.ctx.Err()
+	}
 	if err != nil {
 		var scopeErr *materials.TaskChangesError
 		if !errors.As(err, &scopeErr) {
@@ -292,7 +273,7 @@ func (r *run) review() (bool, error) {
 		return true, nil
 	}
 
-	m, err := materials.Gather(req, t.path, scope, r.issue, r.artifacts.SaveDiff)
+	m, err := materials.Gather(r.ctx, req, t.path, scope, r.issue, r.artifacts.SaveDiff)
 	if err != nil {
 		return false, err
 	}
@@ -312,19 +293,27 @@ func (r *run) review() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
 	prepared := map[string]drivers.Driver{}
 	for _, name := range cfg.DriversInUse() {
 		d, err := drivers.Prepare(name, drivers.Setup{Settings: cfg.Drivers[name], Env: r.env, EnvOrder: r.envOrder,
-			StageBin: stageBin, RunSkills: runSkills, Tmp: r.tmp})
+			StageBin: stageBin, RunSkills: runSkills, Tmp: r.tmp, Hook: shellescape.Quote(exe) + " " + ClaudeHook})
 		if err != nil {
 			return false, err
 		}
 		prepared[name] = d
 	}
-	outcome, err := stages.Run(&stages.Toolkit{Artifacts: r.artifacts, Drivers: prepared, Materials: m, Library: library,
+	outcome, err := stages.Run(&stages.Toolkit{Context: r.ctx, Artifacts: r.artifacts, Drivers: prepared, Materials: m, Library: library,
 		Config: cfg, Shared: shared})
 	if err != nil {
 		return false, err
+	}
+	// Отменённые этапы — не итог ревью: ни результата, ни публикации.
+	if r.ctx.Err() != nil {
+		return false, r.ctx.Err()
 	}
 
 	if !outcome.OK() {
@@ -375,15 +364,19 @@ func environ() (map[string]string, []string) {
 	return env, order
 }
 
-func main(options *Options, stdout io.Writer) (bool, error) {
+func main(ctx context.Context, options *Options, stdout io.Writer) (bool, error) {
 	env, order := environ()
 	cwd, err := os.Getwd()
 	if err != nil {
 		return false, err
 	}
-	rd, err := checkReadiness(cwd, options, env)
+	rd, err := checkReadiness(ctx, cwd, options, env)
 	if err != nil {
 		return false, err
+	}
+	// Пробел от проверки, сорванной сигналом, — не пробел окружения.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
 	}
 	ok := len(rd.gaps) == 0
 	if options.Preflight {
@@ -429,9 +422,8 @@ func main(options *Options, stdout io.Writer) (bool, error) {
 			logx.Log("артефакты прогона: " + runArtifacts.Path)
 		})
 	}
-	pushCleanup(cleanUp)
 	defer cleanUp()
-	ok, err = (&run{options: options, ready: rd, env: env, envOrder: order, artifacts: runArtifacts, tmp: tmp, issue: issue, stdout: stdout}).review()
+	ok, err = (&run{ctx: ctx, options: options, ready: rd, env: env, envOrder: order, artifacts: runArtifacts, tmp: tmp, issue: issue, stdout: stdout}).review()
 	cleanUp()
 	if err == nil && cleanErr != nil {
 		return false, cleanErr
@@ -441,16 +433,30 @@ func main(options *Options, stdout io.Writer) (bool, error) {
 
 // run — прогон llamer; возвращает код выхода.
 func runMain(options *Options, stdout io.Writer) (code int) {
-	watchSignals()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	var interrupted atomic.Int32
+	go func() {
+		select {
+		case sig := <-signals:
+			interrupted.Store(int32(sig.(syscall.Signal)))
+			logx.Logf("прогон прерван: %s — этапы остановлены", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	defer func() {
 		if p := recover(); p != nil {
 			code = fail(fmt.Sprint(p))
 		}
 	}()
-	ok, err := main(options, stdout)
-	// Прерванный прогон завершает обработчик сигнала, своим кодом: здесь его ждём.
-	interruptMu.Lock()
-	defer interruptMu.Unlock()
+	ok, err := main(ctx, options, stdout)
+	if sig := interrupted.Load(); sig != 0 {
+		return 128 + int(sig)
+	}
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -504,8 +510,8 @@ func Execute(argv []string, stdout io.Writer) int {
 	root.AddCommand(
 		&cobra.Command{Use: HarnessCommand, Hidden: true, DisableFlagParsing: true,
 			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
-		&cobra.Command{Use: drivers.ClaudeHook, Hidden: true,
-			RunE: func(*cobra.Command, []string) error { return drivers.HookMain(os.Stdin, os.Stdout) }},
+		&cobra.Command{Use: ClaudeHook, Hidden: true,
+			RunE: func(*cobra.Command, []string) error { return harness.HookMain(os.Stdin, os.Stdout) }},
 	)
 	root.SetArgs(argv)
 	root.SetOut(os.Stderr)
