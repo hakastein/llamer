@@ -418,6 +418,9 @@ func (c *codex) Launch(a LaunchArgs) (*agent.Launch, error) {
 	if !a.ProjectMemory {
 		argv = append(argv, "-c", "project_doc_max_bytes=0")
 	}
+	if a.Schema != "" {
+		argv = append(argv, "--output-schema", a.Schema)
+	}
 	argv = append(argv, "-")
 	env := append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome)
 	return &agent.Launch{

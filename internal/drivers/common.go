@@ -136,6 +136,8 @@ type LaunchArgs struct {
 	Env           []string
 	Skills        []string
 	Cwd           string
+	// Schema — файл JSON Schema итогового ответа; пусто — ответ свободным текстом.
+	Schema string
 }
 
 // Driver — драйвер этапа.
