@@ -25,7 +25,7 @@ import (
 type Run struct {
 	Context   context.Context
 	Workflow  *config.Workflow
-	Drivers   map[string]drivers.Driver
+	Drivers   map[string]drivers.Launcher
 	Artifacts *artifacts.Run
 	Cwd       string    // каталог контекста: рабочий каталог агента
 	Out       io.Writer // события и результат строками JSON

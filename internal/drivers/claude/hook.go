@@ -1,10 +1,15 @@
-package harness
+package claude
 
 import (
 	"encoding/json"
 	"io"
 	"regexp"
+
+	"github.com/hakastein/llamer/internal/harness"
 )
+
+// hookCommand — скрытая подкоманда llamer: хук PreToolUse этапа claude.
+const hookCommand = "__claude-hook"
 
 const (
 	// Слово без кавычек — только из букв, которые оболочка не раскрывает.
@@ -20,19 +25,19 @@ const (
 )
 
 var (
-	harnessCallForm = regexp.MustCompile(`^` + Name + ` [a-z]+(?:[ \t]+(?:` + quotedWord + `|` + word + `))*[ \t]*$`)
+	harnessCallForm = regexp.MustCompile(`^` + harness.Name + ` [a-z]+(?:[ \t]+(?:` + quotedWord + `|` + word + `))*[ \t]*$`)
 	harnessLoop     = regexp.MustCompile(`^for[ \t]+(` + loopVar + `)[ \t]+in(?:[ \t]+` + loopPath + `)+` + loopSep + `do\s+` +
-		Name + ` diff((?:[ \t]+` + loopArg + `)+)` + loopSep + `done(?:[ \t]*\|[ \t]*(?:head|tail) -\d+)?\s*$`)
+		harness.Name + ` diff((?:[ \t]+` + loopArg + `)+)` + loopSep + `done(?:[ \t]*\|[ \t]*(?:head|tail) -\d+)?\s*$`)
 	loopVarRef = regexp.MustCompile(`\$(` + loopVar + `)`)
 )
 
-// IsHarnessCall — вызов харнесса одной простой командой без раскрытий. Такой
+// isHarnessCall — вызов харнесса одной простой командой без раскрытий. Такой
 // Claude Code пропускает правилом `Bash(review … *)` сам, но команду длиннее
 // 10 000 символов он не разбирает вовсе и в dontAsk отклоняет: батч из
 // полутора десятков находок пропадал целиком. Хук разрешает её по той же
 // форме, что и правило. Ещё — цикл `review diff` по путям: подстановку `"$f"`
 // Claude Code не разбирает и правилом `Bash(review diff *)` не пропускает.
-func IsHarnessCall(command string) bool {
+func isHarnessCall(command string) bool {
 	if harnessCallForm.MatchString(command) {
 		return true
 	}
@@ -49,9 +54,9 @@ func IsHarnessCall(command string) bool {
 	return true
 }
 
-// HookMain — хук PreToolUse этапа claude: разрешает вызов харнесса; молчание —
+// hookMain — хук PreToolUse этапа claude: разрешает вызов харнесса; молчание —
 // решение за правилами разрешений.
-func HookMain(stdin io.Reader, stdout io.Writer) error {
+func hookMain(stdin io.Reader, stdout io.Writer) error {
 	var input struct {
 		ToolInput struct {
 			Command string `json:"command"`
@@ -60,9 +65,9 @@ func HookMain(stdin io.Reader, stdout io.Writer) error {
 	if err := json.NewDecoder(stdin).Decode(&input); err != nil {
 		return err
 	}
-	if !IsHarnessCall(input.ToolInput.Command) {
+	if !isHarnessCall(input.ToolInput.Command) {
 		return nil
 	}
 	return json.NewEncoder(stdout).Encode(map[string]any{"hookSpecificOutput": map[string]string{
-		"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "вызов " + Name}})
+		"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "вызов " + harness.Name}})
 }

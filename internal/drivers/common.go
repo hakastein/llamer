@@ -1,5 +1,3 @@
-// Package drivers — драйверы этапов: claude и codex. Драйвер готовит
-// песочницу этапа и собирает его запуск; разбор потока приводит события к форме claude.
 package drivers
 
 import (
@@ -24,21 +22,26 @@ var baseEnv = []string{"PATH", "HOME", "LANG", "TZ", "TMPDIR", "USER", "SHELL", 
 	"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy",
 	"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"}
 
-// stageEnvOf — базовые переменные, вход драйвера (auth) и каталог команд этапа первым в PATH.
-func stageEnvOf(env map[string]string, order []string, stageBin string, auth []string) []string {
+// StageEnv — окружение этапа: базовые переменные, вход драйвера auth, каталог
+// команд этапа первым в PATH и переменные из настроек драйвера.
+func (s Setup) StageEnv(auth []string) []string {
 	var out []string
-	for _, name := range order {
+	for _, name := range s.EnvOrder {
 		if slices.Contains(baseEnv, name) || strings.HasPrefix(name, "LC_") || slices.Contains(auth, name) {
 			if name != "PATH" {
-				out = append(out, name+"="+env[name])
+				out = append(out, name+"="+s.Env[name])
 			}
 		}
 	}
-	return append(out, "PATH="+stageBin+":"+env["PATH"])
+	out = append(out, "PATH="+s.StageBin+":"+s.Env["PATH"])
+	for _, kv := range s.Settings.Env {
+		out = append(out, kv[0]+"="+kv[1])
+	}
+	return out
 }
 
-// linkSkills — каталог dir со ссылками на скиллы этапа из каталога скиллов прогона — и ни на какие больше.
-func linkSkills(dir, runSkills string, names []string) error {
+// LinkSkills — каталог dir со ссылками на скиллы этапа из каталога скиллов прогона — и ни на какие больше.
+func LinkSkills(dir, runSkills string, names []string) error {
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return err
 	}
@@ -50,27 +53,28 @@ func linkSkills(dir, runSkills string, names []string) error {
 	return nil
 }
 
-func exists(path string) bool {
+// Exists — путь есть.
+func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// upToRepoRoot — существующие каталоги rel в cwd и выше до корня репозитория: там драйверы сами ищут скиллы дерева.
-func upToRepoRoot(cwd, rel string) []string {
+// UpToRepoRoot — существующие каталоги rel в cwd и выше до корня репозитория: там драйверы сами ищут скиллы дерева.
+func UpToRepoRoot(cwd, rel string) []string {
 	var found []string
 	for dir := cwd; ; dir = filepath.Dir(dir) {
-		if exists(filepath.Join(dir, rel)) {
+		if Exists(filepath.Join(dir, rel)) {
 			found = append(found, filepath.Join(dir, rel))
 		}
-		if exists(filepath.Join(dir, ".git")) || filepath.Dir(dir) == dir {
+		if Exists(filepath.Join(dir, ".git")) || filepath.Dir(dir) == dir {
 			return found
 		}
 	}
 }
 
-// keepRedacted — копия файла или каталога с вымаранными секретами: журнал
+// KeepRedacted — копия файла или каталога с вымаранными секретами: журнал
 // сессии этапа уходит в артефакты, а в нём вывод команд агента.
-func keepRedacted(from, to string) error {
+func KeepRedacted(from, to string) error {
 	info, err := os.Stat(from)
 	if err != nil {
 		return nil
@@ -81,7 +85,7 @@ func keepRedacted(from, to string) error {
 			return err
 		}
 		for _, e := range entries {
-			if err := keepRedacted(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
+			if err := KeepRedacted(filepath.Join(from, e.Name()), filepath.Join(to, e.Name())); err != nil {
 				return err
 			}
 		}
@@ -98,13 +102,8 @@ func keepRedacted(from, to string) error {
 	return os.WriteFile(to, []byte(redact.Secrets(strings.ToValidUTF8(string(data), "\uFFFD"))), 0o666)
 }
 
-// Gap — пробел окружения, найденный до прогона.
-type Gap struct {
-	ID      string `yaml:"id"`
-	Message string `yaml:"message"`
-}
-
-func binaryGap(ctx context.Context, name string, settings Settings) []Gap {
+// BinaryGap — пробел, если бинарник драйвера name не отвечает на --version.
+func BinaryGap(ctx context.Context, name string, settings Settings) []Gap {
 	cmd := exec.CommandContext(ctx, settings.Bin, "--version")
 	agent.Group(cmd)
 	err := cmd.Run()
@@ -122,86 +121,8 @@ func binaryGap(ctx context.Context, name string, settings Settings) []Gap {
 	return []Gap{{"driver-" + name, fmt.Sprintf("драйвер %s: %s не запускается (%s)", name, settings.Bin, reason)}}
 }
 
-// Shared — общая часть пакета: текст и файл с ним.
-type Shared struct{ Text, Path string }
-
-// LaunchArgs — что этап даёт драйверу для запуска.
-type LaunchArgs struct {
-	Stage         string
-	Level         Level
-	ProjectMemory bool
-	Allow         []string
-	Shared        *Shared
-	Prompt        string
-	Env           []string
-	Skills        []string
-	Cwd           string
-	// Schema — файл JSON Schema итогового ответа; пусто — ответ свободным текстом.
-	Schema string
-	// Sandbox — строгая песочница этапа; nil — песочница этапа ревью.
-	Sandbox *Sandbox
-}
-
-// Sandbox — строгая песочница этапа `llamer run`: агент читает только каталог
-// контекста, скиллы этапа и Readable, сети нет, unix-сокеты открыты.
-type Sandbox struct{ Readable []string }
-
-// paths — что этапу открыто на чтение: каталог контекста первым, Readable и скиллы этапа.
-func (s *Sandbox) paths(a LaunchArgs, runSkills string) []string {
-	paths := append([]string{a.Cwd}, s.Readable...)
-	for _, name := range a.Skills {
-		paths = append(paths, filepath.Join(runSkills, "skills", name))
-	}
-	return paths
-}
-
-// Driver — драйвер этапа.
-type Driver interface {
-	Name() string
-	// SkillsHow — как этап берёт скиллы своего метода; SkillRef — как назван скилл в задании.
-	SkillsHow() string
-	SkillRef(name string) string
-	// Quote — как пишется одинарная кавычка внутри текста в вызове.
-	Quote() string
-	Launch(a LaunchArgs) (*agent.Launch, error)
-}
-
-// Setup — то, что прогон даёт драйверу при подготовке.
-type Setup struct {
-	Settings  Settings
-	Hook      string
-	Env       map[string]string
-	EnvOrder  []string
-	StageBin  string
-	RunSkills string // каталог скиллов прогона или пусто
-	Tmp       string
-}
-
-// Prepare — драйвер по имени.
-func Prepare(name string, s Setup) (Driver, error) {
-	if name == "codex" {
-		return prepareCodex(s)
-	}
-	return prepareClaude(s)
-}
-
-// Gaps — пробелы драйвера: бинарник и вход.
-func Gaps(ctx context.Context, name string, settings Settings, env map[string]string) []Gap {
-	if name == "codex" {
-		return codexGaps(ctx, settings, env)
-	}
-	return claudeGaps(ctx, settings, env)
-}
-
-func settingsEnv(s Settings) []string {
-	var out []string
-	for _, kv := range s.Env {
-		out = append(out, kv[0]+"="+kv[1])
-	}
-	return out
-}
-
-func homeDir(env map[string]string) string {
+// HomeDir — HOME окружения прогона.
+func HomeDir(env map[string]string) string {
 	if h := env["HOME"]; h != "" {
 		return h
 	}
@@ -209,8 +130,8 @@ func homeDir(env map[string]string) string {
 	return h
 }
 
-// copyFile — копия с правами исходника: копия кредов читается только владельцем, как оригинал.
-func copyFile(from, to string) error {
+// CopyFile — копия с правами исходника: копия кредов читается только владельцем, как оригинал.
+func CopyFile(from, to string) error {
 	info, err := os.Stat(from)
 	if err != nil {
 		return err

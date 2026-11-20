@@ -24,7 +24,7 @@ import (
 type Toolkit struct {
 	Context   context.Context
 	Artifacts *artifacts.Run
-	Drivers   map[string]drivers.Driver
+	Drivers   map[string]drivers.Launcher
 	Materials *materials.Materials
 	Library   *skills.Library
 	Config    *config.Config
@@ -115,12 +115,12 @@ func (s *Stage) template() *template {
 	return s.tmpl
 }
 
-func (s *Stage) skillsBlock(d drivers.Driver) (string, error) {
+func (s *Stage) skillsBlock(d drivers.Launcher) (string, error) {
 	skills := s.settings.Skills
 	if err := s.tk.Library.AssertPresent(append(slices.Clone(skills.Always), skills.OnDemand...)); err != nil {
 		return "", err
 	}
-	// Скиллы onDemand в задании не перечисляются: claude и codex сами видят
+	// Скиллы onDemand в задании не перечисляются: драйверы сами видят
 	// скиллы этапа с описаниями из frontmatter и берут подходящие к реквесту.
 	if len(skills.Always) == 0 {
 		return "", nil
@@ -133,7 +133,7 @@ func (s *Stage) skillsBlock(d drivers.Driver) (string, error) {
 		"they are not optional, and nothing below repeats what is in them.\n\n" + bullets(refs), nil
 }
 
-func (s *Stage) prompt(d drivers.Driver, journal *domain.State) (string, error) {
+func (s *Stage) prompt(d drivers.Launcher, journal *domain.State) (string, error) {
 	t := s.template()
 	p := s.tk.protocol
 	skills, err := s.skillsBlock(d)

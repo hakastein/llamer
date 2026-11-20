@@ -149,9 +149,7 @@ func checkReadiness(ctx context.Context, cwd string, o *Options, env map[string]
 		return &ready{root: root, gaps: []gap{{ID: "config", Message: cfgErr.Message}}}, nil
 	}
 	r := &ready{root: root, config: cfg, gaps: []gap{}}
-	for _, name := range cfg.DriversInUse() {
-		r.gaps = append(r.gaps, drivers.Gaps(ctx, name, cfg.Drivers[name], env)...)
-	}
+	r.gaps = append(r.gaps, drivers.Gaps(ctx, cfg.DriversInUse(), cfg.Drivers, env)...)
 	if o.Input == "gitlab" {
 		r.gaps = append(r.gaps, gitlabGaps(o, env)...)
 	}
@@ -181,9 +179,6 @@ func formatGaps(gaps []gap) string {
 
 // HarnessCommand — скрытая подкоманда llamer, которой обёртка `review` этапа зовёт харнесс.
 const HarnessCommand = "__harness"
-
-// ClaudeHook — скрытая подкоманда llamer для хука PreToolUse.
-const ClaudeHook = "__claude-hook"
 
 // CallCommand — скрытая подкоманда llamer, которой обёртка команды workflow зовёт клиент брокера.
 const CallCommand = "__call"
@@ -219,23 +214,14 @@ func stageWrapper(dir, name string, args ...string) error {
 // prepareDrivers — драйверы прогона по именам: скиллы прогона копируются в
 // <runPath>/stage-plugin, каждый драйвер получает setup со своими настройками.
 func prepareDrivers(names []string, settings map[string]drivers.Settings, library *skills.Library, skillNames []string, runPath string,
-	setup drivers.Setup) (map[string]drivers.Driver, error) {
+	setup drivers.Setup) (map[string]drivers.Launcher, error) {
 	if len(skillNames) > 0 {
 		var err error
 		if setup.RunSkills, err = library.Materialize(filepath.Join(runPath, "stage-plugin"), skillNames); err != nil {
 			return nil, err
 		}
 	}
-	prepared := map[string]drivers.Driver{}
-	for _, name := range names {
-		setup.Settings = settings[name]
-		d, err := drivers.Prepare(name, setup)
-		if err != nil {
-			return nil, err
-		}
-		prepared[name] = d
-	}
-	return prepared, nil
+	return drivers.Prepare(names, settings, setup)
 }
 
 func readTask(path string) (string, error) {
@@ -324,12 +310,8 @@ func (r *run) review() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return false, err
-	}
 	prepared, err := prepareDrivers(cfg.DriversInUse(), cfg.Drivers, library, cfg.SkillsInUse(), r.artifacts.Path,
-		drivers.Setup{Env: r.env, EnvOrder: r.envOrder, StageBin: stageBin, Tmp: r.tmp, Hook: shellescape.Quote(exe) + " " + ClaudeHook})
+		drivers.Setup{Env: r.env, EnvOrder: r.envOrder, StageBin: stageBin, Tmp: r.tmp})
 	if err != nil {
 		return false, err
 	}
@@ -502,8 +484,8 @@ func fail(message string) int {
 	return 1
 }
 
-// Execute — команда llamer со скрытыми подкомандами харнесса этапа и хука
-// claude: этап зовёт ровно ту версию, что ведёт прогон. Возвращает код выхода.
+// Execute — команда llamer со скрытыми подкомандами харнесса, брокера и
+// драйверов: этап зовёт ровно ту версию, что ведёт прогон. Возвращает код выхода.
 func Execute(argv []string, stdout io.Writer) int {
 	code := 0
 	o := &Options{}
@@ -540,9 +522,13 @@ func Execute(argv []string, stdout io.Writer) int {
 			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
 		&cobra.Command{Use: CallCommand, Hidden: true, DisableFlagParsing: true, Args: cobra.MinimumNArgs(1),
 			Run: func(_ *cobra.Command, args []string) { code = broker.Main(args[0], args[1:], os.Stdout, os.Stderr) }},
-		&cobra.Command{Use: ClaudeHook, Hidden: true,
-			RunE: func(*cobra.Command, []string) error { return harness.HookMain(os.Stdin, os.Stdout) }},
 	)
+	for _, name := range drivers.Names() {
+		for _, c := range drivers.Get(name).Commands() {
+			root.AddCommand(&cobra.Command{Use: c.Name, Hidden: true,
+				RunE: func(*cobra.Command, []string) error { return c.Run(os.Stdin, os.Stdout) }})
+		}
+	}
 	root.SetArgs(argv)
 	root.SetOut(os.Stderr)
 	root.SetErr(os.Stderr)

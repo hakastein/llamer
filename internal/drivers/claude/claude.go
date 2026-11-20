@@ -1,4 +1,5 @@
-package drivers
+// Package claude — драйвер этапов Claude Code.
+package claude
 
 import (
 	"context"
@@ -10,8 +11,12 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/drivers"
+	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 )
+
+func init() { drivers.Register("claude", driver{}) }
 
 var claudeAuth = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
 
@@ -52,10 +57,10 @@ const stagePlugin = "stage"
 // подхватывает по ходу чтения, не выключаются — выключать, если такие появятся.
 func treeSkillsOff(cwd string) map[string]string {
 	off := map[string]string{}
-	for _, root := range upToRepoRoot(cwd, ".claude/skills") {
+	for _, root := range drivers.UpToRepoRoot(cwd, ".claude/skills") {
 		entries, _ := os.ReadDir(root)
 		for _, e := range entries {
-			if exists(filepath.Join(root, e.Name(), "SKILL.md")) {
+			if drivers.Exists(filepath.Join(root, e.Name(), "SKILL.md")) {
 				off[e.Name()] = "off"
 			}
 		}
@@ -67,7 +72,7 @@ func claudeConfigDir(env map[string]string) string {
 	if d := env["CLAUDE_CONFIG_DIR"]; d != "" {
 		return d
 	}
-	return filepath.Join(homeDir(env), ".claude")
+	return filepath.Join(drivers.HomeDir(env), ".claude")
 }
 
 // Шаблон со звёздочкой — префикс, и вызов без аргументов ему не отвечает:
@@ -80,8 +85,25 @@ func bashRules(allow []string) []string {
 	return rules
 }
 
-func claudeGaps(ctx context.Context, settings Settings, env map[string]string) []Gap {
-	if missing := binaryGap(ctx, "claude", settings); missing != nil {
+// driver — драйвер claude до прогона.
+type driver struct{}
+
+func (driver) Defaults() drivers.Settings {
+	return drivers.Settings{Bin: "claude", Levels: []drivers.Level{
+		{Model: "claude-sonnet-5-5", Effort: "medium"},
+		{Model: "claude-sonnet-5-5", Effort: "high"},
+		{Model: "claude-opus-5-5", Effort: "low"},
+		{Model: "claude-opus-5-5", Effort: "medium"},
+		{Model: "claude-opus-5-5", Effort: "high"},
+	}}
+}
+
+func (driver) Commands() []drivers.Command {
+	return []drivers.Command{{Name: hookCommand, Run: hookMain}}
+}
+
+func (driver) Gaps(ctx context.Context, settings drivers.Settings, env map[string]string) []drivers.Gap {
+	if missing := drivers.BinaryGap(ctx, "claude", settings); missing != nil {
 		return missing
 	}
 	credentials := filepath.Join(claudeConfigDir(env), ".credentials.json")
@@ -90,27 +112,29 @@ func claudeGaps(ctx context.Context, settings Settings, env map[string]string) [
 			return nil
 		}
 	}
-	if exists(credentials) {
+	if drivers.Exists(credentials) {
 		return nil
 	}
-	return []Gap{{"auth-claude", "драйверу claude нечем авторизоваться: нет " + credentials +
+	return []drivers.Gap{{ID: "auth-claude", Message: "драйверу claude нечем авторизоваться: нет " + credentials +
 		" и не задана ни одна из " + strings.Join(claudeAuth, ", ") + " — claude /login"}}
 }
 
-type claude struct {
-	settings    Settings
+// launcher — драйвер claude, готовый к прогону.
+type launcher struct {
+	settings    drivers.Settings
 	env         []string
 	runSkills   string
 	tmp         string
 	configDir   string
 	credentials string
-	hook        string
+	// hook — команда хука PreToolUse: тот же бинарник llamer, что ведёт прогон.
+	hook string
 }
 
-// prepareClaude — приватный CLAUDE_CONFIG_DIR с копией кредов: личные
+// Prepare — приватный CLAUDE_CONFIG_DIR с копией кредов: личные
 // настройки, хуки и плагины разработчика в этап не попадают. Заданный снаружи
 // каталог берётся как есть — его готовил запускающий.
-func prepareClaude(s Setup) (Driver, error) {
+func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 	credentials := filepath.Join(claudeConfigDir(s.Env), ".credentials.json")
 	configDir := s.Env["CLAUDE_CONFIG_DIR"]
 	if configDir == "" {
@@ -119,14 +143,18 @@ func prepareClaude(s Setup) (Driver, error) {
 			return nil, err
 		}
 		configDir = dir
-		if exists(credentials) {
-			if err := copyFile(credentials, filepath.Join(configDir, ".credentials.json")); err != nil {
+		if drivers.Exists(credentials) {
+			if err := drivers.CopyFile(credentials, filepath.Join(configDir, ".credentials.json")); err != nil {
 				return nil, err
 			}
 		}
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
 	logx.Logf("драйвер claude: %s, CLAUDE_CONFIG_DIR=%s", s.Settings.Bin, configDir)
-	env := append(stageEnvOf(s.Env, s.EnvOrder, s.StageBin, claudeAuth), settingsEnv(s.Settings)...)
+	env := s.StageEnv(claudeAuth)
 	env = append(env,
 		// Потолок ожидания фоновых задач снят: верхняя граница и так есть — таймаут этапа.
 		"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0",
@@ -140,29 +168,29 @@ func prepareClaude(s Setup) (Driver, error) {
 		"FORCE_PROMPT_CACHING_5M=1",
 		"CLAUDE_CONFIG_DIR="+configDir,
 	)
-	return &claude{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
-		credentials: credentials, hook: s.Hook}, nil
+	return &launcher{settings: s.Settings, env: env, runSkills: s.RunSkills, tmp: s.Tmp, configDir: configDir,
+		credentials: credentials, hook: shellescape.Quote(exe) + " " + hookCommand}, nil
 }
 
-func (c *claude) Name() string { return "claude" }
+func (c *launcher) Name() string { return "claude" }
 
-func (c *claude) SkillsHow() string {
+func (c *launcher) SkillsHow() string {
 	return "Load each of these with the Skill tool before you start."
 }
 
-func (c *claude) SkillRef(name string) string { return stagePlugin + ":" + name }
+func (c *launcher) SkillRef(name string) string { return stagePlugin + ":" + name }
 
-func (c *claude) Quote() string { return `'\''` }
+func (c *launcher) Quote() string { return `'\''` }
 
 // Launch — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
 // командной строки в Linux ограничен 128 килобайтами. Общая часть пакета — в
 // системном промпте: он у этапов одной модели одинаковый, и кэш, записанный
 // первым этапом, читают остальные. Скиллы этапа — его плагин `stage`, скиллы
 // дерева выключены.
-func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
-	// Хук разрешений задаётся вызывающим кодом.
+func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
-	if c.hook != "" {
+	// Вызовы харнесса, которые правило `Bash(review *)` не пропускает, разрешает хук: см. isHarnessCall.
+	if slices.Contains(a.Allow, harness.Name) {
 		hook := map[string]any{"matcher": "Bash", "hooks": []map[string]string{{"type": "command", "command": c.hook}}}
 		settings["hooks"] = map[string]any{"PreToolUse": []any{hook}}
 	}
@@ -178,7 +206,7 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 		if err := os.WriteFile(filepath.Join(plugin, ".claude-plugin", "plugin.json"), []byte(`{"name":"`+stagePlugin+`"}`+"\n"), 0o666); err != nil {
 			return nil, err
 		}
-		if err := linkSkills(filepath.Join(plugin, "skills"), c.runSkills, a.Skills); err != nil {
+		if err := drivers.LinkSkills(filepath.Join(plugin, "skills"), c.runSkills, a.Skills); err != nil {
 			return nil, err
 		}
 	}
@@ -189,7 +217,7 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 		// рабочий каталог и --add-dir. Команды закрывает песочница ОС (bubblewrap и socat), а без
 		// неё этап не стартует.
 		allowed = []string{"Skill"}
-		readable := append(a.Sandbox.paths(a, c.runSkills), c.settings.Readable...)
+		readable := append(a.Sandbox.Paths(a, c.runSkills), c.settings.Readable...)
 		if plugin != "" {
 			readable = append(readable, plugin)
 		}
@@ -246,13 +274,13 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 }
 
 // keepSession — сессия лежит в projects/<каталог>/<id>.jsonl конфига; по ней же Claude Code её и продолжает.
-func (c *claude) keepSession(dir, sessionID string, level Level) (string, error) {
+func (c *launcher) keepSession(dir, sessionID string, level drivers.Level) (string, error) {
 	projects := filepath.Join(c.configDir, "projects")
 	file := sessionID + ".jsonl"
 	entries, _ := os.ReadDir(projects)
 	project := ""
 	for _, e := range entries {
-		if exists(filepath.Join(projects, e.Name(), file)) {
+		if drivers.Exists(filepath.Join(projects, e.Name(), file)) {
 			project = e.Name()
 			break
 		}
@@ -260,12 +288,12 @@ func (c *claude) keepSession(dir, sessionID string, level Level) (string, error)
 	if project == "" {
 		return "", nil
 	}
-	if err := keepRedacted(filepath.Join(projects, project, file), filepath.Join(dir, "projects", project, file)); err != nil {
+	if err := drivers.KeepRedacted(filepath.Join(projects, project, file), filepath.Join(dir, "projects", project, file)); err != nil {
 		return "", err
 	}
 	// Вход — из обычного места пользователя ссылкой: копия кредов в артефактах не лежит.
 	auth := ""
-	if exists(c.credentials) {
+	if drivers.Exists(c.credentials) {
 		auth = "ln -sf " + shellescape.Quote(c.credentials) + " " + shellescape.Quote(filepath.Join(dir, ".credentials.json")) + " && "
 	}
 	return auth + "CLAUDE_CONFIG_DIR=" + shellescape.Quote(dir) + " " + c.settings.Bin + " -p --resume " + sessionID +

@@ -76,27 +76,6 @@ type Level = drivers.Level
 // Driver — настройки драйвера.
 type Driver = drivers.Settings
 
-// Drivers — встроенные драйверы и их умолчания.
-var Drivers = []string{"claude", "codex"}
-
-// Defaults — умолчания драйверов: лестница своя у каждого, номер уровня один.
-var Defaults = map[string]Driver{
-	"claude": {Bin: "claude", Levels: []Level{
-		{Model: "claude-sonnet-5-5", Effort: "medium"},
-		{Model: "claude-sonnet-5-5", Effort: "high"},
-		{Model: "claude-opus-5-5", Effort: "low"},
-		{Model: "claude-opus-5-5", Effort: "medium"},
-		{Model: "claude-opus-5-5", Effort: "high"},
-	}},
-	"codex": {Bin: "codex", Levels: []Level{
-		{Model: "gpt-6.1-sol", Effort: "medium"},
-		{Model: "gpt-6.1-sol", Effort: "high"},
-		{Model: "gpt-6.1-sol", Effort: "xhigh"},
-		{Model: "gpt-6.1-sol", Effort: "max"},
-		{Model: "gpt-6.1-sol", Effort: "ultra"},
-	}},
-}
-
 // Skills — скиллы этапа: always — метод, onDemand — по выбору агента.
 type Skills struct{ Always, OnDemand []string }
 
@@ -277,7 +256,7 @@ func (r reader) expandPath(raw string, env map[string]string, base, path string)
 }
 
 func (r reader) driver(name string, raw *rawDriver, env map[string]string) Driver {
-	d := Defaults[name]
+	d := drivers.Get(name).Defaults()
 	if raw == nil {
 		return d
 	}
@@ -473,9 +452,9 @@ func Parse(data []byte, order []string, file string, env map[string]string, sour
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	drivers := map[string]Driver{}
-	for _, name := range Drivers {
-		drivers[name] = r.driver(name, raw.Drivers[name], env)
+	driverSettings := map[string]Driver{}
+	for _, name := range drivers.Names() {
+		driverSettings[name] = r.driver(name, raw.Drivers[name], env)
 	}
 	base := prompt(raw.Prompt, Prompt{})
 	var keys []string
@@ -499,7 +478,7 @@ func Parse(data []byte, order []string, file string, env map[string]string, sour
 	if raw.Allow == nil {
 		raw.Allow = []string{}
 	}
-	return &Config{Source: source, SkillPaths: skillPaths, Allow: raw.Allow, Drivers: drivers, Stages: stages}, nil
+	return &Config{Source: source, SkillPaths: skillPaths, Allow: raw.Allow, Drivers: driverSettings, Stages: stages}, nil
 }
 
 // stageOrder — ключи объекта `stages` в порядке текста: карта JSON его теряет.

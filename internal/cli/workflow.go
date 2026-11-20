@@ -94,10 +94,7 @@ func runWorkflow(ctx context.Context, o *RunOptions, stdout io.Writer) (ok bool,
 	if info, err := os.Stat(contextDir); err != nil || !info.IsDir() {
 		return false, &InputError{"--context " + o.Context + ": каталога нет"}
 	}
-	var gaps []gap
-	for _, name := range w.Drivers() {
-		gaps = append(gaps, drivers.Gaps(ctx, name, cfg.Drivers[name], env)...)
-	}
+	gaps := drivers.Gaps(ctx, w.Drivers(), cfg.Drivers, env)
 	// Пробел от проверки, сорванной сигналом, — не пробел окружения.
 	if ctx.Err() != nil {
 		return false, ctx.Err()
