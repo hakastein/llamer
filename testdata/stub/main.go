@@ -8,6 +8,10 @@
 // STUB_DENY_STAGE, STUB_HANG_STAGE, STUB_SKEPTIC_REFUTES — значение — этап;
 // STUB_EVENTS — строки потока, которые заглушка отдаёт этапу до своих;
 // STUB_SESSION — строки журнала сессии codex вместо обычных.
+//
+// Этап `llamer run` (без брифа) отвечает в форме своего драйвера строкой `ANSWER: …`
+// своего задания, а с `STUB_HANG` в задании повисает; `STUB_BLOCK_RESULT` в задании
+// ставит каталог на место result.json прогонов в `.llamer/` рабочего каталога.
 package main
 
 import (
@@ -43,6 +47,9 @@ func main() {
 		return
 	}
 	input, _ := io.ReadAll(os.Stdin)
+	if os.Getenv("LLAMER_BRIEF") == "" {
+		os.Exit(workflowStage(driver, args, string(input)))
+	}
 	var b brief
 	data, err := os.ReadFile(os.Getenv("LLAMER_BRIEF"))
 	must(err)
@@ -131,6 +138,48 @@ func extraEvents() {
 	}
 }
 
+// hang — этап с запущенной командой повисает, его прерывает тест; через минуту оба выходят сами.
+func hang() int {
+	command := exec.Command("sleep", "60")
+	must(command.Start())
+	path := filepath.Join(os.TempDir(), "hang.json")
+	data, _ := json.Marshal(m{"llamer": os.Getppid(), "stage": os.Getpid(), "command": command.Process.Pid})
+	must(os.WriteFile(path+".part", data, 0o666))
+	must(os.Rename(path+".part", path))
+	time.Sleep(time.Minute)
+	return 1
+}
+
+func workflowStage(driver string, argv []string, prompt string) int {
+	record(m{"driver": driver, "argv": argv, "prompt": prompt, "env": envNames(), "codexHome": os.Getenv("CODEX_HOME")})
+	if strings.Contains(prompt, "STUB_HANG") {
+		return hang()
+	}
+	if strings.Contains(prompt, "STUB_BLOCK_RESULT") {
+		runs, err := filepath.Glob(filepath.Join(".llamer", "*"))
+		must(err)
+		for _, dir := range runs {
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				must(os.MkdirAll(filepath.Join(dir, "result.json"), 0o777))
+			}
+		}
+	}
+	answer := ""
+	for _, line := range strings.Split(prompt, "\n") {
+		if text, ok := strings.CutPrefix(line, "ANSWER: "); ok {
+			answer = text
+		}
+	}
+	if driver == "codex" {
+		emit(m{"type": "thread.started", "thread_id": "stub-thread"})
+		emit(m{"type": "item.completed", "item": m{"id": "m0", "type": "agent_message", "text": answer}})
+		emit(m{"type": "turn.completed", "usage": m{"input_tokens": 100, "output_tokens": 10}})
+		return 0
+	}
+	emit(m{"type": "result", "subtype": "success", "is_error": false, "result": answer, "total_cost_usd": 0.25})
+	return 0
+}
+
 func claude(b brief, argv []string, prompt string) int {
 	after := func(flag string) string {
 		if i := slices.Index(argv, flag); i >= 0 && i+1 < len(argv) {
@@ -159,16 +208,8 @@ func claude(b brief, argv []string, prompt string) int {
 	fmt.Println(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794480600,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.45,"resetsAt":1794480600,"status":"allowed"},"seven_day":{"utilization":0.58,"resetsAt":1794787200,"status":"allowed"}}},"uuid":"a7255113-cdfd-4eac-9f94-7a154dcadb53","session_id":"f66bac7e-9b13-4b63-82a4-ae9fce05e825"}`)
 	extraEvents()
 
-	// Этап с запущенной командой повисает — его прерывает тест; через минуту оба выходят сами.
 	if os.Getenv("STUB_HANG_STAGE") == b.Stage {
-		command := exec.Command("sleep", "60")
-		must(command.Start())
-		hang := filepath.Join(os.TempDir(), "hang.json")
-		data, _ := json.Marshal(m{"llamer": os.Getppid(), "stage": os.Getpid(), "command": command.Process.Pid})
-		must(os.WriteFile(hang+".part", data, 0o666))
-		must(os.Rename(hang+".part", hang))
-		time.Sleep(time.Minute)
-		return 1
+		return hang()
 	}
 	if os.Getenv("STUB_FAIL_STAGE") == b.Stage {
 		emit(m{"type": "result", "is_error": true, "result": "заглушка: этап сорвался"})

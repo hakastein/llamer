@@ -59,6 +59,7 @@ func TestConfigErrors(t *testing.T) {
 		{minimal(obj{"service": obj{}}), `неизвестные ключи: service`},
 		{with(minimal(nil), "stages", []any{}), `stages: должен быть объектом`},
 		{with(minimal(nil), "driver", nil), `driver: одно из claude, codex`},
+		{func() obj { c := minimal(nil); delete(c, "driver"); return c }(), `нет ключей: driver`},
 		{minimal(obj{"stages": obj{"logic": obj{"task": "x"}}}), `stages\.logic: неизвестные ключи: task`},
 		{minimal(obj{"stages": obj{"docs": obj{"mandate": "x", "paths": []string{"docs/**"}}}}), `stages\.docs: неизвестные ключи: mandate`},
 		{minimal(obj{"stages": obj{"assess": obj{"paths": []string{"src/**"}}}}), `stages\.assess: неизвестные ключи: paths`},

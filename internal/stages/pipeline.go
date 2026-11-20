@@ -3,7 +3,7 @@ package stages
 import (
 	"sync"
 
-	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/logx"
 )
@@ -12,10 +12,12 @@ import (
 type Outcome struct {
 	Journal    *domain.State
 	Assessment *domain.Assessment
-	// Failure — последний срыв волны оценки, для сообщения о неудаче.
-	Failure *domain.StageFailed
+	// Failure — запись сорвавшегося оценщика, для сообщения о неудаче; nil — оценщик не срывался.
+	Failure *cost.Stage
 	// Records — записи отработавших этапов: стоимость, токены, длительность.
-	Records []*agent.Record
+	Records []*cost.Stage
+	// Done — ключи этапов, отработавших хотя бы одним экземпляром.
+	Done map[string]bool
 }
 
 func (o *Outcome) OK() bool { return o.Assessment != nil }
@@ -35,7 +37,11 @@ func Run(tk *Toolkit) (*Outcome, error) {
 	// Без вердикта оценщика глубина разбора неизвестна — дальше не идём.
 	assessment := assess.State().Assessment
 	if assessment == nil {
-		return &Outcome{Journal: fold(opening), Failure: assess.State().Failure(), Records: records(opening)}, nil
+		var failure *cost.Stage
+		if r := assess.Record(); r != nil && !r.OK {
+			failure = r
+		}
+		return &Outcome{Journal: fold(opening), Failure: failure, Records: records(opening), Done: done(opening)}, nil
 	}
 	logx.Logf("оценка: %s, риск %s, уровень %d", assessment.Nature, assessment.Risk, assessment.Level)
 
@@ -67,7 +73,7 @@ func Run(tk *Toolkit) (*Outcome, error) {
 		return nil, err
 	}
 	all := append(prior, dedupe, skeptic)
-	return &Outcome{Journal: fold(all), Assessment: assessment, Records: records(all)}, nil
+	return &Outcome{Journal: fold(all), Assessment: assessment, Records: records(all), Done: done(all)}, nil
 }
 
 // runWave — волна этапов, ведущий первым. Общую часть пакета ведущий пишет в
@@ -112,11 +118,21 @@ func fold(stages []*Stage) *domain.State {
 }
 
 // records — не поднимавшийся этап записи не оставляет.
-func records(stages []*Stage) []*agent.Record {
-	out := []*agent.Record{}
+func records(stages []*Stage) []*cost.Stage {
+	out := []*cost.Stage{}
 	for _, s := range stages {
 		if r := s.Record(); r != nil {
 			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func done(stages []*Stage) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range stages {
+		if r := s.Record(); r != nil && r.OK {
+			out[s.settings.Key] = true
 		}
 	}
 	return out

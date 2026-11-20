@@ -1,4 +1,4 @@
-package cli
+package review
 
 import (
 	"context"
@@ -13,18 +13,14 @@ import (
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
+	"github.com/hakastein/llamer/internal/runenv"
 	gl "gitlab.com/gitlab-org/api/client-go"
 )
-
-// InputError — вход прогона не годится для разбора: причину читает человек, а не стек.
-type InputError struct{ Message string }
-
-func (e *InputError) Error() string { return e.Message }
 
 func resolveRevision(ctx context.Context, rev, flag, cwd string) (string, error) {
 	sha, ok := git.Try(ctx, []string{"rev-parse", "--verify", "--quiet", rev + "^{commit}"}, cwd)
 	if !ok || sha == "" {
-		return "", &InputError{flag + " " + rev + ": такой ревизии в репозитории нет"}
+		return "", &runenv.InputError{Message: flag + " " + rev + ": такой ревизии в репозитории нет"}
 	}
 	return sha, nil
 }
@@ -60,7 +56,7 @@ func openGitlab(ctx context.Context, ref string, env map[string]string, cwd stri
 	}
 	logx.Logf("MR !%s «%s» (%s → %s)", r.IID, info.Title, info.SourceBranch, info.TargetBranch)
 	if info.DiffRefs.BaseSha == "" || info.DiffRefs.HeadSha == "" {
-		return nil, &InputError{"у MR !" + r.IID + " нет diff_refs — разбирать нечего"}
+		return nil, &runenv.InputError{Message: "у MR !" + r.IID + " нет diff_refs — разбирать нечего"}
 	}
 	excludes := append([]string{"origin/" + info.TargetBranch}, exclude...)
 	if _, err := resolveRevision(ctx, excludes[0], "целевая ветка MR", cwd); err != nil {
@@ -180,7 +176,7 @@ func openRevisions(ctx context.Context, cwd, base, head string, exclude []string
 	} else {
 		sha, ok := git.Try(ctx, []string{"merge-base", headSha, exclude[0]}, cwd)
 		if !ok || sha == "" {
-			return nil, &InputError{git.NoCommonHistory(ctx, headSha, exclude[0], cwd)}
+			return nil, &runenv.InputError{Message: git.NoCommonHistory(ctx, headSha, exclude[0], cwd)}
 		}
 		baseSha = sha
 	}
@@ -233,7 +229,7 @@ func openTree(ctx context.Context, r request, root string) (*tree, error) {
 		return &tree{root, func() {}}, nil
 	}
 	if _, ok := git.Try(ctx, []string{"cat-file", "-e", r.HeadSha() + "^{commit}"}, root); !ok {
-		return nil, &InputError{"коммита " + git.Short(r.HeadSha()) + " в репозитории нет — сделай git fetch"}
+		return nil, &runenv.InputError{Message: "коммита " + git.Short(r.HeadSha()) + " в репозитории нет — сделай git fetch"}
 	}
 	path, err := os.MkdirTemp("", "llamer-tree-")
 	if err != nil {

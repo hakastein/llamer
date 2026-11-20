@@ -23,6 +23,14 @@ const Name = "review"
 // BriefEnv — переменная с путём до задания этапа.
 const BriefEnv = "LLAMER_BRIEF"
 
+// Subcommand — скрытая подкоманда llamer, которой обёртка `review` этапа зовёт харнесс.
+const Subcommand = "__harness"
+
+// MaxCallChars — предел суммы длин аргументов одного вызова в символах. Правила
+// разрешений агентов не разбирают команду длиннее 10 000 символов; запас — на имя,
+// пробелы и кавычки.
+const MaxCallChars = 8000
+
 // Option — флаг команды: из флагов собираются и разбор аргументов, и справка.
 type Option struct {
 	Flags, Hint string
@@ -316,6 +324,9 @@ func Main(argv []string, stdout, stderr io.Writer) (code int) {
 }
 
 func run(argv []string, stdout io.Writer) error {
+	if n := utf8.RuneCountInString(strings.Join(argv, "")); n > MaxCallChars {
+		return domain.Refuse("вызов на %d символов длиннее предела %d: раздели его на несколько вызовов", n, MaxCallChars)
+	}
 	brief, err := readBrief(os.Getenv(BriefEnv))
 	if err != nil {
 		return err

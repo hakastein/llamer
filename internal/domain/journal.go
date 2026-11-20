@@ -294,14 +294,6 @@ func (s *State) Apply(event Event) {
 	}
 }
 
-// Failure — последний срыв.
-func (s *State) Failure() *StageFailed {
-	if len(s.Failures) == 0 {
-		return nil
-	}
-	return s.Failures[len(s.Failures)-1]
-}
-
 func (s *State) Surviving() []*Finding {
 	var out []*Finding
 	for _, f := range s.Findings {
