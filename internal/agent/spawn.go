@@ -96,7 +96,7 @@ type Launch struct {
 	Model       string
 	Effort      string
 	Normalize   func(line []byte) [][]byte
-	AfterExit   func() Late
+	AfterExit   func(sessionID string) Late
 	KeepSession func(dir, sessionID string) (string, error)
 }
 
@@ -283,7 +283,7 @@ func Spawn(ctx context.Context, name string, launch *Launch, cwd string, t *Tele
 	// Чего нет в потоке драйвера (у codex — usage по запросам), он досчитывает после выхода.
 	var late Late
 	if launch.AfterExit != nil {
-		late = launch.AfterExit()
+		late = launch.AfterExit(sessionID)
 	}
 	r := &Record{
 		Name: name, Model: launch.Model, Effort: launch.Effort, Events: t.events,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,6 +22,11 @@ import (
 var codexAuth = []string{"CODEX_API_KEY", "OPENAI_API_KEY"}
 
 const rulesFile = "llamer.rules"
+
+// disabled — возможности codex, которые открывали бы агенту что-то кроме команд в песочнице, и снимок
+// профиля оболочки: под /bin/sh пользователя он ломает каждую команду.
+var disabled = []string{"shell_snapshot", "apps", "plugins", "remote_plugin", "image_generation", "browser_use", "browser_use_external",
+	"computer_use", "in_app_browser", "hooks", "multi_agent", "tool_suggest", "skill_mcp_dependency_install", "goals"}
 
 type price struct{ input, cached, cacheWrite, output float64 }
 
@@ -80,13 +86,13 @@ type codexWindow struct {
 
 var rolloutFile = regexp.MustCompile(`rollout-[^/]*\.jsonl$`)
 
-// sessionRecords — записи журналов сессии; строка не того вида пропускается.
-func sessionRecords(codexHome string) []sessionRecord {
+// sessionRecords — записи журналов сессии с концом имени suffix; строка не того вида пропускается.
+func sessionRecords(codexHome, suffix string) []sessionRecord {
 	var records []sessionRecord
 	sessions := filepath.Join(codexHome, "sessions")
 	// Каталога сессий нет — этап не дошёл до запроса: записей нет.
 	filepath.WalkDir(sessions, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !rolloutFile.MatchString(path) {
+		if err != nil || d.IsDir() || !rolloutFile.MatchString(path) || !strings.HasSuffix(path, suffix) {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -362,6 +368,82 @@ func (c *codex) SkillRef(name string) string { return "$" + name }
 // Quote — не '\”: правило codex не признаёт слово с обратной косой чертой, и вызов ушёл бы в песочницу без записи.
 func (c *codex) Quote() string { return `'"'"'` }
 
+// sandboxed — этап `llamer run`. Песочница — профиль прав codex: чтение только каталога
+// контекста, Readable, скиллов этапа, HOME этапа и установки codex, сеть закрыта прокси без
+// разрешённых доменов, unix-сокеты открыты. --sandbox read-only сокеты закрывает и профиль не
+// применяет. CODEX_HOME общий: копия auth.json разорвала бы цепочку обновления токена входа.
+// Его config.toml и правила этап не читает — настройки llamer идут аргументами -c, — а журнал
+// сессии codex пишет туда же, и он находится по id сессии.
+func (c *codex) sandboxed(a LaunchArgs) (*agent.Launch, error) {
+	model, effort := a.Level.Model, a.Level.Effort
+	home := filepath.Join(c.tmp, "codex-"+a.Stage)
+	if err := os.MkdirAll(home, 0o777); err != nil {
+		return nil, err
+	}
+	if c.runSkills != "" {
+		if err := linkSkills(filepath.Join(home, ".agents", "skills"), c.runSkills, a.Skills); err != nil {
+			return nil, err
+		}
+	}
+	bin, err := exec.LookPath(c.settings.Bin)
+	if err == nil {
+		bin, err = filepath.EvalSymlinks(bin)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Песочница запускает команды самим codex: без его установки в readable bwrap его не найдёт.
+	// shortcut: установка — два уровня над настоящим файлом бинаря (npm: пакет @openai/codex с
+	// нативным codex внутри); обёртка-скрипт вне установки открыла бы чтение своего каталога —
+	// тогда задавать drivers.codex.bin самим codex.
+	readable := []string{`":root" = "deny"`, `":minimal" = "read"`}
+	for _, dir := range append(a.Sandbox.paths(a, c.runSkills), home, filepath.Dir(filepath.Dir(bin))) {
+		readable = append(readable, quoteTOML(dir)+` = "read"`)
+	}
+	argv := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
+		"-C", a.Cwd, "-m", model,
+		"-c", "model_reasoning_effort=" + quoteTOML(effort),
+		"-c", `web_search="disabled"`,
+		"-c", "skills.bundled.enabled=false",
+		"-c", "features.network_proxy=true",
+		"-c", `default_permissions="llamer"`,
+		"-c", `permissions.llamer.extends=":read-only"`,
+		"-c", "permissions.llamer.filesystem={" + strings.Join(readable, ", ") + "}",
+		"-c", "permissions.llamer.network={enabled = true, dangerously_allow_all_unix_sockets = true}",
+		"-c", `approval_policy="never"`, "-c", "allow_login_shell=false", "-c", "project_doc_max_bytes=0",
+	}
+	if off := treeSkills(a.Cwd); len(off) > 0 {
+		var toggles []string
+		for _, path := range off {
+			toggles = append(toggles, "{path = "+quoteTOML(path)+", enabled = false}")
+		}
+		argv = append(argv, "-c", "skills.config=["+strings.Join(toggles, ", ")+"]")
+	}
+	if a.Schema != "" {
+		argv = append(argv, "--output-schema", a.Schema)
+	}
+	for _, f := range disabled {
+		argv = append(argv, "--disable", f)
+	}
+	argv = append(argv, "-")
+	codexHome := filepath.Dir(c.auth)
+	return &agent.Launch{
+		Command: c.settings.Bin, Argv: argv, Env: append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome),
+		Input: a.Prompt, Model: model, Effort: effort,
+		Normalize: CodexNormalizer(model),
+		AfterExit: func(sessionID string) agent.Late {
+			return lateOf(model, sessionRecords(codexHome, "-"+sessionID+".jsonl"))
+		},
+	}, nil
+}
+
+// lateOf — цена, размер контекста, запросы и лимиты этапа по журналу его сессии.
+func lateOf(model string, records []sessionRecord) agent.Late {
+	requests := SessionRequests(records)
+	context, cost := SessionTotals(model, requests)
+	return agent.Late{Cost: cost, ContextTokens: context, Requests: requests, Limits: SessionLimits(records)}
+}
+
 // Launch — свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME —
 // там только скиллы этапа; конфиг и правила — из CODEX_HOME, а правила у этапов
 // разные. Журнал сессии остаётся в CODEX_HOME этапа: по нему считаются цена и
@@ -369,6 +451,9 @@ func (c *codex) Quote() string { return `'"'"'` }
 // developer-сообщение поверх базового промпта, и кэш префикса делится между
 // этапами. Аргументом `-c` пакет не пройдёт: один аргумент в Linux ограничен 128 килобайтами.
 func (c *codex) Launch(a LaunchArgs) (*agent.Launch, error) {
+	if a.Sandbox != nil {
+		return c.sandboxed(a)
+	}
 	model, effort := a.Level.Model, a.Level.Effort
 	home := filepath.Join(c.tmp, "codex-"+a.Stage)
 	codexHome := filepath.Join(home, ".codex")
@@ -426,12 +511,7 @@ func (c *codex) Launch(a LaunchArgs) (*agent.Launch, error) {
 	return &agent.Launch{
 		Command: c.settings.Bin, Argv: argv, Env: env, Input: a.Prompt, Model: model, Effort: effort,
 		Normalize: CodexNormalizer(model),
-		AfterExit: func() agent.Late {
-			records := sessionRecords(codexHome)
-			requests := SessionRequests(records)
-			context, cost := SessionTotals(model, requests)
-			return agent.Late{Cost: cost, ContextTokens: context, Requests: requests, Limits: SessionLimits(records)}
-		},
+		AfterExit: func(string) agent.Late { return lateOf(model, sessionRecords(codexHome, "")) },
 		KeepSession: func(dir, sessionID string) (string, error) {
 			for _, name := range []string{"config.toml", "rules", "sessions"} {
 				if err := keepRedacted(filepath.Join(codexHome, name), filepath.Join(dir, name)); err != nil {

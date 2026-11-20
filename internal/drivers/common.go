@@ -138,6 +138,21 @@ type LaunchArgs struct {
 	Cwd           string
 	// Schema — файл JSON Schema итогового ответа; пусто — ответ свободным текстом.
 	Schema string
+	// Sandbox — строгая песочница этапа; nil — песочница этапа ревью.
+	Sandbox *Sandbox
+}
+
+// Sandbox — строгая песочница этапа `llamer run`: агент читает только каталог
+// контекста, скиллы этапа и Readable, сети нет, unix-сокеты открыты.
+type Sandbox struct{ Readable []string }
+
+// paths — что этапу открыто на чтение: каталог контекста первым, Readable и скиллы этапа.
+func (s *Sandbox) paths(a LaunchArgs, runSkills string) []string {
+	paths := append([]string{a.Cwd}, s.Readable...)
+	for _, name := range a.Skills {
+		paths = append(paths, filepath.Join(runSkills, "skills", name))
+	}
+	return paths
 }
 
 // Driver — драйвер этапа.

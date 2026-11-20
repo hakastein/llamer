@@ -19,6 +19,10 @@ var claudeAuth = []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHR
 // выписывать нужно только то, чего он read-only не считает.
 var allowedTools = []string{"Read", "Grep", "Glob", "Skill"}
 
+// systemDirs — что команде в песочнице этапа `llamer run` нужно для запуска: программы,
+// библиотеки и настройки системы.
+var systemDirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc"}
+
 // Инструменты вне read-only запуска: их описания едут в каждый промпт, а вызов
 // стоит хода. Skill остаётся — им грузится метод этапа.
 var disallowedTools = []string{
@@ -165,10 +169,6 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 	if !a.ProjectMemory {
 		settings["claudeMdExcludes"] = projectMemoryFiles
 	}
-	settingsJSON, err := json.Marshal(settings)
-	if err != nil {
-		return nil, err
-	}
 	plugin := ""
 	if c.runSkills != "" {
 		plugin = filepath.Join(c.tmp, "claude-plugin-"+a.Stage)
@@ -182,6 +182,26 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 			return nil, err
 		}
 	}
+	allowed := allowedTools
+	var addDirs []string
+	if a.Sandbox != nil {
+		// Голые Read, Grep и Glob открыли бы чтение любого пути: без них Claude Code читает только
+		// рабочий каталог и --add-dir. Команды закрывает песочница ОС (bubblewrap и socat), а без
+		// неё этап не стартует.
+		allowed = []string{"Skill"}
+		readable := a.Sandbox.paths(a, c.runSkills)
+		if plugin != "" {
+			readable = append(readable, plugin)
+		}
+		addDirs = readable[1:] // первым — каталог контекста, он рабочий
+		settings["sandbox"] = map[string]any{"enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false,
+			"filesystem": map[string]any{"denyRead": []string{"/"}, "allowRead": append(slices.Clone(systemDirs), readable...)},
+			"network":    map[string]any{"allowedDomains": []string{}, "allowAllUnixSockets": true}}
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
 	argv := []string{
 		"-p",
 		"--setting-sources", "project",
@@ -191,12 +211,15 @@ func (c *claude) Launch(a LaunchArgs) (*agent.Launch, error) {
 		"--permission-mode", "dontAsk",
 		"--model", a.Level.Model,
 		"--effort", a.Level.Effort,
-		"--allowedTools", strings.Join(append(slices.Clone(allowedTools), bashRules(a.Allow)...), " "),
+		"--allowedTools", strings.Join(append(slices.Clone(allowed), bashRules(a.Allow)...), " "),
 		"--disallowedTools", strings.Join(disallowedTools, " "),
 	}
 	argv = append(argv, noMCP...)
 	if plugin != "" {
 		argv = append(argv, "--plugin-dir", plugin)
+	}
+	for _, dir := range addDirs {
+		argv = append(argv, "--add-dir", dir)
 	}
 	// Состояние git и окружения Claude Code иначе пишет в системный промпт, и
 	// запись артефактов прогона меняла бы его между этапами.
