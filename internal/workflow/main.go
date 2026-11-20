@@ -49,7 +49,7 @@ func Main(ctx context.Context, o *Options, stdout io.Writer) (ok bool, err error
 	if err != nil {
 		return false, err
 	}
-	w, err := config.LoadWorkflow(runenv.Resolve(cwd, o.Workflow))
+	w, err := config.LoadWorkflow(runenv.Resolve(cwd, o.Workflow), vars)
 	var cfgErr *config.Error
 	if errors.As(err, &cfgErr) {
 		return false, &runenv.InputError{Message: cfgErr.Message}

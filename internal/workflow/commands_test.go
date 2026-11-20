@@ -21,6 +21,12 @@ exports.definition = {short: "note", long: "Note.", flags: [{name: "text", type:
 exports.command = (flags) => { llamer.record({text: flags.text}); return "записано"; };
 `
 
+// seenScript печатает записанное в журнал до вызова.
+const seenScript = `const llamer = require("llamer");
+exports.definition = {short: "seen", long: "Seen."};
+exports.command = () => llamer.results().map((r) => r.stage + ":" + r.value.text).join(",");
+`
+
 // Отказ пойман скриптом, а вызов всё равно отклонён и этап сорван.
 const probeScript = `const llamer = require("llamer");
 exports.definition = {short: "probe", long: "Probe.", args: [{name: "kind", type: "string", usage: "kind"}, {name: "target", type: "string", usage: "target"}]};
@@ -49,7 +55,7 @@ func serve(t *testing.T, hosts, programs []string) (socket string, failed chan e
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	for name, text := range map[string]string{"note.js": noteScript, "probe.js": probeScript} {
+	for name, text := range map[string]string{"note.js": noteScript, "probe.js": probeScript, "seen.js": seenScript} {
 		if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o777); err != nil {
 			t.Fatal(err)
 		}
@@ -109,6 +115,15 @@ func TestCommandResultReachesJournal(t *testing.T) {
 	case err := <-failed:
 		t.Fatalf("этап сорван: %v", err)
 	default:
+	}
+}
+
+func TestCommandReadsEarlierResults(t *testing.T) {
+	socket, _, _ := serve(t, nil, nil)
+	call(t, socket, "note", "--text", "первая")
+	call(t, socket, "note", "--text", "вторая")
+	if r := call(t, socket, "seen"); r.Stdout != "writer:первая,writer:вторая\n" {
+		t.Fatalf("вызов: %+v", r)
 	}
 }
 

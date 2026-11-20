@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"text/template"
 	"time"
 
@@ -31,7 +32,7 @@ var workflowSchema = mustCompile("workflow.schema.json", workflowSchemaText)
 // прошедших этапов по имени — JSON у этапа со схемой, текст у этапа без неё.
 type PromptData struct{ Answers map[string]string }
 
-// WorkflowStage — этап workflow.
+// WorkflowStage — этап workflow: запуск агента или, с Command, команда workflow без агента.
 type WorkflowStage struct {
 	Name, Driver  string
 	Model, Effort string
@@ -40,13 +41,16 @@ type WorkflowStage struct {
 	Timeout       time.Duration
 	SchemaPath    string             // пусто — ответ свободным текстом
 	Schema        *jsonschema.Schema // nil — ответ свободным текстом
+	// Command — argv команды из `commands/` с раскрытыми `${VAR}`; nil — этап агента.
+	Command []string
 }
 
-// Workflow — проверенный конфиг workflow: этапы в порядке файла и скиллы из `skills/` его каталога.
+// Workflow — проверенный конфиг workflow: волны этапов в порядке файла и скиллы из `skills/` его каталога.
 type Workflow struct {
 	Dir     string
 	Library *skills.Library
-	Stages  []*WorkflowStage
+	// Waves — этапы по волнам: волна идёт после предыдущей, её этапы — одновременно.
+	Waves [][]*WorkflowStage
 	// Readable — пути сверх каталога контекста, которые агент читает в песочнице: абсолютные.
 	Readable []string
 	// Commands — команды агента из `commands/` каталога workflow; nil — каталога нет.
@@ -55,19 +59,23 @@ type Workflow struct {
 	Hosts, Programs []string
 }
 
-type rawWorkflow struct {
-	Readable []string
-	Commands struct{ Hosts, Programs []string }
-	Stages   []struct {
-		Name, Driver, Model, Effort, Prompt, Timeout, Schema string
-		Skills                                               []string
+type (
+	rawWorkflow struct {
+		Readable []string
+		Commands struct{ Hosts, Programs []string }
+		// Stages — этап или волна: массив этапов.
+		Stages []json.RawMessage
 	}
-}
+	rawWorkflowStage struct {
+		Name, Driver, Model, Effort, Prompt, Timeout, Schema string
+		Skills, Command                                      []string
+	}
+)
 
-// LoadWorkflow — workflow из каталога dir (путь абсолютный). Шаблон этапа
-// собирается на ответах этапов до него: ссылка на этап позже или опечатка в
+// LoadWorkflow — workflow из каталога dir (путь абсолютный); `${VAR}` в argv этапов-команд раскрываются из env.
+// Шаблон этапа собирается на ответах прошлых волн: ссылка на этап своей или следующей волны или опечатка в
 // имени останавливают прогон до первого запроса к модели.
-func LoadWorkflow(dir string) (w *Workflow, err error) {
+func LoadWorkflow(dir string, env map[string]string) (w *Workflow, err error) {
 	defer caught(&err)
 	file := filepath.Join(dir, WorkflowFile)
 	data, err := readJSON(file)
@@ -104,44 +112,84 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 		w.Readable = append(w.Readable, path)
 	}
 	answers := map[string]string{}
-	for i, s := range raw.Stages {
-		path := fmt.Sprintf("stages[%d]", i)
-		if _, ok := answers[s.Name]; ok {
-			r.fail(path+".name", "этап "+s.Name+" уже есть")
-		}
-		text, err := os.ReadFile(filepath.Join(dir, s.Prompt))
-		if err != nil {
-			r.fail(path+".prompt", err.Error())
-		}
-		tmpl, err := template.New(s.Prompt).Option("missingkey=error").Parse(string(text))
-		if err == nil {
-			err = tmpl.Execute(io.Discard, PromptData{Answers: answers})
+	for i, item := range raw.Stages {
+		wave, path := []rawWorkflowStage{{}}, fmt.Sprintf("stages[%d]", i)
+		single := !bytes.HasPrefix(item, []byte("["))
+		if single {
+			err = json.Unmarshal(item, &wave[0])
+		} else {
+			err = json.Unmarshal(item, &wave)
 		}
 		if err != nil {
-			r.fail(path+".prompt", err.Error())
+			return nil, err
 		}
-		timeout, err := time.ParseDuration(s.Timeout)
-		if err != nil {
-			r.fail(path+".timeout", err.Error())
-		}
-		if timeout <= 0 {
-			r.fail(path+".timeout", "должен быть больше нуля")
-		}
-		if missing := library.Missing(s.Skills); len(missing) > 0 {
-			r.fail(path+".skills", fmt.Sprintf("в %s нет скиллов %v", filepath.Join(dir, "skills"), missing))
-		}
-		stage := &WorkflowStage{Name: s.Name, Driver: s.Driver, Model: s.Model, Effort: s.Effort, Template: tmpl,
-			Skills: s.Skills, Timeout: timeout}
-		if s.Schema != "" {
-			stage.SchemaPath = filepath.Join(dir, s.Schema)
-			if stage.Schema, err = jsonschema.NewCompiler().Compile(stage.SchemaPath); err != nil {
-				r.fail(path+".schema", err.Error())
+		stages := make([]*WorkflowStage, len(wave))
+		names := map[string]bool{}
+		for j, s := range wave {
+			at := path
+			if !single {
+				at = fmt.Sprintf("%s[%d]", path, j)
 			}
+			if _, ok := answers[s.Name]; ok || names[s.Name] {
+				r.fail(at+".name", "этап "+s.Name+" уже есть")
+			}
+			names[s.Name] = true
+			stages[j] = r.workflowStage(w, s, at, answers, env)
 		}
-		w.Stages = append(w.Stages, stage)
-		answers[s.Name] = ""
+		// Ответы волны — только следующим волнам: её этапы идут одновременно.
+		for name := range names {
+			answers[name] = ""
+		}
+		w.Waves = append(w.Waves, stages)
 	}
 	return w, nil
+}
+
+// workflowStage — этап s по пути path в файле; answers — этапы прошлых волн.
+func (r reader) workflowStage(w *Workflow, s rawWorkflowStage, path string, answers, env map[string]string) *WorkflowStage {
+	if s.Command != nil {
+		known := w.Commands != nil && slices.ContainsFunc(w.Commands.Commands, func(c *cliche.Command) bool {
+			return len(c.Path) <= len(s.Command) && slices.Equal(c.Path, s.Command[:len(c.Path)])
+		})
+		if !known {
+			r.fail(path+".command", "в "+CommandsDir+"/ каталога workflow нет команды "+strings.Join(s.Command, " "))
+		}
+		argv := make([]string, len(s.Command))
+		for i, arg := range s.Command {
+			argv[i] = r.expandVars(arg, env, fmt.Sprintf("%s.command[%d]", path, i))
+		}
+		return &WorkflowStage{Name: s.Name, Command: argv}
+	}
+	text, err := os.ReadFile(filepath.Join(w.Dir, s.Prompt))
+	if err != nil {
+		r.fail(path+".prompt", err.Error())
+	}
+	tmpl, err := template.New(s.Prompt).Option("missingkey=error").Parse(string(text))
+	if err == nil {
+		err = tmpl.Execute(io.Discard, PromptData{Answers: answers})
+	}
+	if err != nil {
+		r.fail(path+".prompt", err.Error())
+	}
+	timeout, err := time.ParseDuration(s.Timeout)
+	if err != nil {
+		r.fail(path+".timeout", err.Error())
+	}
+	if timeout <= 0 {
+		r.fail(path+".timeout", "должен быть больше нуля")
+	}
+	if missing := w.Library.Missing(s.Skills); len(missing) > 0 {
+		r.fail(path+".skills", fmt.Sprintf("в %s нет скиллов %v", filepath.Join(w.Dir, "skills"), missing))
+	}
+	stage := &WorkflowStage{Name: s.Name, Driver: s.Driver, Model: s.Model, Effort: s.Effort, Template: tmpl,
+		Skills: s.Skills, Timeout: timeout}
+	if s.Schema != "" {
+		stage.SchemaPath = filepath.Join(w.Dir, s.Schema)
+		if stage.Schema, err = jsonschema.NewCompiler().Compile(stage.SchemaPath); err != nil {
+			r.fail(path+".schema", err.Error())
+		}
+	}
+	return stage
 }
 
 // CommandsDir — каталог cliche-скриптов команд агента в каталоге workflow.
@@ -165,11 +213,11 @@ func commands(dir string) (*cliche.Catalog, error) {
 	return catalog, errors.Join(broken...)
 }
 
-// Drivers — драйверы этапов workflow.
+// Drivers — драйверы этапов агента.
 func (w *Workflow) Drivers() []string {
 	var out []string
-	for _, s := range w.Stages {
-		if !slices.Contains(out, s.Driver) {
+	for _, s := range slices.Concat(w.Waves...) {
+		if s.Command == nil && !slices.Contains(out, s.Driver) {
 			out = append(out, s.Driver)
 		}
 	}
@@ -179,7 +227,7 @@ func (w *Workflow) Drivers() []string {
 // Skills — скиллы всех этапов workflow.
 func (w *Workflow) Skills() []string {
 	var out []string
-	for _, s := range w.Stages {
+	for _, s := range slices.Concat(w.Waves...) {
 		for _, name := range s.Skills {
 			if !slices.Contains(out, name) {
 				out = append(out, name)

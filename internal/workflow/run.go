@@ -5,11 +5,13 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/artifacts"
@@ -45,12 +47,12 @@ type Failure struct {
 // Stage — итог этапа: ответ и расход.
 type Stage struct {
 	Name          string          `json:"name"`
-	Driver        string          `json:"driver"`
-	Model         string          `json:"model"`
-	Effort        string          `json:"effort"`
+	Driver        string          `json:"driver,omitempty"` // у этапа-команды драйвера, модели и усилия нет
+	Model         string          `json:"model,omitempty"`
+	Effort        string          `json:"effort,omitempty"`
 	OK            bool            `json:"ok"`
 	Answer        json.RawMessage `json:"answer"` // JSON по схеме этапа, строка без схемы, null у сорванного
-	Cost          *float64        `json:"cost"`   // null — драйвер цены не назвал
+	Cost          *float64        `json:"cost"`   // null — драйвер цены не назвал, у этапа-команды — 0
 	Tokens        int64           `json:"tokens"`
 	ContextTokens int64           `json:"contextTokens"`
 	Turns         int             `json:"turns"`
@@ -104,7 +106,7 @@ func (s *stream) Write(e *agent.Event) {
 	s.out.emit(map[string]any{"type": "event", "stage": s.stage, "event": e})
 }
 
-// Execute — этапы по порядку до первого сорванного. Прерванный прогон
+// Execute — волны по порядку до первой с сорванным этапом. Прерванный прогон
 // результата не выдаёт: возвращается ошибка контекста.
 func (r *Run) Execute() (*Result, error) {
 	o := &out{w: r.Out}
@@ -112,29 +114,29 @@ func (r *Run) Execute() (*Result, error) {
 	result := &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}}
 	answers := map[string]string{}
 	var records []*cost.Stage
-	for _, s := range r.Workflow.Stages {
-		record, detail, err := r.stage(s, answers, o)
+	for _, wave := range r.Workflow.Waves {
+		done, err := r.wave(wave, answers, o)
 		if err != nil {
 			return nil, err
 		}
 		if err := r.Context.Err(); err != nil {
 			return nil, err
 		}
-		records = append(records, record)
-		out := record.Outcome
-		stage := Stage{Name: s.Name, Driver: s.Driver, Model: out.Model, Effort: out.Effort, OK: record.OK, Answer: json.RawMessage("null"),
-			Cost: out.Cost, Tokens: out.Tokens(), ContextTokens: out.ContextTokens, Turns: out.Turns, DurationMs: out.DurationMs}
-		if !record.OK {
-			result.Stages = append(result.Stages, stage)
-			result.OK, result.Failure = false, &Failure{Stage: s.Name, Reason: record.Reason, Detail: detail}
+		for _, f := range done {
+			if f.record != nil {
+				records = append(records, f.record)
+			}
+			result.Stages = append(result.Stages, f.stage)
+			if f.failure != nil && result.Failure == nil {
+				result.OK, result.Failure = false, f.failure
+			}
+		}
+		if !result.OK {
 			break
 		}
-		answers[s.Name] = out.Result.Text
-		stage.Answer = json.RawMessage(out.Result.Text)
-		if s.Schema == nil {
-			stage.Answer, _ = json.Marshal(out.Result.Text) // строка кодируется всегда
+		for i, s := range wave {
+			answers[s.Name] = done[i].answer
 		}
-		result.Stages = append(result.Stages, stage)
 	}
 	result.Cost = cost.Summarize(records)
 	cost.Report(r.Artifacts.Path, records, logx.SinceStart())
@@ -147,8 +149,95 @@ func (r *Run) Execute() (*Result, error) {
 	return result, nil
 }
 
-// stage — этап на своём драйвере; detail — подробность срыва.
-func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) (*cost.Stage, string, error) {
+// finished — итог этапа: строка результата, ответ для заданий следующих волн, запись расхода агента
+// (nil у этапа-команды) и срыв (nil у прошедшего).
+type finished struct {
+	stage   Stage
+	answer  string
+	record  *cost.Stage
+	failure *Failure
+}
+
+// wave — этапы волны одновременно. Первый ведёт, остальные стартуют с началом его ответа: общую часть
+// заданий он к этому времени записал в кэш промпта, и они читают её оттуда, а не пишут каждый сам.
+// Ждать приходится секунды.
+func (r *Run) wave(stages []*config.WorkflowStage, answers map[string]string, o *out) ([]finished, error) {
+	done := make([]finished, len(stages))
+	errs := make([]error, len(stages))
+	responding := make(chan struct{})
+	lead := sync.OnceFunc(func() { close(responding) })
+	var wg sync.WaitGroup
+	for i, s := range stages {
+		onResponse := func() {}
+		if i == 0 {
+			onResponse = lead
+		} else if i == 1 {
+			<-responding
+		}
+		wg.Go(func() {
+			// Ведущий, так и не услышавший модель (сорвался, этап-команда), волну не держит.
+			defer onResponse()
+			done[i], errs[i] = r.run(s, answers, o, onResponse)
+		})
+	}
+	wg.Wait()
+	return done, errors.Join(errs...)
+}
+
+// run — этап агента или этап-команда.
+func (r *Run) run(s *config.WorkflowStage, answers map[string]string, o *out, onResponse func()) (finished, error) {
+	if s.Command != nil {
+		return r.command(s), nil
+	}
+	record, detail, err := r.stage(s, answers, o, onResponse)
+	if err != nil {
+		return finished{}, err
+	}
+	out := record.Outcome
+	f := finished{record: record, stage: Stage{Name: s.Name, Driver: s.Driver, Model: out.Model, Effort: out.Effort, OK: record.OK,
+		Answer: json.RawMessage("null"), Cost: out.Cost, Tokens: out.Tokens(), ContextTokens: out.ContextTokens, Turns: out.Turns,
+		DurationMs: out.DurationMs}}
+	if !record.OK {
+		f.failure = &Failure{Stage: s.Name, Reason: record.Reason, Detail: detail}
+		return f, nil
+	}
+	f.answer = out.Result.Text
+	f.stage.Answer = json.RawMessage(out.Result.Text)
+	if s.Schema == nil {
+		f.stage.Answer, _ = json.Marshal(out.Result.Text) // строка кодируется всегда
+	}
+	return f, nil
+}
+
+// command — этап-команда: команда workflow на стороне llamer, без агента, с записью в журнал прогона.
+// Ответ — её stdout; отказ в разрешении, незаписанный результат или ненулевой код срывают этап.
+func (r *Run) command(s *config.WorkflowStage) finished {
+	logx.Logf("этап «%s» пошёл: команда %s", s.Name, s.Command[0])
+	started := time.Now()
+	failed := make(chan error, 1)
+	reply := r.commands.handler(s.Name, failed)(r.Context, broker.Call{Argv: s.Command, Cwd: r.Cwd})
+	f := finished{stage: Stage{Name: s.Name, OK: true, Answer: json.RawMessage("null"), Cost: new(float64),
+		DurationMs: time.Since(started).Milliseconds()}}
+	select {
+	case err := <-failed:
+		f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: err.Error()}
+	default:
+		if reply.Exit != 0 {
+			f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: strings.TrimSpace(reply.Stderr)}
+		}
+	}
+	if f.failure != nil {
+		logx.Logf("этап «%s» сорван: %s", s.Name, f.failure.Detail)
+		f.stage.OK = false
+		return f
+	}
+	f.answer = reply.Stdout
+	f.stage.Answer, _ = json.Marshal(reply.Stdout) // строка кодируется всегда
+	return f
+}
+
+// stage — этап агента на своём драйвере; detail — подробность срыва; onResponse — начало ответа модели.
+func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out, onResponse func()) (*cost.Stage, string, error) {
 	var prompt strings.Builder
 	if err := s.Template.Execute(&prompt, config.PromptData{Answers: answers}); err != nil {
 		return nil, "", err
@@ -175,7 +264,7 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 		}
 	}
 	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Model, s.Effort, promptPath)
-	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {})
+	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, onResponse)
 	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: prompt.String(), Skills: s.Skills,
 		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()

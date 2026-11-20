@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -71,7 +72,7 @@ func (r *refusal) Error() string { return r.message }
 // execute исполняет скрипт команды call; results — записанное им, у неудачного вызова не засчитывается.
 func (c *commands) execute(ctx context.Context, call broker.Call, fail func(error)) (broker.Reply, []any, bool) {
 	root := &cobra.Command{Use: "llamer"}
-	a := &api{workflow: c.workflow, cwd: call.Cwd, fail: fail}
+	a := &api{workflow: c.workflow, journal: c.journal, cwd: call.Cwd, fail: fail}
 	c.workflow.Commands.AddTo(root, func(cmd *cobra.Command, command *cliche.Command, in cliche.Input) error {
 		value, err := cliche.Run(cmd.Context(), command, in, cliche.Env{Modules: map[string]any{"llamer": a.module()}})
 		if err != nil {
@@ -108,7 +109,7 @@ func (c *commands) execute(ctx context.Context, call broker.Call, fail func(erro
 		r.Exit = 1
 		return r, nil, false
 	}
-	return r, a.results, false
+	return r, a.written, false
 }
 
 func refuse(format string, args ...any) (broker.Reply, []any, bool) {
@@ -174,14 +175,16 @@ func plainOf(value any) (any, error) {
 // api — модуль `llamer` скриптов команд: журнал результатов, HTTP к разрешённым хостам, разрешённые программы.
 type api struct {
 	workflow *config.Workflow
+	journal  *journal
 	cwd      string
 	fail     func(error)
-	results  []any
+	written  []any // записанное этим вызовом
 	denied   *refusal
 }
 
 func (a *api) module() *cliche.Object {
-	return cliche.NewObject([]string{"record", "fetch", "exec"}, []any{cliche.Func(a.record), cliche.Func(a.fetch), cliche.Func(a.exec)})
+	return cliche.NewObject([]string{"record", "results", "fetch", "exec"},
+		[]any{cliche.Func(a.record), cliche.Func(a.results), cliche.Func(a.fetch), cliche.Func(a.exec)})
 }
 
 // deny — отказ в разрешении: этап сорван, даже если скрипт поймал ошибку.
@@ -202,8 +205,38 @@ func (a *api) record(_ context.Context, args ...any) (any, error) {
 		a.fail(err)
 		return nil, err
 	}
-	a.results = append(a.results, plain)
+	a.written = append(a.written, plain)
 	return cliche.Undefined{}, nil
+}
+
+// results() → [{stage, value}]: записанное в журнал прогона до этого вызова, по порядку записи.
+func (a *api) results(context.Context, ...any) (any, error) {
+	recorded := a.journal.recorded()
+	out := make([]any, len(recorded))
+	for i, r := range recorded {
+		out[i] = cliche.NewObject([]string{"stage", "value"}, []any{r.stage, bridged(r.value)})
+	}
+	return out, nil
+}
+
+// bridged — значение журнала в значении моста cliche: объект — с ключами по алфавиту, как в JSON журнала.
+func bridged(value any) any {
+	switch v := value.(type) {
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = bridged(item)
+		}
+		return out
+	case map[string]any:
+		keys := slices.Sorted(maps.Keys(v))
+		values := make([]any, len(keys))
+		for i, key := range keys {
+			values[i] = bridged(v[key])
+		}
+		return cliche.NewObject(keys, values)
+	}
+	return value
 }
 
 // option — поле name объекта настроек вызова строкой; нет поля — пусто.
@@ -270,7 +303,8 @@ func (a *api) fetch(ctx context.Context, args ...any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), u.String(), strings.NewReader(body))
+	// Тело уходит наружу — вымарывается, как вывод; заголовки несут учётные данные запроса и не трогаются.
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), u.String(), strings.NewReader(redact.Secrets(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -377,8 +411,22 @@ func (a *api) exec(ctx context.Context, args ...any) (any, error) {
 // journal — журнал вызовов команд прогона. Вымарывание здесь, в одной точке записи: в строке — ввод агента и
 // выдача команд.
 type journal struct {
-	mu   sync.Mutex
-	path string
+	mu      sync.Mutex
+	path    string
+	results []recorded
+}
+
+// recorded — результат вызова в журнале: этап и значение.
+type recorded struct {
+	stage string
+	value any
+}
+
+// recorded — записанные результаты по порядку записи.
+func (j *journal) recorded() []recorded {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.results)
 }
 
 func newJournal(runPath string) *journal { return &journal{path: filepath.Join(runPath, JournalFile)} }
@@ -402,6 +450,9 @@ func (j *journal) call(stage string, argv []string, r broker.Reply, rejected boo
 	_, err = f.WriteString(redact.Secrets(string(data)) + "\n")
 	if err := errors.Join(err, f.Close()); err != nil {
 		return broker.Reply{}, err
+	}
+	for _, value := range results {
+		j.results = append(j.results, recorded{stage, value})
 	}
 	return broker.Reply{Stdout: redact.Secrets(r.Stdout), Stderr: redact.Secrets(r.Stderr), Exit: r.Exit}, nil
 }

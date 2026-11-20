@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "commands": { "programs": ["git", "cat"] },
+  "stages": [
+    { "name": "materials", "command": ["review", "materials", "--base", "${REVIEW_BASE}", "--task", "${REVIEW_TASK}"] },
+    { "name": "assess", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium",
+      "prompt": "prompts/assess.md", "skills": ["assessing-review-scope"], "timeout": "10m" },
+    [
+      { "name": "logic", "driver": "claude", "model": "claude-opus-5-5", "effort": "low",
+        "prompt": "prompts/logic.md", "skills": ["reviewing-business-logic"], "timeout": "30m" },
+      { "name": "quality", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "high",
+        "prompt": "prompts/quality.md", "skills": ["reviewing-code-quality"], "timeout": "30m" },
+      { "name": "tests", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium",
+        "prompt": "prompts/tests.md", "timeout": "20m" },
+      { "name": "comments", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium",
+        "prompt": "prompts/comments.md", "timeout": "20m" }
+    ],
+    { "name": "found", "command": ["review", "findings"] },
+    { "name": "dedupe", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium",
+      "prompt": "prompts/dedupe.md", "timeout": "10m" },
+    { "name": "deduped", "command": ["review", "findings", "--code"] },
+    { "name": "skeptic", "driver": "claude", "model": "claude-opus-5-5", "effort": "low",
+      "prompt": "prompts/skeptic.md", "skills": ["refuting-review-findings"], "timeout": "30m" },
+    { "name": "report", "command": ["review", "report"] }
+  ]
+}
