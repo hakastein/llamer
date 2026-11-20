@@ -247,8 +247,8 @@ func assistant(content object, b agent.Block) []*agent.Event {
 
 // parser — события `codex exec --json` в общей форме. В артефакты этапа они ложатся
 // строками в форме потока claude: артефакты обоих драйверов читаются одинаково. Цены,
-// usage отдельных запросов и лимитов подписки в потоке нет — их после выхода берёт
-// AfterExit из журнала сессии. Строка не JSON не разбирается: её покажет лог.
+// usage отдельных запросов и лимитов подписки в потоке нет — их после выхода Run берёт
+// из журнала сессии. Строка не JSON не разбирается: её покажет лог.
 func parser(model string) func([]byte) ([]*agent.Event, error) {
 	lastMessage, turns := "", 0
 	return func(raw []byte) ([]*agent.Event, error) {
@@ -390,7 +390,7 @@ type launcher struct {
 	auth      string
 }
 
-func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
+func (driver) Prepare(s drivers.Setup) (drivers.Runner, error) {
 	auth := filepath.Join(codexHomeOf(s.Env), "auth.json")
 	from := "из окружения"
 	if drivers.Exists(auth) {
@@ -407,15 +407,15 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 // применяет. CODEX_HOME общий: копия auth.json разорвала бы цепочку обновления токена входа.
 // Его config.toml и правила этап не читает — настройки llamer идут аргументами -c, — а журнал
 // сессии codex пишет туда же, и он находится по id сессии.
-func (c *launcher) sandboxed(a drivers.LaunchArgs) (*agent.Launch, error) {
+func (c *launcher) sandboxed(a drivers.LaunchArgs) (agent.Command, error) {
 	model, effort := a.Level.Model, a.Level.Effort
-	home := filepath.Join(c.tmp, "codex-"+a.Stage)
+	home := c.home(a)
 	if err := os.MkdirAll(home, 0o777); err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	if c.runSkills != "" {
 		if err := drivers.LinkSkills(filepath.Join(home, ".agents", "skills"), c.runSkills, a.Skills); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 	}
 	readable := []string{`":root" = "deny"`, `":minimal" = "read"`}
@@ -448,46 +448,92 @@ func (c *launcher) sandboxed(a drivers.LaunchArgs) (*agent.Launch, error) {
 		argv = append(argv, "--disable", f)
 	}
 	argv = append(argv, "-")
-	codexHome := filepath.Dir(c.auth)
-	return &agent.Launch{
-		Command: c.settings.Bin, Argv: argv, Env: append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome),
-		Input: a.Prompt, Model: model, Effort: effort,
-		Parse: parser(model),
-		AfterExit: func(sessionID string) agent.Late {
-			return lateOf(model, sessionRecords(codexHome, "-"+sessionID+".jsonl"))
-		},
-	}, nil
+	return agent.Command{Path: c.settings.Bin, Argv: argv, Env: append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+c.codexHome()),
+		Dir: a.Cwd, Input: a.Prompt, Timeout: a.Timeout}, nil
 }
 
-// lateOf — цена, размер контекста, запросы и лимиты этапа по журналу его сессии.
-func lateOf(model string, records []sessionRecord) agent.Late {
-	requests := sessionRequests(records)
-	context, cost := sessionTotals(model, requests)
-	return agent.Late{Cost: cost, ContextTokens: context, Requests: requests, Limits: sessionLimits(records)}
+// codexHome — общий CODEX_HOME пользователя.
+func (c *launcher) codexHome() string { return filepath.Dir(c.auth) }
+
+// home — HOME этапа.
+func (c *launcher) home(a drivers.LaunchArgs) string { return filepath.Join(c.tmp, "codex-"+a.Stage) }
+
+// Run — этап на codex. Цены, usage отдельных запросов и лимитов подписки в потоке
+// `--json` нет: исход берёт их из журнала сессии после выхода. Журнал сессии
+// сохраняется в a.SessionDir, если он задан, — у этапа вне строгой песочницы.
+func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telemetry) (*agent.Outcome, error) {
+	model, effort := a.Level.Model, a.Level.Effort
+	var cmd agent.Command
+	var err error
+	if a.Sandbox != nil {
+		cmd, err = c.sandboxed(a)
+	} else {
+		cmd, err = c.command(a)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p := agent.Start(ctx, cmd, t)
+	tally := drivers.Read(p, t, parser(model))
+	o := tally.Outcome(p.Wait(), model, effort)
+	// Журнал этапа вне песочницы — единственный в его CODEX_HOME; в общем CODEX_HOME он находится по id сессии.
+	codexHome, suffix := filepath.Join(c.home(a), ".codex"), ""
+	if a.Sandbox != nil {
+		codexHome, suffix = c.codexHome(), "-"+tally.SessionID+".jsonl"
+	}
+	records := sessionRecords(codexHome, suffix)
+	o.Requests = sessionRequests(records)
+	peak, cost := sessionTotals(model, o.Requests)
+	o.ContextTokens = max(o.ContextTokens, peak)
+	if o.Result != nil { // этап без итога стоит ноль, как у любого драйвера
+		o.Cost = cost
+	}
+	o.Limits = sessionLimits(records)
+	if a.Sandbox == nil && a.SessionDir != "" && tally.SessionID != "" {
+		// Без журнала сессии этап не хуже: сбой сохранения его не роняет.
+		if o.Resume, err = c.keepSession(a, tally.SessionID); err != nil {
+			t.Logf("журнал сессии не сохранён (%s)", err)
+		}
+	}
+	return o, nil
 }
 
-// Launch — свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME —
+// keepSession — конфиг, правила и журнал сессии этапа и команда её продолжения.
+func (c *launcher) keepSession(a drivers.LaunchArgs, sessionID string) (string, error) {
+	codexHome, dir := filepath.Join(c.home(a), ".codex"), a.SessionDir
+	for _, name := range []string{"config.toml", "rules", "sessions"} {
+		if err := drivers.KeepRedacted(filepath.Join(codexHome, name), filepath.Join(dir, name)); err != nil {
+			return "", err
+		}
+	}
+	// Вход — из обычного места пользователя ссылкой: копия кредов в артефактах не лежит.
+	auth := ""
+	if drivers.Exists(c.auth) {
+		auth = "ln -sf " + shellescape.Quote(c.auth) + " " + shellescape.Quote(filepath.Join(dir, "auth.json")) + " && "
+	}
+	return auth + "CODEX_HOME=" + shellescape.Quote(dir) + " " + c.settings.Bin + " exec resume --skip-git-repo-check -c " +
+		shellescape.Quote("model="+quoteTOML(a.Level.Model)) + " -c " + shellescape.Quote("model_reasoning_effort="+quoteTOML(a.Level.Effort)) + " " + sessionID, nil
+}
+
+// command — свой HOME и CODEX_HOME на этап: личные скиллы codex берёт из HOME —
 // там только скиллы этапа; конфиг и правила — из CODEX_HOME, а правила у этапов
 // разные. Журнал сессии остаётся в CODEX_HOME этапа: по нему считаются цена и
 // размер контекста. Общая часть пакета — `developer_instructions` в config.toml:
 // developer-сообщение поверх базового промпта, и кэш префикса делится между
 // этапами. Аргументом `-c` пакет не пройдёт: один аргумент в Linux ограничен 128 килобайтами.
-func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
-	if a.Sandbox != nil {
-		return c.sandboxed(a)
-	}
+func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 	model, effort := a.Level.Model, a.Level.Effort
-	home := filepath.Join(c.tmp, "codex-"+a.Stage)
+	home := c.home(a)
 	codexHome := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(filepath.Join(codexHome, "rules"), 0o777); err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "rules", rulesFile), []byte(rulesFor(a.Allow)), 0o666); err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	if drivers.Exists(c.auth) {
 		if err := drivers.CopyFile(c.auth, filepath.Join(codexHome, "auth.json")); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 	}
 	type skillToggle struct {
@@ -510,14 +556,14 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	}
 	data, err := toml.Marshal(config)
 	if err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), data, 0o666); err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	if c.runSkills != "" {
 		if err := drivers.LinkSkills(filepath.Join(home, ".agents", "skills"), c.runSkills, a.Skills); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 	}
 	argv := []string{"exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "-c", "skills.bundled.enabled=false",
@@ -530,23 +576,5 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	}
 	argv = append(argv, "-")
 	env := append(append(slices.Clone(c.env), a.Env...), "HOME="+home, "CODEX_HOME="+codexHome)
-	return &agent.Launch{
-		Command: c.settings.Bin, Argv: argv, Env: env, Input: a.Prompt, Model: model, Effort: effort,
-		Parse:     parser(model),
-		AfterExit: func(string) agent.Late { return lateOf(model, sessionRecords(codexHome, "")) },
-		KeepSession: func(dir, sessionID string) (string, error) {
-			for _, name := range []string{"config.toml", "rules", "sessions"} {
-				if err := drivers.KeepRedacted(filepath.Join(codexHome, name), filepath.Join(dir, name)); err != nil {
-					return "", err
-				}
-			}
-			// Вход — из обычного места пользователя ссылкой: копия кредов в артефактах не лежит.
-			auth := ""
-			if drivers.Exists(c.auth) {
-				auth = "ln -sf " + shellescape.Quote(c.auth) + " " + shellescape.Quote(filepath.Join(dir, "auth.json")) + " && "
-			}
-			return auth + "CODEX_HOME=" + shellescape.Quote(dir) + " " + c.settings.Bin + " exec resume --skip-git-repo-check -c " +
-				shellescape.Quote("model="+quoteTOML(model)) + " -c " + shellescape.Quote("model_reasoning_effort="+quoteTOML(effort)) + " " + sessionID, nil
-		},
-	}, nil
+	return agent.Command{Path: c.settings.Bin, Argv: argv, Env: env, Dir: a.Cwd, Input: a.Prompt, Timeout: a.Timeout}, nil
 }

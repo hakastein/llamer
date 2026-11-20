@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/hakastein/llamer/internal/config"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
@@ -204,14 +205,14 @@ func (r *run) review() (bool, error) {
 		}
 		f := report.Failure{Reason: "other", Detail: detail}
 		if outcome.Failure != nil {
-			f.Reason, f.ResetsAt = outcome.Failure.Reason, outcome.Failure.ResetsAt
+			f.Reason, f.ResetsAt = outcome.Failure.Reason, outcome.Failure.Outcome.ResetsAt
 		}
 		delivery.DeliverFailure(f, outcome.Records)
-		r.artifacts.ReportCost(outcome.Records, logx.SinceStart())
+		cost.Report(r.artifacts.Path, outcome.Records, logx.SinceStart())
 		return false, nil
 	}
 
-	review := &report.Review{Journal: outcome.Journal, Materials: m, Stages: outcome.Records, MarkSha: req.HeadSha(), ElapsedMs: logx.SinceStart()}
+	review := &report.Review{Journal: outcome.Journal, Materials: m, Stages: outcome.Records, Done: outcome.Done, MarkSha: req.HeadSha(), ElapsedMs: logx.SinceStart()}
 	unpublished, failures := delivery.Deliver(review)
 	for _, line := range review.Repeats() {
 		logx.Log(line)
@@ -226,7 +227,7 @@ func (r *run) review() (bool, error) {
 	for _, g := range shortfall.Gaps {
 		logx.Log("недостача: " + g)
 	}
-	r.artifacts.ReportCost(outcome.Records, logx.SinceStart())
+	cost.Report(r.artifacts.Path, outcome.Records, logx.SinceStart())
 	// Сорванный этап — неполное ревью, даже если отчёт доставлен.
 	return len(failures) == 0 && shortfall.Failed == 0, nil
 }

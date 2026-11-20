@@ -1,99 +1,48 @@
-package agent
+// Package cost — расход этапов прогона: таблица в лог, итог, cost.json и лимиты подписки драйверов.
+package cost
 
 import (
 	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/logx"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
 
-// Usage — токены модели: вход без кэша, выход, чтение и запись кэша.
-type Usage struct {
-	InputTokens              int64
-	OutputTokens             int64
-	CacheReadInputTokens     int64
-	CacheCreationInputTokens int64
+// Stage — этап прогона в отчёте о расходе: исход драйвера под именем этапа и вердикт того, кто этап запускал.
+type Stage struct {
+	Name, Driver string
+	// OK и Reason — вердикт этапа: исход драйвера, если запустивший не сорвал этап по своим правилам.
+	OK      bool
+	Reason  string
+	Outcome *agent.Outcome
 }
 
-// Window — окно лимита подписки: использовано в процентах, сброс — unix-секунды.
-type Window struct {
-	UsedPercent float64 `json:"usedPercent" yaml:"usedPercent"`
-	ResetsAt    *int64  `json:"resetsAt" yaml:"resetsAt"`
-}
-
-// Limits — лимиты подписки драйвера: статус, причина отказа и окна по имени.
-type Limits struct {
-	Status  *string           `json:"status" yaml:"status"`
-	Reason  *string           `json:"reason" yaml:"reason"`
-	Windows map[string]Window `json:"windows" yaml:"windows"`
-}
-
-// Record — запись отработавшего этапа: цена, токены, длительность, исход.
-type Record struct {
-	Name, Model, Effort string
-	OK, TimedOut        bool
-	ExitCode            *int
-	Signal              string
-	Result              *Result  // итог этапа или nil
-	Events              []*Event // поток событий запуска
-	DurationMs          int64
-	Cost                *float64 // nil — драйвер цены не назвал: в отчёте это `$?`, а не $0
-	Usage               map[string]Usage
-	UsageApprox         bool
-	ContextTokens       int64
-	Requests            []json.RawMessage // usage каждого запроса — у драйвера, что считает их сам
-	Limits              *Limits
-	Turns               int
-	SessionID           string
-
-	Key, Driver, Resume string
-	Reason              string
-	RateLimit           json.RawMessage // сведения о лимитах из потока драйвера как есть
-	ResetsAt            *int64          // сброс лимита из тех же сведений; nil — не назван
-	LostWrites          int
-}
-
-// TokensOf — сумма токенов usage по моделям.
-func TokensOf(usage map[string]Usage) int64 {
-	var total int64
-	for _, u := range usage {
-		total += u.InputTokens + u.OutputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
-	}
-	return total
-}
-
-func peakContext(stages []*Record) int64 {
+func peakContext(stages []*Stage) int64 {
 	var peak int64
 	for _, s := range stages {
-		peak = max(peak, s.ContextTokens)
+		peak = max(peak, s.Outcome.ContextTokens)
 	}
 	return peak
 }
 
-func TotalCost(stages []*Record) float64 {
-	total := 0.0
+func usd(stages []*Stage) float64 {
+	sum := 0.0
 	for _, s := range stages {
-		if s.Cost != nil {
-			total += *s.Cost
+		if s.Outcome.Cost != nil {
+			sum += *s.Outcome.Cost
 		}
 	}
-	return total
-}
-
-// FormatCost — цена этапа. Токены, восстановленные из потока убитого этапа, —
-// оценка снизу; цену, которую драйвер не назвал, не выдумываем.
-func FormatCost(s *Record) string {
-	if s.UsageApprox || s.Cost == nil {
-		return "$?"
-	}
-	return fmt.Sprintf("$%.2f", *s.Cost)
+	return sum
 }
 
 var russian = message.NewPrinter(language.Russian)
@@ -106,7 +55,8 @@ func seconds(ms int64) string { return fmt.Sprint((ms + 500) / 1000) }
 type stageRow struct{ name, model, effort, turns, tokens, context, cost string }
 
 // rowOf — строка отчёта об этапе, одна на таблицу лога и markdown.
-func rowOf(s *Record) stageRow {
+func rowOf(s *Stage) stageRow {
+	o := s.Outcome
 	name := s.Name
 	if !s.OK {
 		reason := s.Reason
@@ -116,28 +66,28 @@ func rowOf(s *Record) stageRow {
 		name = s.Name + " (" + reason + ")"
 	}
 	approx := ""
-	if s.UsageApprox {
+	if o.UsageApprox {
 		approx = "≈"
 	}
-	return stageRow{name, s.Model, s.Effort, fmt.Sprint(s.Turns), approx + locale(TokensOf(s.Usage)), locale(s.ContextTokens), FormatCost(s)}
+	return stageRow{name, o.Model, o.Effort, fmt.Sprint(o.Turns), approx + locale(o.Tokens()), locale(o.ContextTokens), agent.FormatCost(o)}
 }
 
-func FormatCostTable(stages []*Record, elapsedMs int64) string {
+func Table(stages []*Stage, elapsedMs int64) string {
 	rows := [][]string{{"Этап", "Модель", "Усилие", "Время", "Ходы", "Токены", "Размер контекста", "Цена"}}
 	var tokens int64
 	turns, worked, unknown := 0, int64(0), ""
 	for _, s := range stages {
 		r := rowOf(s)
-		rows = append(rows, []string{r.name, r.model, r.effort, seconds(s.DurationMs) + "с", r.turns, r.tokens, r.context, r.cost})
-		tokens += TokensOf(s.Usage)
-		turns += s.Turns
-		worked += s.DurationMs
-		if s.Cost == nil {
+		rows = append(rows, []string{r.name, r.model, r.effort, seconds(s.Outcome.DurationMs) + "с", r.turns, r.tokens, r.context, r.cost})
+		tokens += s.Outcome.Tokens()
+		turns += s.Outcome.Turns
+		worked += s.Outcome.DurationMs
+		if s.Outcome.Cost == nil {
 			unknown = " + $?"
 		}
 	}
 	rows = append(rows, []string{"ИТОГО", "", "", seconds(elapsedMs) + "с", fmt.Sprint(turns), locale(tokens), locale(peakContext(stages)),
-		fmt.Sprintf("$%.2f", TotalCost(stages)) + unknown})
+		fmt.Sprintf("$%.2f", usd(stages)) + unknown})
 	if worked > elapsedMs {
 		rows = append(rows, []string{"  из них параллельно", "", "", seconds(worked-elapsedMs) + "с", "", "", "", ""})
 	}
@@ -166,18 +116,18 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%d мин %d с", s/60, s%60)
 }
 
-// FormatRunStats — токены и время по этапам: по ним видно, что разбор не был пустым.
-func FormatRunStats(stages []*Record, elapsedMs int64) string {
+// RunStats — токены и время по этапам: по ним видно, что разбор не был пустым.
+func RunStats(stages []*Stage, elapsedMs int64) string {
 	var tokens int64
 	approx := ""
 	var rows []string
 	for _, s := range stages {
-		tokens += TokensOf(s.Usage)
-		if s.UsageApprox {
+		tokens += s.Outcome.Tokens()
+		if s.Outcome.UsageApprox {
 			approx = "≈"
 		}
 		r := rowOf(s)
-		rows = append(rows, fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |", r.name, r.model, r.effort, formatDuration(s.DurationMs), r.turns, r.tokens, r.context))
+		rows = append(rows, fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |", r.name, r.model, r.effort, formatDuration(s.Outcome.DurationMs), r.turns, r.tokens, r.context))
 	}
 	lines := []string{
 		fmt.Sprintf("Разбор занял %s, потрачено %s%s токенов.", formatDuration(elapsedMs), approx, locale(tokens)),
@@ -189,8 +139,8 @@ func FormatRunStats(stages []*Record, elapsedMs int64) string {
 	return strings.Join(lines, "\n")
 }
 
-// CostSummary — итог цены прогона в результате и cost.json.
-type CostSummary struct {
+// Summary — итог цены прогона в результате и cost.json.
+type Summary struct {
 	USD           float64 `json:"usd" yaml:"usd"`
 	USDKnown      bool    `json:"usdKnown" yaml:"usdKnown"`
 	Turns         int     `json:"turns" yaml:"turns"`
@@ -199,20 +149,20 @@ type CostSummary struct {
 	DurationMs    int64   `json:"durationMs" yaml:"durationMs"`
 }
 
-func Summarize(stages []*Record) CostSummary {
-	c := CostSummary{USD: TotalCost(stages), USDKnown: true, ContextTokens: peakContext(stages)}
+func Summarize(stages []*Stage) Summary {
+	c := Summary{USD: usd(stages), USDKnown: true, ContextTokens: peakContext(stages)}
 	for _, s := range stages {
-		if s.Cost == nil || s.UsageApprox {
+		if s.Outcome.Cost == nil || s.Outcome.UsageApprox {
 			c.USDKnown = false
 		}
-		c.Turns += s.Turns
-		c.Tokens += TokensOf(s.Usage)
-		c.DurationMs += s.DurationMs
+		c.Turns += s.Outcome.Turns
+		c.Tokens += s.Outcome.Tokens()
+		c.DurationMs += s.Outcome.DurationMs
 	}
 	return c
 }
 
-func WriteCostJSON(path string, stages []*Record) error {
+func writeJSON(path string, stages []*Stage) error {
 	type entry struct {
 		Name          string             `json:"name"`
 		Model         string             `json:"model"`
@@ -227,13 +177,14 @@ func WriteCostJSON(path string, stages []*Record) error {
 	}
 	items := make([]entry, len(stages))
 	for i, s := range stages {
-		items[i] = entry{Name: s.Name, Model: s.Model, DurationMs: s.DurationMs, Cost: s.Cost, Turns: s.Turns,
-			Tokens: TokensOf(s.Usage), ContextTokens: s.ContextTokens, OK: s.OK}
-		if s.Effort != "" {
-			items[i].Effort = &s.Effort
+		o := s.Outcome
+		items[i] = entry{Name: s.Name, Model: o.Model, DurationMs: o.DurationMs, Cost: o.Cost, Turns: o.Turns,
+			Tokens: o.Tokens(), ContextTokens: o.ContextTokens, OK: s.OK}
+		if o.Effort != "" {
+			items[i].Effort = &o.Effort
 		}
-		if s.Requests != nil {
-			items[i].Requests = &s.Requests
+		if o.Requests != nil {
+			items[i].Requests = &o.Requests
 		}
 	}
 	data, err := json.MarshalIndent(map[string]any{"stages": items, "total": Summarize(stages)}, "", "  ")
@@ -241,6 +192,31 @@ func WriteCostJSON(path string, stages []*Record) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o666)
+}
+
+// Report — расход прогона в лог и в cost.json каталога dir: таблица по этапам, лимиты драйверов и команды
+// продолжения сессий.
+func Report(dir string, stages []*Stage, elapsedMs int64) {
+	if len(stages) == 0 {
+		return
+	}
+	for _, line := range strings.Split(Table(stages, elapsedMs), "\n") {
+		logx.Log(line)
+	}
+	limits := DriverLimits(stages)
+	for _, driver := range slices.Sorted(maps.Keys(limits)) {
+		logx.Log(formatLimits(driver, limits[driver]))
+	}
+	path := filepath.Join(dir, "cost.json")
+	if err := writeJSON(path, stages); err != nil {
+		panic(err)
+	}
+	logx.Log("стоимость по этапам: " + path)
+	for _, s := range stages {
+		if s.Outcome.Resume != "" {
+			logx.Logf("продолжить сессию «%s» вопросом: %s '<вопрос>'", s.Name, s.Outcome.Resume)
+		}
+	}
 }
 
 var windowTitles = map[string]string{"five_hour": "5 часов", "seven_day": "неделя"}
@@ -256,17 +232,17 @@ func FormatResetTime(resetsAt int64) string {
 // драйвер, не приславший ни окна, ни отказа, не попадает.
 // shortcut: «последние» — по порядку этапов, а не по времени события: у
 // параллельных этапов одной волны расходятся на минуты — брать время события, если это станет важно.
-func DriverLimits(records []*Record) map[string]*Limits {
-	out := map[string]*Limits{}
-	for _, r := range records {
-		if l := r.Limits; l != nil && (len(l.Windows) > 0 || (l.Status != nil && *l.Status != "" && *l.Status != "allowed")) {
-			out[r.Driver] = l
+func DriverLimits(stages []*Stage) map[string]*agent.Limits {
+	out := map[string]*agent.Limits{}
+	for _, s := range stages {
+		if l := s.Outcome.Limits; l != nil && (len(l.Windows) > 0 || (l.Status != nil && *l.Status != "" && *l.Status != "allowed")) {
+			out[s.Driver] = l
 		}
 	}
 	return out
 }
 
-func FormatLimits(driver string, l *Limits) string {
+func formatLimits(driver string, l *agent.Limits) string {
 	var parts []string
 	for _, name := range slices.Sorted(maps.Keys(l.Windows)) {
 		w := l.Windows[name]

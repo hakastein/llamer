@@ -1,15 +1,13 @@
-// Package artifacts — промпты, потоки событий, сессии и расход прогона.
+// Package artifacts — каталог прогона: промпты, потоки событий, сессии и тексты.
 package artifacts
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -129,27 +127,4 @@ func (r *Run) SaveDiff(name, text string) (string, error) {
 func (r *Run) SaveText(name, text string) (string, error) {
 	path := filepath.Join(r.Path, name)
 	return path, os.WriteFile(path, []byte(redact.Secrets(text)), 0o666)
-}
-
-func (r *Run) ReportCost(records []*agent.Record, elapsedMs int64) {
-	if len(records) == 0 {
-		return
-	}
-	for _, line := range strings.Split(agent.FormatCostTable(records, elapsedMs), "\n") {
-		logx.Log(line)
-	}
-	limits := agent.DriverLimits(records)
-	for _, driver := range slices.Sorted(maps.Keys(limits)) {
-		logx.Log(agent.FormatLimits(driver, limits[driver]))
-	}
-	path := filepath.Join(r.Path, "cost.json")
-	if err := agent.WriteCostJSON(path, records); err != nil {
-		panic(err)
-	}
-	logx.Log("стоимость по этапам: " + path)
-	for _, rec := range records {
-		if rec.Resume != "" {
-			logx.Logf("продолжить сессию «%s» вопросом: %s '<вопрос>'", rec.Name, rec.Resume)
-		}
-	}
 }

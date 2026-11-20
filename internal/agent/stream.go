@@ -1,4 +1,4 @@
-// Package agent — процесс этапа: запуск драйвера, его поток в общей форме, цена и лимиты.
+// Package agent — процесс этапа и его поток в общей форме: запуск процесса, события, исход и телеметрия.
 package agent
 
 import (
@@ -89,22 +89,6 @@ type RateLimit struct {
 	Raw      json.RawMessage // как их прислал драйвер: так они ложатся в журнал срыва
 	Limits   *Limits         // nil — не разобраны
 	ResetsAt *int64          // сброс лимита; nil — не назван
-}
-
-// ownEvent — событие llamer о процессе этапа: вывод stderr или неразобранная строка.
-func ownEvent(typ, name, text string) *Event {
-	raw, _ := json.Marshal(map[string]string{"type": typ, "name": name, "text": text})
-	if typ == "stage_raw" {
-		return &Event{Raw: raw, Kind: typ, Unparsed: text}
-	}
-	return &Event{Raw: raw, Kind: typ, Stderr: text}
-}
-
-// CommandProtocol — имя команды записи, изменяющие подкоманды и префикс отказа.
-type CommandProtocol struct {
-	Name          string
-	Writes        []string
-	RefusalPrefix string
 }
 
 const (
@@ -250,28 +234,21 @@ func FormatStreamEvent(e *Event, colors bool, cwd, agent string) (string, bool) 
 
 // Stats — статистика этапа по его событиям.
 type Stats struct {
-	cwd           string
-	skills        map[string]bool
-	commands      []string
-	callNames     []string
-	calls         map[string]int
-	files         map[string]bool
-	errors        int
-	protocol      CommandProtocol
-	commandCall   *regexp.Regexp
-	refusalLine   *regexp.Regexp
-	commandWrites map[string]bool
-	LostWrites    int
-	messages      map[string]bool
-	looseTurns    int
+	cwd        string
+	skills     map[string]bool
+	commands   []string
+	callNames  []string
+	calls      map[string]int
+	files      map[string]bool
+	errors     int
+	messages   map[string]bool
+	looseTurns int
 }
 
-// StatsFrom — статистика событий и недоставленных записей команд.
-func StatsFrom(events []*Event, cwd string, skills, commands []string, protocol CommandProtocol) *Stats {
+// StatsFrom — статистика событий этапа.
+func StatsFrom(events []*Event, cwd string, skills, commands []string) *Stats {
 	s := &Stats{cwd: cwd, skills: map[string]bool{}, commands: commands, calls: map[string]int{}, files: map[string]bool{},
-		protocol:    protocol,
-		commandCall: regexp.MustCompile(`(?:^|[;&|\n'"])\s*` + regexp.QuoteMeta(protocol.Name) + `\s+(\S+)`),
-		refusalLine: regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(protocol.RefusalPrefix)), commandWrites: map[string]bool{}, messages: map[string]bool{}}
+		messages: map[string]bool{}}
 	for _, name := range skills {
 		s.skills[name] = true
 	}
@@ -295,13 +272,8 @@ func (s *Stats) add(e *Event) {
 		}
 	}
 	for _, r := range e.Replies {
-		if !r.IsError {
-			continue
-		}
-		s.errors++
-		// Отказ команды агент чинит повтором; отказ в запуске теряет запись.
-		if s.commandWrites[r.CallID] && (s.protocol.RefusalPrefix == "" || !s.refusalLine.MatchString(r.Text)) {
-			s.LostWrites++
+		if r.IsError {
+			s.errors++
 		}
 	}
 }
@@ -315,11 +287,6 @@ func (s *Stats) addCall(c *Call) {
 		s.files[RelativeToCwd(c.File, s.cwd)] = true
 	}
 	if c.Command != "" {
-		for _, m := range s.commandCall.FindAllStringSubmatch(c.Command, -1) {
-			if slices.Contains(s.protocol.Writes, m[1]) {
-				s.commandWrites[c.ID] = true
-			}
-		}
 		for _, f := range FilesIn(c.Command, s.cwd) {
 			s.files[f] = true
 		}
@@ -353,9 +320,6 @@ func (s *Stats) Lines() []string {
 	}
 	if s.errors > 0 {
 		lines = append(lines, fmt.Sprintf("отказов: %d", s.errors))
-	}
-	if s.LostWrites > 0 {
-		lines = append(lines, fmt.Sprintf("вызовов %s, не дошедших до журнала: %d", s.protocol.Name, s.LostWrites))
 	}
 	if skills := sortedKeys(s.skills); len(skills) > 0 {
 		lines = append(lines, "скиллы: "+strings.Join(skills, ", "))

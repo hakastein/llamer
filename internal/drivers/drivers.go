@@ -1,7 +1,6 @@
 // Package drivers — контракт драйвера этапов и их реестр. Драйвер проверяет
-// своё окружение, готовит песочницу этапа и собирает его запуск; разбор потока
-// приводит события к общей форме agent. Сами драйверы — в подпакетах, каждый
-// регистрируется в init.
+// своё окружение, готовит песочницу этапа, запускает его и отдаёт готовый исход
+// в общей форме agent. Сами драйверы — в подпакетах, каждый регистрируется в init.
 package drivers
 
 import (
@@ -9,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/hakastein/llamer/internal/agent"
 )
@@ -26,12 +26,13 @@ type Driver interface {
 	// Quote — как пишется одинарная кавычка внутри текста в вызове.
 	Quote() string
 	// Prepare — драйвер, готовый к этапам прогона.
-	Prepare(s Setup) (Launcher, error)
+	Prepare(s Setup) (Runner, error)
 }
 
-// Launcher — драйвер, готовый к прогону: собирает запуск этапа.
-type Launcher interface {
-	Launch(a LaunchArgs) (*agent.Launch, error)
+// Runner — драйвер, готовый к прогону: запускает этап. События потока идут в
+// телеметрию t, исход возвращается готовым. Ошибка — этап не запустить: прогон не продолжить.
+type Runner interface {
+	Run(ctx context.Context, a LaunchArgs, t *agent.Telemetry) (*agent.Outcome, error)
 }
 
 var registry = map[string]Driver{}
@@ -66,8 +67,8 @@ func Gaps(ctx context.Context, names []string, settings map[string]Settings, env
 }
 
 // Prepare — драйверы names, готовые к прогону: каждый получает setup со своими настройками.
-func Prepare(names []string, settings map[string]Settings, setup Setup) (map[string]Launcher, error) {
-	prepared := map[string]Launcher{}
+func Prepare(names []string, settings map[string]Settings, setup Setup) (map[string]Runner, error) {
+	prepared := map[string]Runner{}
 	for _, name := range names {
 		setup.Settings = settings[name]
 		l, err := Get(name).Prepare(setup)
@@ -113,6 +114,9 @@ type LaunchArgs struct {
 	Schema string
 	// Sandbox — строгая песочница этапа; nil — песочница этапа ревью.
 	Sandbox *Sandbox
+	Timeout time.Duration
+	// SessionDir — куда сохранить журнал сессии этапа для её продолжения; пусто — не сохранять.
+	SessionDir string
 }
 
 // Sandbox — строгая песочница этапа `llamer run`: агент читает только каталог

@@ -135,7 +135,7 @@ type launcher struct {
 // Prepare — приватный CLAUDE_CONFIG_DIR с копией кредов: личные
 // настройки, хуки и плагины разработчика в этап не попадают. Заданный снаружи
 // каталог берётся как есть — его готовил запускающий.
-func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
+func (driver) Prepare(s drivers.Setup) (drivers.Runner, error) {
 	credentials := filepath.Join(claudeConfigDir(s.Env), ".credentials.json")
 	configDir := s.Env["CLAUDE_CONFIG_DIR"]
 	if configDir == "" {
@@ -169,12 +169,30 @@ func (driver) Prepare(s drivers.Setup) (drivers.Launcher, error) {
 		credentials: credentials}, nil
 }
 
-// Launch — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
+// Run — этап на Claude Code; журнал сессии сохраняется в a.SessionDir, если он задан.
+func (c *launcher) Run(ctx context.Context, a drivers.LaunchArgs, t *agent.Telemetry) (*agent.Outcome, error) {
+	cmd, err := c.command(a)
+	if err != nil {
+		return nil, err
+	}
+	p := agent.Start(ctx, cmd, t)
+	tally := drivers.Read(p, t, parse)
+	o := tally.Outcome(p.Wait(), a.Level.Model, a.Level.Effort)
+	if a.SessionDir != "" && tally.SessionID != "" {
+		// Без журнала сессии этап не хуже: сбой сохранения его не роняет.
+		if o.Resume, err = c.keepSession(a.SessionDir, tally.SessionID, a.Level); err != nil {
+			t.Logf("журнал сессии не сохранён (%s)", err)
+		}
+	}
+	return o, nil
+}
+
+// command — задание уходит в stdin, а не аргументом `-p <текст>`: один аргумент
 // командной строки в Linux ограничен 128 килобайтами. Общая часть пакета — в
 // системном промпте: он у этапов одной модели одинаковый, и кэш, записанный
 // первым этапом, читают остальные. Скиллы этапа — его плагин `stage`, скиллы
 // дерева выключены.
-func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
+func (c *launcher) command(a drivers.LaunchArgs) (agent.Command, error) {
 	settings := map[string]any{"skillOverrides": treeSkillsOff(a.Cwd)}
 	if !a.ProjectMemory {
 		settings["claudeMdExcludes"] = projectMemoryFiles
@@ -183,13 +201,13 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	if c.runSkills != "" {
 		plugin = filepath.Join(c.tmp, "claude-plugin-"+a.Stage)
 		if err := os.MkdirAll(filepath.Join(plugin, ".claude-plugin"), 0o777); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 		if err := os.WriteFile(filepath.Join(plugin, ".claude-plugin", "plugin.json"), []byte(`{"name":"`+stagePlugin+`"}`+"\n"), 0o666); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 		if err := drivers.LinkSkills(filepath.Join(plugin, "skills"), c.runSkills, a.Skills); err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 	}
 	allowed := allowedTools
@@ -210,7 +228,7 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 	}
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
-		return nil, err
+		return agent.Command{}, err
 	}
 	argv := []string{
 		"-p",
@@ -241,18 +259,13 @@ func (c *launcher) Launch(a drivers.LaunchArgs) (*agent.Launch, error) {
 		// --json-schema ждёт текст схемы, а не путь к файлу.
 		schema, err := os.ReadFile(a.Schema)
 		if err != nil {
-			return nil, err
+			return agent.Command{}, err
 		}
 		argv = append(argv, "--json-schema", string(schema))
 	}
 	argv = append(argv, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
-	level := a.Level
-	return &agent.Launch{
-		Command: c.settings.Bin, Argv: argv, Env: append(slices.Clone(c.env), a.Env...), Input: a.Prompt,
-		Model: level.Model, Effort: level.Effort,
-		Parse:       parse,
-		KeepSession: func(dir, id string) (string, error) { return c.keepSession(dir, id, level) },
-	}, nil
+	return agent.Command{Path: c.settings.Bin, Argv: argv, Env: append(slices.Clone(c.env), a.Env...), Dir: a.Cwd, Input: a.Prompt,
+		Timeout: a.Timeout}, nil
 }
 
 // keepSession — сессия лежит в projects/<каталог>/<id>.jsonl конфига; по ней же Claude Code её и продолжает.

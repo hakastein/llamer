@@ -11,6 +11,7 @@ import (
 
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/config"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/harness"
@@ -24,7 +25,7 @@ import (
 type Toolkit struct {
 	Context   context.Context
 	Artifacts *artifacts.Run
-	Drivers   map[string]drivers.Launcher
+	Drivers   map[string]drivers.Runner
 	Materials *materials.Materials
 	Library   *skills.Library
 	Config    *config.Config
@@ -53,7 +54,7 @@ type Stage struct {
 	threads         bool // в задании — открытые треды
 
 	journal       *domain.Journal
-	record        *agent.Record
+	record        *cost.Stage
 	tmpl          *template
 	responding    chan struct{}
 	markResponded sync.Once
@@ -87,7 +88,7 @@ func (s *Stage) Journal() *domain.Journal {
 }
 
 // Record — запись отработавшего этапа; nil у не поднимавшегося.
-func (s *Stage) Record() *agent.Record { return s.record }
+func (s *Stage) Record() *cost.Stage { return s.record }
 
 func (s *Stage) State() *domain.State { return s.Journal().State() }
 
@@ -213,52 +214,40 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 	if s.sharesPack() {
 		shared = s.tk.Shared
 	}
-	launch, err := s.tk.Drivers[s.driver].Launch(drivers.LaunchArgs{
+	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, settings.Model, settings.Effort, utf8.RuneCountInString(prompt), promptPath)
+	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding)
+	outcome, err := s.tk.Drivers[s.driver].Run(s.tk.Context, drivers.LaunchArgs{
 		Stage: s.ID(), Level: settings, ProjectMemory: s.projectMemory, Allow: s.allow(), Shared: shared, Prompt: prompt,
 		Env: []string{harness.BriefEnv + "=" + briefPath}, Skills: append(slices.Clone(s.settings.Skills.Always), s.settings.Skills.OnDemand...),
-		Cwd: m.Cwd,
-	})
+		Cwd: m.Cwd, Timeout: 20 * time.Minute, SessionDir: s.tk.Artifacts.SessionDir(s.ID()),
+	}, telemetry)
 	if err != nil {
+		telemetry.Close()
 		return err
 	}
-	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, launch.Model, launch.Effort, utf8.RuneCountInString(prompt), promptPath)
-	logx.Logf("этап «%s» запускается: %s %s", s.Name(), launch.Command, strings.Join(launch.Argv, " "))
-
-	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding, agent.CommandProtocol{Name: harness.Name, Writes: harness.WriteCommands, RefusalPrefix: "отказ:"})
-	launch.Timeout = 20 * time.Minute
-	record := agent.Spawn(s.tk.Context, s.Name(), launch, m.Cwd, telemetry)
-	record.Key, record.Driver = s.settings.Key, s.driver
-	record.Resume = s.keepSession(launch, record.SessionID)
-	s.record = s.judged(telemetry.Finish(record))
+	telemetry.Finish(outcome)
+	s.record = s.judged(outcome)
 	if !s.record.OK {
-		return s.Journal().RecordFailure(s.ID(), s.settings.Key, s.record.Reason, s.record.RateLimit)
+		return s.Journal().RecordFailure(s.ID(), s.settings.Key, s.record.Reason, outcome.RateLimit)
 	}
 	return nil
 }
 
-// keepSession — без журнала сессии ревью не хуже: сбой копирования не роняет этап.
-func (s *Stage) keepSession(launch *agent.Launch, sessionID string) string {
-	if sessionID == "" || launch.KeepSession == nil {
-		return ""
-	}
-	resume, err := launch.KeepSession(s.tk.Artifacts.SessionDir(s.ID()), sessionID)
-	if err != nil {
-		logx.Logf("этап «%s»: журнал сессии не сохранён (%s)", s.Name(), err)
-		return ""
-	}
-	return resume
-}
-
-// judged — процесс этапа мог выйти чисто, потеряв работу: вызов харнесса не
+// judged — запись этапа. Процесс этапа мог выйти чисто, потеряв работу: вызов харнесса не
 // дошёл до журнала или разбор не закрыт сводкой. Такой этап — сорванный, как упавший.
-func (s *Stage) judged(r *agent.Record) *agent.Record {
+func (s *Stage) judged(o *agent.Outcome) *cost.Stage {
+	r := &cost.Stage{Name: s.Name(), Driver: s.driver, OK: o.OK, Reason: o.Reason, Outcome: o}
+	lost := harness.LostWrites(o.Events)
+	if lost > 0 {
+		logx.Logf("[%s] вызовов %s, не дошедших до журнала: %d", s.Name(), harness.Name, lost)
+	}
 	if !r.OK {
 		return r
 	}
 	state := s.State()
 	reason := ""
-	if r.LostWrites > 0 {
-		reason = fmt.Sprintf("вызовов харнесса не дошло до журнала: %d", r.LostWrites)
+	if lost > 0 {
+		reason = fmt.Sprintf("вызовов харнесса не дошло до журнала: %d", lost)
 	} else if slices.Contains(s.commands, "summary") && len(state.Summaries) == 0 && len(state.Stopped) == 0 {
 		reason = "сводка не записана"
 	}

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/config"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
@@ -134,14 +134,8 @@ type Shortfall struct {
 
 // collectShortfall — сорванный экземпляр этапа, чей этап отработал на другом
 // драйвере, — не недостача: разбор этапа есть. О нём сообщается, прогон не проваливается.
-func collectShortfall(state *domain.State, unpublished []*domain.Finding, records []*agent.Record) Shortfall {
+func collectShortfall(state *domain.State, unpublished []*domain.Finding, done map[string]bool) Shortfall {
 	s := Shortfall{Gaps: []string{}, Author: []string{}, Notices: []string{}}
-	done := map[string]bool{}
-	for _, r := range records {
-		if r.OK {
-			done[r.Key] = true
-		}
-	}
 	for _, stop := range state.Stopped {
 		name := stop.Name
 		if name == "" {
@@ -229,7 +223,8 @@ func CollectDropped(findings []*domain.Finding) []string {
 type Review struct {
 	Journal   *domain.State
 	Materials *materials.Materials
-	Stages    []*agent.Record
+	Stages    []*cost.Stage
+	Done      map[string]bool // ключи этапов, отработавших хотя бы одним экземпляром
 	MarkSha   string
 	ElapsedMs int64
 
@@ -279,7 +274,7 @@ func (r *Review) doSplit() {
 }
 
 func (r *Review) Shortfall(unpublished []*domain.Finding) Shortfall {
-	return collectShortfall(r.Journal, unpublished, r.Stages)
+	return collectShortfall(r.Journal, unpublished, r.Done)
 }
 
 // Summary — пустая сводка не должна стать пустым комментарием в MR.
@@ -292,7 +287,7 @@ func (r *Review) Status(unpublished []*domain.Finding) string {
 	if n := len(unpublished); n > 0 {
 		status = fmt.Sprintf("_Ревью выполнено, %d %s опубликовать не удалось — см. сводку._", n, PluralRu(n, "замечание", "замечания", "замечаний"))
 	}
-	stats := agent.FormatRunStats(r.Stages, r.ElapsedMs)
+	stats := cost.RunStats(r.Stages, r.ElapsedMs)
 	// Метка статуса — точка отсчёта `--since-last`: с сорванным или прекращённым
 	// этапом или неопубликованными находками она дала бы следующему прогону пропустить неразобранное.
 	mark := ""

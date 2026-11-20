@@ -15,6 +15,7 @@ import (
 	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/config"
+	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/redact"
@@ -25,7 +26,7 @@ import (
 type Run struct {
 	Context   context.Context
 	Workflow  *config.Workflow
-	Drivers   map[string]drivers.Launcher
+	Drivers   map[string]drivers.Runner
 	Artifacts *artifacts.Run
 	Cwd       string    // каталог контекста: рабочий каталог агента
 	Out       io.Writer // события и результат строками JSON
@@ -58,12 +59,12 @@ type Stage struct {
 
 // Result — последняя строка вывода и result.json прогона.
 type Result struct {
-	Type    string            `json:"type"`
-	OK      bool              `json:"ok"`
-	Run     string            `json:"run"`
-	Failure *Failure          `json:"failure"`
-	Stages  []Stage           `json:"stages"`
-	Cost    agent.CostSummary `json:"cost"`
+	Type    string       `json:"type"`
+	OK      bool         `json:"ok"`
+	Run     string       `json:"run"`
+	Failure *Failure     `json:"failure"`
+	Stages  []Stage      `json:"stages"`
+	Cost    cost.Summary `json:"cost"`
 }
 
 // out — вывод прогона. Вымарывание здесь, в одной точке: в строку попадают
@@ -110,7 +111,7 @@ func (r *Run) Execute() (*Result, error) {
 	r.commands = &commands{workflow: r.Workflow, journal: newJournal(r.Artifacts.Path)}
 	result := &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}}
 	answers := map[string]string{}
-	var records []*agent.Record
+	var records []*cost.Stage
 	for _, s := range r.Workflow.Stages {
 		record, detail, err := r.stage(s, answers, o)
 		if err != nil {
@@ -120,22 +121,23 @@ func (r *Run) Execute() (*Result, error) {
 			return nil, err
 		}
 		records = append(records, record)
-		stage := Stage{Name: s.Name, Driver: s.Driver, Model: record.Model, Effort: record.Effort, OK: record.OK, Answer: json.RawMessage("null"),
-			Cost: record.Cost, Tokens: agent.TokensOf(record.Usage), ContextTokens: record.ContextTokens, Turns: record.Turns, DurationMs: record.DurationMs}
+		out := record.Outcome
+		stage := Stage{Name: s.Name, Driver: s.Driver, Model: out.Model, Effort: out.Effort, OK: record.OK, Answer: json.RawMessage("null"),
+			Cost: out.Cost, Tokens: out.Tokens(), ContextTokens: out.ContextTokens, Turns: out.Turns, DurationMs: out.DurationMs}
 		if !record.OK {
 			result.Stages = append(result.Stages, stage)
 			result.OK, result.Failure = false, &Failure{Stage: s.Name, Reason: record.Reason, Detail: detail}
 			break
 		}
-		answers[s.Name] = record.Result.Text
-		stage.Answer = json.RawMessage(record.Result.Text)
+		answers[s.Name] = out.Result.Text
+		stage.Answer = json.RawMessage(out.Result.Text)
 		if s.Schema == nil {
-			stage.Answer, _ = json.Marshal(record.Result.Text) // строка кодируется всегда
+			stage.Answer, _ = json.Marshal(out.Result.Text) // строка кодируется всегда
 		}
 		result.Stages = append(result.Stages, stage)
 	}
-	result.Cost = agent.Summarize(records)
-	r.Artifacts.ReportCost(records, logx.SinceStart())
+	result.Cost = cost.Summarize(records)
+	cost.Report(r.Artifacts.Path, records, logx.SinceStart())
 	// Результат в выводе — только записанный: незаписанный срывает прогон.
 	text := line(result)
 	if _, err := r.Artifacts.SaveText("result.json", text); err != nil {
@@ -146,7 +148,7 @@ func (r *Run) Execute() (*Result, error) {
 }
 
 // stage — этап на своём драйвере; detail — подробность срыва.
-func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) (*agent.Record, string, error) {
+func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) (*cost.Stage, string, error) {
 	var prompt strings.Builder
 	if err := s.Template.Execute(&prompt, config.PromptData{Answers: answers}); err != nil {
 		return nil, "", err
@@ -163,30 +165,30 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 		sandbox.Readable = slices.Concat(r.Workflow.Readable, []string{r.Bin, r.ClientDir})
 		env = []string{broker.SocketEnv + "=" + socket}
 	}
-	launch, err := d.Launch(drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Prompt: prompt.String(), Skills: s.Skills,
-		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox})
-	if err != nil {
-		return nil, "", err
-	}
-	launch.Timeout = s.Timeout
 	// Первый отказ команды; этап срывается им после агента.
 	failed := make(chan error, 1)
 	stop := func() {}
 	if r.Workflow.Commands != nil {
+		var err error
 		if stop, err = broker.Listen(socket, r.commands.handler(s.Name, failed)); err != nil {
 			return nil, "", err
 		}
 	}
-	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, launch.Model, launch.Effort, promptPath)
-	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {}, agent.CommandProtocol{})
-	record := agent.Spawn(r.Context, s.Name, launch, r.Cwd, telemetry)
+	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Level.Model, s.Level.Effort, promptPath)
+	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, func() {})
+	outcome, err := d.Run(r.Context, drivers.LaunchArgs{Stage: s.Name, Level: s.Level, Prompt: prompt.String(), Skills: s.Skills,
+		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()
-	record.Key, record.Driver = s.Name, s.Driver
-	record = telemetry.Finish(record)
+	if err != nil {
+		telemetry.Close()
+		return nil, "", err
+	}
+	telemetry.Finish(outcome)
+	record := &cost.Stage{Name: s.Name, Driver: s.Driver, OK: outcome.OK, Reason: outcome.Reason, Outcome: outcome}
 	if !record.OK {
 		detail := ""
-		if record.Result != nil {
-			detail = record.Result.Text
+		if outcome.Result != nil {
+			detail = outcome.Result.Text
 		}
 		return record, detail, nil
 	}
@@ -200,7 +202,7 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out) 
 	if s.Schema == nil {
 		return record, "", nil
 	}
-	if detail := check(s.Schema, record.Result.Text); detail != "" {
+	if detail := check(s.Schema, outcome.Result.Text); detail != "" {
 		logx.Logf("этап «%s» сорван: ответ не по схеме %s", s.Name, s.SchemaPath)
 		record.OK, record.Reason = false, "schema"
 		return record, detail, nil

@@ -25,16 +25,13 @@ func (s *processStream) Write(raw []byte) {
 }
 func (*processStream) End() {}
 
-// parseResult — итог из строки `{"result": …}`.
-func parseResult(line []byte) ([]*agent.Event, error) {
-	var e struct{ Result string }
-	if err := json.Unmarshal(line, &e); err != nil {
-		return nil, err
-	}
-	return []*agent.Event{{Raw: line, Result: &agent.Result{Text: e.Result}}}, nil
+// run — исход процесса и его строки stdout.
+type run struct {
+	exit  agent.Exit
+	lines []string
 }
 
-func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
+func TestProcessCancellationIsLocalAndKillsDescendants(t *testing.T) {
 	for _, byTimeout := range []bool{false, true} {
 		name := "context"
 		if byTimeout {
@@ -42,14 +39,20 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			start := func(ctx context.Context, script string, timeout time.Duration) (<-chan struct{}, <-chan *agent.Record) {
+			start := func(ctx context.Context, script string, timeout time.Duration) (<-chan struct{}, <-chan run) {
 				stream := &processStream{ready: make(chan struct{})}
-				telemetry := agent.NewTelemetry(name, nil, nil, dir, stream, func() {}, agent.CommandProtocol{})
-				result := make(chan *agent.Record, 1)
+				telemetry := agent.NewTelemetry(name, nil, nil, dir, stream, func() {})
+				result := make(chan run, 1)
 				go func() {
-					launch := &agent.Launch{Command: "/bin/sh", Argv: []string{"-c", script}, Env: []string{"PATH=/usr/bin:/bin"},
-						Timeout: timeout, Parse: parseResult}
-					result <- telemetry.Finish(agent.Spawn(ctx, name, launch, dir, telemetry))
+					p := agent.Start(ctx, agent.Command{Path: "/bin/sh", Argv: []string{"-c", script}, Env: []string{"PATH=/usr/bin:/bin"},
+						Dir: dir, Timeout: timeout}, telemetry)
+					var r run
+					for line := range p.Lines() {
+						r.lines = append(r.lines, string(line))
+					}
+					r.exit = p.Wait()
+					telemetry.Close()
+					result <- r
 				}()
 				return stream.ready, result
 			}
@@ -61,14 +64,14 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 					t.Fatal("процесс не запустился")
 				}
 			}
-			awaitResult := func(done <-chan *agent.Record) *agent.Record {
+			awaitResult := func(done <-chan run) run {
 				t.Helper()
 				select {
 				case r := <-done:
 					return r
 				case <-time.After(3 * time.Second):
 					t.Fatal("дочерний процесс удерживает поток после отмены")
-					return nil
+					return run{}
 				}
 			}
 			otherCtx, stopOther := context.WithCancel(context.Background())
@@ -81,27 +84,27 @@ func TestSpawnCancellationIsLocalAndKillsDescendants(t *testing.T) {
 			if byTimeout {
 				timeout = 100 * time.Millisecond
 			}
-			// Потомок держит оба потока: убийство одной оболочки не даст Spawn вернуться.
+			// Потомок держит оба потока: убийство одной оболочки не даст процессу закончиться.
 			ready, done := start(ctx, `sleep 30 & echo ready >&2; wait`, timeout)
 			awaitReady(ready)
 			if !byTimeout {
 				cancel()
 			}
 			r := awaitResult(done)
-			if r.OK || r.Signal != "SIGKILL" || r.TimedOut != byTimeout {
-				t.Fatalf("исход отменённого запуска: %+v", r)
+			if !r.exit.Interrupted || r.exit.Signal != "SIGKILL" || r.exit.TimedOut != byTimeout {
+				t.Fatalf("исход отменённого запуска: %+v", r.exit)
 			}
 			select {
 			case r := <-other:
-				t.Fatalf("отмена задела независимый запуск: %+v", r)
+				t.Fatalf("отмена задела независимый запуск: %+v", r.exit)
 			default:
 			}
 			if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			r = awaitResult(other)
-			if !r.OK || r.Result.Text != "done" || len(r.Events) == 0 {
-				t.Fatalf("независимый запуск не вернул результат и события: %+v", r)
+			if r.exit.Interrupted || r.exit.Code == nil || *r.exit.Code != 0 || len(r.lines) != 1 || r.lines[0] != `{"result":"done"}` {
+				t.Fatalf("независимый запуск не вернул исход и строки: %+v", r)
 			}
 		})
 	}
