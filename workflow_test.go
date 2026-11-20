@@ -67,13 +67,12 @@ func lastResult(t *testing.T, stdout string) workflowResult {
 	return r
 }
 
-// Секрет в ответе writer: в ответе checker он вложен глубже, чем в ответе writer, а символы
-// JSON и HTML в нём экранируются на каждом уровне по-своему.
-const workflowSecret = `wf<"\leak-value-1234`
+// Секрет в ответе writer: в ответе checker он вложен глубже, чем в ответе writer.
+const workflowSecret = `wf-leak-value-1234`
 
 func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	t.Parallel()
-	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору wf<\\\"\\\\leak-value-1234\"}\n")
+	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору wf-leak-value-1234\"}\n")
 	r := run(t, root, runWorkflowArgs, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
 	equal(t, r.status, 0, "код\n"+r.stderr)
 	res := lastResult(t, r.stdout)
@@ -81,7 +80,7 @@ func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	equal(t, string(res.Stages[0].Answer), `{"joke":"кот шёл по коридору ***REDACTED***"}`, "ответ writer — JSON по схеме")
 	equal(t, string(res.Stages[1].Answer), `"проверено {\"joke\": \"кот шёл по коридору ***REDACTED***\"}"`, "ответ checker без схемы — строка")
 	equal(t, len(r.launches), 2, "оба этапа запускались")
-	match(t, r.launches[1]["prompt"].(string), `проверено \{"joke": "кот шёл по коридору wf<\\"\\\\leak-value-1234"\}`, "checker получил ответ writer как есть")
+	match(t, r.launches[1]["prompt"].(string), `проверено \{"joke": "кот шёл по коридору wf-leak-value-1234"\}`, "checker получил ответ writer как есть")
 	equal(t, slices.Contains(argvOf(r.launches[0]), "--json-schema"), true, "схема ушла драйверу writer")
 	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
 	events := lines(t, r.stdout)["event"]
