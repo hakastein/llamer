@@ -4,14 +4,17 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"text/template"
 	"time"
 
+	"github.com/hakastein/cliche"
 	"github.com/hakastein/llamer/internal/skills"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -46,10 +49,15 @@ type Workflow struct {
 	Stages  []*WorkflowStage
 	// Readable — пути сверх каталога контекста, которые агент читает в песочнице: абсолютные.
 	Readable []string
+	// Commands — команды агента из `commands/` каталога workflow; nil — каталога нет.
+	Commands *cliche.Catalog
+	// Hosts и Programs — куда командам можно ходить по HTTP и какие программы запускать.
+	Hosts, Programs []string
 }
 
 type rawWorkflow struct {
 	Readable []string
+	Commands struct{ Hosts, Programs []string }
 	Stages   []struct {
 		Name, Driver, Model, Effort, Prompt, Timeout, Schema string
 		Skills                                               []string
@@ -82,7 +90,10 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 	if err != nil {
 		return nil, err
 	}
-	w = &Workflow{Dir: dir, Library: library}
+	w = &Workflow{Dir: dir, Library: library, Hosts: raw.Commands.Hosts, Programs: raw.Commands.Programs}
+	if w.Commands, err = commands(filepath.Join(dir, CommandsDir)); err != nil {
+		r.fail(CommandsDir, err.Error())
+	}
 	for i, path := range raw.Readable {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(dir, path)
@@ -131,6 +142,27 @@ func LoadWorkflow(dir string) (w *Workflow, err error) {
 		answers[s.Name] = ""
 	}
 	return w, nil
+}
+
+// CommandsDir — каталог cliche-скриптов команд агента в каталоге workflow.
+const CommandsDir = "commands"
+
+// commands — команды агента из каталога dir; nil — каталога нет. Сломанный скрипт останавливает прогон
+// до первого запроса к модели.
+func commands(dir string) (*cliche.Catalog, error) {
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	roots := cliche.Config{Sources: []cliche.Source{cliche.Dir(dir)}}.Scan()
+	if roots[0].Err != nil {
+		return nil, roots[0].Err
+	}
+	catalog := cliche.Merge(roots)
+	var broken []error
+	for _, b := range catalog.Broken {
+		broken = append(broken, b.Err)
+	}
+	return catalog, errors.Join(broken...)
 }
 
 // Drivers — драйверы этапов workflow.

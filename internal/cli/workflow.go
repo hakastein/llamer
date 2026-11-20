@@ -129,13 +129,25 @@ func runWorkflow(ctx context.Context, o *RunOptions, stdout io.Writer) (ok bool,
 	if err := os.MkdirAll(stageBin, 0o777); err != nil {
 		return false, err
 	}
+	// Клиент брокера — под именем каждой команды верхнего уровня workflow.
+	if w.Commands != nil {
+		for _, c := range w.Commands.Commands {
+			if err := stageWrapper(stageBin, c.Path[0], CallCommand, c.Path[0]); err != nil {
+				return false, err
+			}
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
 	prepared, err := prepareDrivers(w.Drivers(), cfg.Drivers, w.Library, w.Skills(), run.Path,
 		drivers.Setup{Env: env, EnvOrder: order, StageBin: stageBin, Tmp: tmp})
 	if err != nil {
 		return false, err
 	}
 	result, err := (&workflow.Run{Context: ctx, Workflow: w, Drivers: prepared, Artifacts: run, Cwd: contextDir,
-		Out: stdout}).Execute()
+		Out: stdout, Bin: stageBin, ClientDir: filepath.Dir(exe)}).Execute()
 	if err != nil {
 		return false, err
 	}
