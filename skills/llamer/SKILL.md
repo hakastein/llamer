@@ -5,9 +5,9 @@ description: Use when running agent workflows with llamer (`llamer run`), buildi
 
 # llamer
 
-`llamer run <workflow dir>` runs a workflow: agent stages — the `claude` or `codex` CLI in a strict sandbox — and
-command stages without an agent, in order and in waves. A stage's answer goes into the prompts of the later stages.
-Stdout is JSON lines: stage events, and the result as the last line; the log goes to stderr.
+`llamer run <workflow>` runs a workflow script: a [cliche](https://github.com/hakastein/cliche) script that calls
+agent stages — the `claude` or `codex` CLI in a strict sandbox — and gets their answers as values. Stdout is JSON
+lines: stage events, and the result as the last line; the log goes to stderr.
 
 ## A project
 
@@ -15,71 +15,87 @@ Stdout is JSON lines: stage events, and the result as the last line; the log goe
   `readable` under `drivers.<name>`. A `codex` stage needs the directory of the codex installation in
   `drivers.codex.readable` (for npm — the `@openai/codex` package directory, `$(npm root -g)/@openai/codex`):
   without it every command of the agent fails in the sandbox.
-- A workflow is a directory of its own:
+- `.llamer/` at the repository root holds the workflows and everything they use; `llamer` looks for it upwards from
+  the current directory (`--dir` or `LLAMER_DIR` name another one):
 
   ```text
-  workflow.json         stages and their order
-  prompts/*.md          stage prompt templates
-  skills/<name>/SKILL.md skills a stage may load
-  commands/**/*.js      commands the agent calls, and command stages run
+  .llamer/
+    workflows/<name>.js      workflow scripts: llamer run <name>
+    commands/**/*.js         commands the agent calls
+    lib/*.js                 libraries: .js files without exports.definition
+    prompts/*.md             stage prompts
+    schemas/*.json           answer schemas
+    skills/<name>/SKILL.md   skills a stage may load
+    runs/                    run artifacts, ignored by git
   ```
 
-## workflow.json
+  Paths in a stage spec and in `llamer.prompt` are relative to `.llamer/`. Scripts take libraries with
+  `require("../lib/x.js")` — never from outside `.llamer/`.
 
-```json
-{ "version": 1,
-  "readable": ["/srv/glossary"],
-  "commands": { "hosts": ["gitlab.example.com"], "programs": ["git"] },
-  "stages": [
-    { "name": "facts", "command": ["notes", "facts", "--issue", "${ISSUE}"] },
-    [ { "name": "writer", "driver": "codex", "model": "gpt-6.1-terra", "effort": "low", "prompt": "prompts/writer.md",
-        "skills": ["style"], "schema": "answer.schema.json", "timeout": "10m" },
-      { "name": "critic", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "low",
-        "prompt": "prompts/critic.md", "timeout": "10m", "allow": ["notes facts"] } ],
-    { "name": "post", "command": ["notes", "post"] } ] }
-```
-
-- An agent stage: `name` (`[a-z][a-z0-9_]*`), `driver`, `model`, `effort`, `prompt`, `timeout`; optional `skills`
-  from `skills/`, `schema` — a JSON Schema the answer must match (codex wants every object strict:
-  `additionalProperties: false`, every property in `required`), and `allow` — the commands from `commands/` the
-  stage may call, as word prefixes (`"notes facts"`). A stage without `allow` calls no command; a call outside it is
-  refused, so name every command the prompt tells the agent to call.
-- A command stage: `name` and `command` — the argv of a command from `commands/`. `${VAR}` in it comes from the
-  environment of `llamer`: this is how run inputs and tokens reach a workflow — the agent never sees them. Its stdout
-  is the stage's answer; a non-zero exit fails the run.
-- An array of stages is a wave: they run at once. The first one leads, the rest start when the model has begun to
-  answer it — so put the stages sharing the longest prompt prefix in one wave, and start every prompt with that
-  prefix.
-- A prompt is a Go `text/template`: `{{.Answers.<stage>}}` is the answer of a stage of an earlier wave — JSON for a
-  stage with a schema, text otherwise.
-- The agent reads only the context directory, its stage's skills and `readable`; it has no network. `readable` paths
-  are absolute or relative to the workflow directory.
-
-## Commands
-
-A command is a [cliche](https://github.com/hakastein/cliche) script: `commands/notes/post.js` is `notes post`. It runs
-inside `llamer`, outside the sandbox; the agent calls it by name from its shell. A `.js` file without
-`exports.definition` is a library the scripts `require` by a relative path.
+## A workflow script
 
 ```js
 const llamer = require("llamer");
 
 exports.definition = {
-  short: "Record a note",                     // one line, 60 characters at most
-  long: "Record a note in the run journal.",
-  flags: [{ name: "text", type: "string", usage: "the note" }],
+  short: "Write and check a joke",                // one line, 60 characters at most
+  long: "Write a joke on a topic and check it.",
+  flags: [{name: "topic", type: "string", usage: "what the joke is about"}],
 };
 
+const codex = {driver: "codex", model: "gpt-6.1-terra", effort: "low", timeout: "10m"};
+
 exports.command = (flags) => {
-  llamer.record({ note: flags.text });
-  return "recorded";                          // printed to the caller; an object is printed as JSON
+  const joke = llamer.agent({...codex, name: "writer", schema: "schemas/joke.json",
+    prompt: llamer.prompt("prompts/writer.md", {topic: flags.topic})});
+  const verdict = llamer.agent({...codex, name: "critic", driver: "claude", model: "claude-sonnet-5-5",
+    prompt: llamer.prompt("prompts/critic.md", {joke: JSON.stringify(joke)}), allow: ["notes post"],
+    data: {topic: flags.topic}});
+  return {joke, verdict};                          // the result's `value`; return null when there is nothing
 };
 ```
 
-- `llamer.record(value)` writes to the run journal; `llamer.results()` reads back everything recorded so far as
-  `[{stage, value}]` — this is how stages share state.
-- `llamer.fetch(url, {method, headers, body})` → `{status, body}` only to `commands.hosts`;
-  `llamer.exec(program, [args], {stdin})` → `{stdout, stderr, exit}` only for `commands.programs`, in the caller's
+- `llamer.agent(spec)` runs one stage and returns its answer: the JSON value for a stage with `schema`, the text
+  otherwise. A bad spec or a failed stage throws, and the run fails even if the script catches it.
+- Spec keys: `name` (`[a-z][a-z0-9_]*`, unique), `driver`, `model`, `effort`, `prompt` (the text), `timeout`
+  (`10m`); optional `schema` — a JSON Schema the answer must match (codex wants every object strict:
+  `additionalProperties: false`, every property in `required`); `skills` from `skills/`; `allow` — the commands the
+  stage may call, as word prefixes (`"notes post"`; a call outside is refused, so name every command the prompt
+  tells the agent to call); `readable` — paths the agent may read besides the context directory; `fetch` and
+  `exec` — hosts and programs the stage's commands may use; `data` — a JSON value its commands read as
+  `llamer.data`. Any other key is an error. Repeat shared keys with JS variables, not copies.
+- `llamer.prompt(file, data)` — the file as a Go `text/template` on `data` (`{{.topic}}`); a missing key throws.
+- `llamer.records(name)` — what the commands of stage `name` recorded, in order.
+- `llamer.env(name)` — an environment variable of `llamer`: tokens reach the workflow this way, never the agent.
+- `llamer.fetch` and `llamer.exec` — as in commands, without the host and program lists: the workflow is the
+  project's code.
+- Stages run one after another. The agent reads only the context directory, its stage's skills and `readable`; it
+  has no network.
+
+## Commands
+
+A command is a cliche script in `commands/`: `commands/notes/post.js` is `notes post`. It runs inside `llamer`,
+outside the sandbox; the agent calls it by name from its shell.
+
+```js
+const llamer = require("llamer");
+
+exports.definition = {
+  short: "Post a note",
+  long: "Post a note on the topic.",
+  flags: [{name: "text", type: "string", usage: "the note"}],
+};
+
+exports.command = (flags) => {
+  llamer.record({topic: llamer.data.topic, note: flags.text});
+  return "recorded";                               // printed to the caller; an object is printed as JSON
+};
+```
+
+- `llamer.data` — the stage's `data`; `llamer.record(value)` — writes to the run journal, the workflow reads it
+  with `llamer.records(stage)`.
+- `llamer.fetch(url, {method, headers, body})` → `{status, body}` only to the stage's `fetch` hosts;
+  `llamer.exec(program, [args], {stdin})` → `{stdout, stderr, exit}` only for its `exec` programs, in the caller's
   directory. Anything else fails the stage.
 - A thrown error reaches the caller as stderr with exit code 1. Flag values are not required by cliche: check them
   in the script.
@@ -87,16 +103,21 @@ exports.command = (flags) => {
 ## Running
 
 ```bash
-REVIEW_BASE=HEAD llamer run workflows/review --context . > run.jsonl
-tail -n 1 run.jsonl | jq '{ok, failure, cost}'
+llamer run --dry-run review --base HEAD > /dev/null   # the script and every stage spec, without a model
+llamer run review --base HEAD > run.jsonl
+tail -n 1 run.jsonl | jq '{ok, failure, cost, value}'
 ```
 
-- `--context <dir>` — the agent's working directory, by default the current one; `--config <file>` — instead of
-  `.llamer.json` at the repository root.
-- The result: `ok`, `failure` (`stage`, `reason`, `detail`), `stages[]` with `answer`, `cost`, tokens, and `run` —
-  the run directory `.llamer/<date>_<time>/` next to the config: prompts, stage streams, `journal.jsonl` of command
-  calls, `result.json`.
-- Exit code `0` — every stage passed, `1` — a stage failed or the run could not start (the reason is in stderr).
+- `llamer` flags go before the workflow name: `--dir <dir>`, `--context <dir>` — the agent's working directory,
+  by default the current one, `--config <file>` — instead of `.llamer.json` at the repository root, `--dry-run`.
+  Everything after the name belongs to the script: `llamer run <name> --help` lists its flags.
+- `--dry-run` runs the script with a stub agent: an empty answer, or the smallest value of the stage's schema. Run
+  it after every change of the workflow: a script error or a bad spec fails it before any paid call.
+- The result: `ok`, `failure` (`stage`, `reason`, `detail`), `stages[]` with `answer`, `cost`, tokens, `value` —
+  what the script returned, and `run` — the run directory `.llamer/runs/<date>_<time>/` next to the config:
+  prompts, stage streams, `journal.jsonl` of command calls, `result.json`.
+- Exit code `0` — the run passed, `1` — a stage or the script failed, or the run could not start (the reason is in
+  stderr).
 
 ## Recipes
 
