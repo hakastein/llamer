@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ type Run struct {
 	Artifacts *artifacts.Run
 	Cwd       string    // каталог контекста: рабочий каталог агента и программ workflow
 	Out       io.Writer // события и результат строками JSON
-	// Bin — каталог команд этапа: обёртки клиента команд и сокеты этапов; ClientDir — каталог бинаря llamer.
+	// Bin — каталог обёрток клиента команд этапа; ClientDir — каталог бинаря llamer.
 	Bin, ClientDir string
 	// Listen обслуживает вызовы команд этапа на сокете, пока не вызван stop.
 	Listen func(socket string, handle func(context.Context, broker.Call) broker.Reply) (stop func(), err error)
@@ -223,11 +224,16 @@ func (r *Run) stage(ctx context.Context, s *stage, responding func()) (*cost.Sta
 	failed := make(chan error, 1)
 	stop := func() {}
 	if len(s.Allow) > 0 {
-		// shortcut: сокет в каталоге команд этапа — путь до него не длиннее 107 байт только при коротком TMPDIR;
-		// переносить, если упрётся.
-		socket := filepath.Join(r.Bin, s.Name+".sock")
-		// Клиенту в песочнице нужны его обёртка с сокетом и сам бинарь llamer.
-		sandbox.Readable = append(append([]string{}, s.Readable...), r.Bin, r.ClientDir)
+		// Сокет — в своём каталоге этапа: открыт только его песочнице, и агент не зовёт команды через сокет соседа.
+		// shortcut: путь до сокета не длиннее 107 байт только при коротком TMPDIR; переносить, если упрётся.
+		dir, err := os.MkdirTemp("", "llamer-sock-")
+		if err != nil {
+			return nil, "", err
+		}
+		defer os.RemoveAll(dir)
+		socket := filepath.Join(dir, "s")
+		// Клиенту в песочнице нужны его обёртка, сокет и сам бинарь llamer.
+		sandbox.Readable = append(append([]string{}, s.Readable...), r.Bin, dir, r.ClientDir)
 		env = []string{broker.SocketEnv + "=" + socket}
 		if stop, err = r.Listen(socket, r.commands.handler(s, failed)); err != nil {
 			return nil, "", err

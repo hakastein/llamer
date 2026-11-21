@@ -1,5 +1,5 @@
 const llamer = require("llamer");
-const {state} = require("../../lib/state.js");
+const {current} = require("../../lib/state.js");
 
 exports.definition = {
   short: "Mark a finding as a duplicate of another one",
@@ -16,7 +16,7 @@ exports.command = (flags) => {
   if (!flags.reason) {
     throw new Error("нужны --id, --of и --reason");
   }
-  const s = state(llamer.data);
+  const s = current(llamer.data);
   const find = (flag, n) => {
     const f = s.byId(n);
     if (!f) {

@@ -141,8 +141,38 @@ func TestReviewRecipeAnchorsFindings(t *testing.T) {
 			t.Errorf("%s: код %d", c.name, c.code)
 		}
 	}
-	if got := len(c.journal.recorded("logic")); got != 3 {
+	if got := len(c.journal.results); got != 3 {
 		t.Fatalf("записано находок: %d", got)
+	}
+}
+
+// Команды видят журнал прогона на момент вызова: находки другого этапа и свою же пометку повтора — встречная
+// пометка отклоняется, иначе пропали бы обе находки.
+func TestReviewRecipeDupeSeesJournal(t *testing.T) {
+	tree := changedTree(t)
+	head, err := exec.Command("git", "-C", tree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &commands{catalog: project(t, recipe).Commands, journal: newJournal(t.TempDir())}
+	own := []any{map[string]any{"stage": "materials", "value": map[string]any{"type": "materials", "base": strings.TrimSpace(string(head))}}}
+	call := func(s *stage, argv ...string) int {
+		r, _ := c.call(context.Background(), s, broker.Call{Argv: argv, Cwd: tree})
+		return r.Exit
+	}
+	logic := &stage{Name: "logic", Allow: []string{"review finding"}, Programs: []string{"git", "cat"}, Data: own}
+	for _, text := range []string{"first", "second"} {
+		if code := call(logic, "review", "finding", "--file", "a.txt", "--line", "2", "--line-end", "2", "--text", text,
+			"--severity", "minor", "--severity-reason", "r", "--related", "a.txt"); code != 0 {
+			t.Fatalf("находка: код %d", code)
+		}
+	}
+	dedupe := &stage{Name: "dedupe", Allow: []string{"review dupe"}, Data: own}
+	if code := call(dedupe, "review", "dupe", "--id", "1", "--of", "2", "--reason", "r"); code != 0 {
+		t.Fatalf("dupe 1 of 2: код %d", code)
+	}
+	if code := call(dedupe, "review", "dupe", "--id", "2", "--of", "1", "--reason", "r"); code == 0 {
+		t.Fatal("dupe 2 of 1 принят: обе находки пропали")
 	}
 }
 

@@ -3,6 +3,9 @@ package workflow
 import (
 	"context"
 	"io"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/hakastein/cliche"
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/artifacts"
+	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/drivers"
 )
 
@@ -60,5 +64,68 @@ exports.command = async () => {
 	}
 	if !result.OK || len(result.Stages) != 2 {
 		t.Fatalf("результат: %+v", result)
+	}
+}
+
+// runScript — workflow script на заглушке, которая запоминает запуски; сокеты команд не открываются.
+func runScript(t *testing.T, script string) (*Result, *recorder) {
+	t.Helper()
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"workflows/w.js": `const llamer = require("llamer");
+exports.definition = {short: "w", long: "W."};
+const s = {driver: "claude", model: "m", effort: "low", timeout: "1m", prompt: "p"};
+exports.command = async () => {` + script + `};
+`})
+	p := project(t, dir)
+	run, err := artifacts.Open(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &recorder{}
+	result, err := (&Run{Context: t.Context(), Project: p, Driver: func(string) (drivers.Driver, error) { return d, nil },
+		Artifacts: run, Cwd: dir, Out: io.Discard, Bin: t.TempDir(), ClientDir: t.TempDir(), Listen: unserved}).Execute(
+		p.Workflows.Commands[0], cliche.Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result, d
+}
+
+// allow этапа — префиксы любых команд, не только из commands/: они доходят до разрешений драйвера. Метасимвол оболочки
+// разрешил бы цепочку чего угодно — ошибка спека.
+func TestStageAllowAnyCommand(t *testing.T) {
+	result, d := runScript(t, `return await llamer.agent({...s, name: "a", allow: ["rg", "git log"]}).result;`)
+	if !result.OK || len(d.runs) != 1 || !slices.Equal(d.runs[0].Allow, []string{"rg", "git log"}) {
+		t.Fatalf("результат: %+v, запуски: %+v", result, d.runs)
+	}
+	result, d = runScript(t, `return await llamer.agent({...s, name: "a", allow: ["rg; sh"]}).result;`)
+	if result.OK || result.Failure.Reason != "spec" || len(d.runs) != 0 {
+		t.Fatalf("результат: %+v", result)
+	}
+}
+
+// Сокет команд этапа открыт на чтение только его песочнице: через сокет соседа агент звал бы команды от его имени.
+func TestStageSocketOnlyInOwnSandbox(t *testing.T) {
+	result, d := runScript(t, `return await Promise.all(["a", "b"].map((name) => llamer.agent({...s, name, allow: ["note"]}).result));`)
+	if !result.OK || len(d.runs) != 2 {
+		t.Fatalf("результат: %+v", result)
+	}
+	sockets := map[string]string{}
+	for _, a := range d.runs {
+		for _, e := range a.Env {
+			if socket, ok := strings.CutPrefix(e, broker.SocketEnv+"="); ok {
+				sockets[a.Name] = socket
+			}
+		}
+	}
+	for _, a := range d.runs {
+		for name, socket := range sockets {
+			open := slices.ContainsFunc(a.Sandbox.Paths(a, ""), func(p string) bool {
+				return socket == p || strings.HasPrefix(socket, p+string(filepath.Separator))
+			})
+			if open != (name == a.Name) {
+				t.Errorf("этапу %s сокет этапа %s открыт: %v", a.Name, name, open)
+			}
+		}
 	}
 }

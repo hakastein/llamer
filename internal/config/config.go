@@ -148,7 +148,23 @@ func (e *Error) Error() string { return e.Message }
 //go:embed schema.json
 var schemaText []byte
 
-var schema = mustCompile("schema.json", schemaText)
+var schema = mustCompile("schema.json", schemaText, "")
+
+// allowSchema — список `allow` из той же схемы.
+var allowSchema = mustCompile("schema.json", schemaText, "#/$defs/commands")
+
+// CheckAllow — команды `allow` в формате конфига: префиксы из слов без метасимволов оболочки.
+func CheckAllow(allow []string) error {
+	doc := make([]any, len(allow))
+	for i, command := range allow {
+		doc[i] = command
+	}
+	var invalid *jsonschema.ValidationError
+	if err := allowSchema.Validate(doc); errors.As(err, &invalid) {
+		return errors.New(strings.Join(schemaError(invalid), "; "))
+	}
+	return nil
+}
 
 // sharedSchema — та же схема без обязательного driver: llamer run берёт из конфига
 // только общие настройки, драйвер у него называет этап workflow.
@@ -162,12 +178,13 @@ var sharedSchema = func() *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	return mustCompile("shared.schema.json", text)
+	return mustCompile("shared.schema.json", text, "")
 }()
 
 // mustCompile — встроенная схема под постоянным адресом: относительное имя
-// библиотека считает от текущего каталога и с не-ASCII в его пути не находит добавленную схему.
-func mustCompile(name string, text []byte) *jsonschema.Schema {
+// библиотека считает от текущего каталога и с не-ASCII в его пути не находит добавленную схему. fragment — часть
+// схемы (`#/$defs/…`) или пусто.
+func mustCompile(name string, text []byte, fragment string) *jsonschema.Schema {
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(text))
 	if err != nil {
 		panic(err)
@@ -177,7 +194,7 @@ func mustCompile(name string, text []byte) *jsonschema.Schema {
 	if err := c.AddResource(url, doc); err != nil {
 		panic(err)
 	}
-	return c.MustCompile(url)
+	return c.MustCompile(url + fragment)
 }
 
 // Проверенный схемой конфиг: nil — ключа нет.

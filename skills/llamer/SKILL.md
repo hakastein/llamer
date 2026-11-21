@@ -63,12 +63,14 @@ exports.command = async (flags) => {
 - Spec keys: `name` (`[a-z][a-z0-9_]*`, unique), `driver`, `model`, `effort`, `prompt` (the text), `timeout`
   (`10m`); optional `schema` — a JSON Schema the answer must match (codex wants every object strict:
   `additionalProperties: false`, every property in `required`); `skills` from `skills/`; `allow` — the commands the
-  stage may call, as word prefixes (`"notes post"`; a call outside is refused, so name every command the prompt
-  tells the agent to call); `readable` — paths the agent may read besides the context directory; `fetch` and
-  `exec` — hosts and programs the stage's commands may use; `data` — a JSON value its commands read as
+  agent may run, as word prefixes without shell metacharacters: the project's commands (`"notes post"`) and any
+  other (`"rg"`, `"git log"`); a call outside is refused, so name every command the prompt tells the agent to call;
+  `readable` — paths the agent may read besides the context directory; `fetch` and `exec` — hosts and programs the
+  stage's commands may use; `data` — a JSON value its commands read as
   `llamer.data`. Any other key is an error. Repeat shared keys with JS variables, not copies.
 - `llamer.prompt(file, data)` — the file as a Go `text/template` on `data` (`{{.topic}}`); a missing key throws.
-- `llamer.records(name)` — what the commands of stage `name` recorded, in order.
+- `llamer.records()` — the run journal: what the commands of every stage recorded so far, `[{stage, value}]` in
+  the order of writing.
 - `llamer.env(name)` — an environment variable of `llamer`: tokens reach the workflow this way, never the agent.
 - `llamer.fetch` and `llamer.exec` — as in commands, without the host and program lists: the workflow is the
   project's code.
@@ -104,8 +106,9 @@ exports.command = (flags) => {
 };
 ```
 
-- `llamer.data` — the stage's `data`; `llamer.record(value)` — writes to the run journal, the workflow reads it
-  with `llamer.records(stage)`.
+- `llamer.data` — the stage's `data`; `llamer.record(value)` — writes to the run journal;
+  `llamer.records()` — the run journal as the workflow sees it, the stage's own and parallel stages' records
+  included.
 - `llamer.fetch(url, {method, headers, body})` → `{status, body}` only to the stage's `fetch` hosts;
   `llamer.exec(program, [args], {stdin})` → `{stdout, stderr, exit}` only for its `exec` programs, in the caller's
   directory. Anything else fails the stage.

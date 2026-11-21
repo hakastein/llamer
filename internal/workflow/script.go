@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hakastein/cliche"
+	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -28,7 +29,7 @@ type stage struct {
 	Timeout                     time.Duration
 	SchemaPath                  string             // пусто — ответ свободным текстом
 	Schema                      *jsonschema.Schema // nil — ответ свободным текстом
-	Allow                       []string           // команды из `commands/`, которые этап может звать
+	Allow                       []string           // префиксы команд агенту: команды `commands/` и любые другие
 	Readable                    []string           // пути сверх каталога контекста, которые агент читает: абсолютные
 	Hosts, Programs             []string           // куда командам этапа можно ходить по HTTP и какие программы запускать
 	Data                        any                // значение JSON, которое команды этапа читают как llamer.data
@@ -46,7 +47,7 @@ var stageName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // module — модуль `llamer` скрипта workflow.
 func (r *Run) module() *cliche.Object {
 	return cliche.NewObject([]string{"agent", "prompt", "records", "env", "fetch", "exec"}, []any{
-		cliche.Func(r.agent), cliche.Func(r.prompt), cliche.Func(r.recordsOf), cliche.Func(env),
+		cliche.Func(r.agent), cliche.Func(r.prompt), cliche.Func(r.commands.journal.records), cliche.Func(env),
 		// Скрипт workflow — код проекта, а не ввод агента: его HTTP и программы не ограничены.
 		cliche.Func(func(ctx context.Context, args ...any) (any, error) {
 			return fetch(ctx, args, func(*url.URL) error { return nil })
@@ -140,10 +141,8 @@ func (r *Run) spec(value any) (*stage, error) {
 			fail("schema: %v", err)
 		}
 	}
-	for _, command := range s.Allow {
-		if !r.commands.has(strings.Fields(command)) {
-			fail("allow: в %s нет команды %q", filepath.Join(r.Project.Dir, "commands"), command)
-		}
+	if err := config.CheckAllow(s.Allow); err != nil {
+		fail("allow: %v", err)
 	}
 	for _, path := range sp.Readable {
 		if !filepath.IsAbs(path) {
@@ -185,18 +184,6 @@ func (r *Run) prompt(_ context.Context, args ...any) (any, error) {
 		return nil, err
 	}
 	return out.String(), nil
-}
-
-// recordsOf — records(name) → что записали команды этапа name, по порядку записи.
-func (r *Run) recordsOf(_ context.Context, args ...any) (any, error) {
-	name, ok := firstString(args)
-	r.mu.Lock()
-	known := r.names[name]
-	r.mu.Unlock()
-	if !ok || !known {
-		return nil, fmt.Errorf("records(name): этапа %q не было", name)
-	}
-	return bridged(r.commands.journal.recorded(name)), nil
 }
 
 // env(name) → значение переменной окружения llamer или undefined: так в workflow приходят токены, не попадая в argv.

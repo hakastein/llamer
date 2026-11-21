@@ -39,13 +39,6 @@ type commands struct {
 	journal *journal
 }
 
-// has — команда, которой начинаются слова words.
-func (c *commands) has(words []string) bool {
-	return slices.ContainsFunc(c.catalog.Commands, func(cmd *cliche.Command) bool {
-		return len(cmd.Path) <= len(words) && slices.Equal(cmd.Path, words[:len(cmd.Path)])
-	})
-}
-
 // handler — вызовы этапа s с его сокета: агент получает выдачу сразу, а первый срыв уходит в failed, и этап
 // срывается после агента.
 func (c *commands) handler(s *stage, failed chan<- error) func(context.Context, broker.Call) broker.Reply {
@@ -66,7 +59,7 @@ func (c *commands) handler(s *stage, failed chan<- error) func(context.Context, 
 func (c *commands) call(ctx context.Context, s *stage, call broker.Call) (broker.Reply, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	a := &api{stage: s, cwd: call.Cwd}
+	a := &api{stage: s, cwd: call.Cwd, journal: c.journal}
 	r, results, rejected := c.execute(ctx, s.Allow, call, a)
 	r, err := c.journal.call(s.Name, call.Argv, r, rejected, results)
 	if err != nil {
@@ -191,17 +184,19 @@ func plainOf(value any) (any, error) {
 	return nil, fmt.Errorf("значение %T в JSON не записывается", value)
 }
 
-// api — модуль `llamer` скриптов команд: данные этапа, журнал результатов, HTTP к хостам и программы из спека этапа.
+// api — модуль `llamer` скриптов команд: данные этапа, журнал прогона, HTTP к хостам и программы из спека этапа.
 type api struct {
 	stage   *stage
 	cwd     string
+	journal *journal
 	written []any // записанное этим вызовом
 	denied  *refusal
 	failure error // первый срыв этапа этим вызовом
 }
 
 func (a *api) module() *cliche.Object {
-	return cliche.NewObject([]string{"data", "record", "fetch", "exec"}, []any{bridged(a.stage.Data), cliche.Func(a.record),
+	return cliche.NewObject([]string{"data", "records", "record", "fetch", "exec"}, []any{bridged(a.stage.Data),
+		cliche.Func(a.journal.records), cliche.Func(a.record),
 		cliche.Func(func(ctx context.Context, args ...any) (any, error) { return fetch(ctx, args, a.allowed) }),
 		cliche.Func(func(ctx context.Context, args ...any) (any, error) { return run(ctx, a.cwd, args, a.program) })})
 }
@@ -447,17 +442,18 @@ type recorded struct {
 	value any
 }
 
-// recorded — записанное этапом stage по порядку записи.
-func (j *journal) recorded(stage string) []any {
+// records() → журнал прогона: что записали команды всех этапов к этому вызову, [{stage, value}] по порядку записи.
+func (j *journal) records(_ context.Context, args ...any) (any, error) {
+	if len(args) > 0 {
+		return nil, errors.New("records() — без аргументов")
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	var out []any
-	for _, r := range j.results {
-		if r.stage == stage {
-			out = append(out, r.value)
-		}
+	out := make([]any, len(j.results))
+	for i, r := range j.results {
+		out[i] = cliche.NewObject([]string{"stage", "value"}, []any{r.stage, bridged(r.value)})
 	}
-	return out
+	return out, nil
 }
 
 func newJournal(runPath string) *journal { return &journal{path: filepath.Join(runPath, JournalFile)} }

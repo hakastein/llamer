@@ -4,7 +4,7 @@ const llamer = require("llamer");
 const repo = require("../lib/repo.js");
 const gitlab = require("../lib/gitlab.js");
 const threads = require("../lib/threads.js");
-const {state} = require("../lib/state.js");
+const {state, current} = require("../lib/state.js");
 const {materials} = require("../lib/materials.js");
 const {listing} = require("../lib/findings.js");
 const {report} = require("../lib/report.js");
@@ -35,33 +35,30 @@ exports.command = async (flags) => {
     throw new Error("--publish — только вместе с --mr");
   }
   const r = repo.open();
-  // Записи ревью: свои и записанное командами этапов, по порядку. Этап получает их в llamer.data.
-  const log = [{stage: "materials", value: {type: "materials", base: r.sha(flags.base)}}];
+  // Свои записи ревью: база и треды. Этап получает их в llamer.data, записанное этапами — в журнале прогона.
+  const own = [{stage: "materials", value: {type: "materials", base: r.sha(flags.base)}}];
   let mr = null;
   if (flags.mr) {
     mr = gitlab.open(flags.mr, llamer.env("GITLAB_TOKEN"), !flags.publish);
-    log.push({stage: "threads", value: {type: "threads", threads: threads.summarise(mr.discussions())}});
+    own.push({stage: "threads", value: {type: "threads", threads: threads.summarise(mr.discussions())}});
   }
-  const shared = materials(r, state(log).materials.base, state(log).threads, flags.task ?? "");
+  const shared = materials(r, state(own).materials.base, state(own).threads, flags.task ?? "");
   // Этап — спек llamer.agent и vars: данные его задания сверх общих материалов.
   const start = ({vars = {}, ...spec}) =>
-    llamer.agent({...spec, data: log, prompt: llamer.prompt(`prompts/${spec.name}.md`, {materials: shared, ...vars})});
+    llamer.agent({...spec, data: own, prompt: llamer.prompt(`prompts/${spec.name}.md`, {materials: shared, ...vars})});
   // Волна — этапы, которые идут параллельно: первый ведёт, остальные стартуют с началом его ответа и читают общее
-  // начало задания из кэша. Записанное этапами попадает в журнал после всей волны.
+  // начало задания из кэша.
   const wave = async (lead, ...rest) => {
     const first = start(lead);
     await first.started;
     await Promise.all([first.result, ...rest.map((stage) => start(stage).result)]);
-    for (const {name} of [lead, ...rest]) {
-      log.push(...llamer.records(name).map((value) => ({stage: name, value})));
-    }
   };
 
   const assess = {...claude, name: "assess", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
     skills: ["assessing-review-scope"], allow: ["review assess", "review diff", "review stop"]};
   const replies = {...claude, name: "threads", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m",
     allow: ["review resolve", "review list", "review diff", "review stop"]};
-  await wave(assess, ...(mr ? [{...replies, vars: {open_threads: threads.openList(state(log).threads)}}] : []));
+  await wave(assess, ...(mr ? [{...replies, vars: {open_threads: threads.openList(state(own).threads)}}] : []));
 
   const finder = ["review finding", "review list", "review diff", "review stop"];
   await wave(
@@ -73,12 +70,12 @@ exports.command = async (flags) => {
     {...claude, name: "comments", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m", allow: finder});
 
   await wave({...claude, name: "dedupe", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
-    allow: ["review dupe", "review list", "review diff", "review stop"], vars: {found: listing(state(log), r, false)}});
+    allow: ["review dupe", "review list", "review diff", "review stop"], vars: {found: listing(current(own), r, false)}});
   await wave({...claude, name: "skeptic", model: "claude-opus-5-5", effort: "low", timeout: "30m",
     skills: ["refuting-review-findings"], allow: ["review verdict", "review list", "review diff", "review stop"],
-    vars: {deduped: listing(state(log), r, true)}});
+    vars: {deduped: listing(current(own), r, true)}});
 
-  const s = state(log);
+  const s = current(own);
   if (!mr) {
     return {report: report(s)};
   }

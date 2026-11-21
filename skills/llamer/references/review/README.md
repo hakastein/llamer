@@ -21,17 +21,17 @@ const wave = async (lead, ...rest) => {
   const first = start(lead);
   await first.started;
   await Promise.all([first.result, ...rest.map((stage) => start(stage).result)]);
-  // …the records of the wave's stages join the list
 };
 ```
 
 The materials — the diff, the file list, the merge request threads and the task — are built by the workflow
 (`lib/materials.js`) and start every prompt (`{{.materials}}`): the stages share it as the cached prompt prefix.
-The state of the review — findings, duplicates, verdicts — is the list of records the workflow keeps: its own
-(the base revision, the threads) and what each stage's commands recorded (`llamer.records`). Every stage gets the
-list in `data`, and the `review` commands fold it (`lib/state.js`). The report, the findings for the `dedupe` and
-`skeptic` prompts and the publication are library calls of the workflow (`lib/report.js`, `lib/findings.js`,
-`lib/publish.js`).
+The state of the review — findings, duplicates, verdicts — is a fold of records (`lib/state.js`): the workflow's own
+(the base revision, the threads), which every stage gets in `data`, and the run journal (`llamer.records()`). The
+`review` commands read the journal at each call, so they see what any stage has recorded so far, their own and
+parallel stages' records included; a finding's number is its place in the order of writing. The report, the
+findings for the `dedupe` and `skeptic` prompts and the publication are library calls of the workflow
+(`lib/report.js`, `lib/findings.js`, `lib/publish.js`).
 
 ## Build it in a project
 
@@ -83,8 +83,9 @@ GITLAB_TOKEN=… llamer run review --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA" \
 
 ## Commands
 
-A stage calls only the commands in its `allow`; the agent sees their flags in `review <command> --help`. Every
-command checks its input and refuses with the reason.
+A stage calls only the `review` commands in its `allow`; the agent sees their flags in `review <command> --help`.
+Every command checks its input and refuses with the reason. `allow` may also name other programs the agent may run
+(`"rg"`, `"git log"`).
 
 | Command | Records | What it does |
 |---|---|---|
@@ -92,7 +93,7 @@ command checks its input and refuses with the reason.
 | `review finding --file --line --line-end --text --severity --severity-reason --related [--suggestion] [--deleted] [--trace]` | `finding` | a remark anchored to changed lines: both ends must be added lines, or removed ones with `--deleted`; a suggestion must change the fragment |
 | `review summary --text` | `summary` | the stage's conclusion; a second call replaces it |
 | `review stop --reason` | `stop` | the stage gave up: a gap in the report |
-| `review list` | — | every finding of the earlier stages with its number and state |
+| `review list` | — | every finding recorded so far, by any stage, with its number and state |
 | `review diff [path...]` | — | the numbered diff of files, or the file list |
 | `review dupe --id --of --reason` | `dupe` | a duplicate drops out |
 | `review verdict --id --refuted --reason [--severity --severity-reason]` | `verdict` | a refuted finding drops out |
