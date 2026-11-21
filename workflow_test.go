@@ -17,10 +17,10 @@ import (
 func workflowScript(checkerSpec string) string {
 	return `const llamer = require("llamer");
 exports.definition = {short: "wf", long: "Test workflow.", flags: [{name: "topic", type: "string", usage: "topic"}]};
-exports.command = (flags) => {
+exports.command = async (flags) => {
   const s = {driver: "claude", model: "m", effort: "low", timeout: "1m"};
-  const joke = llamer.agent({...s, name: "writer", prompt: llamer.prompt("writer.md", flags), schema: "joke.schema.json"});
-  const checked = llamer.agent({...s, name: "checker", prompt: "ANSWER: проверено " + JSON.stringify(joke) + "\n"` + checkerSpec + `});
+  const joke = await llamer.agent({...s, name: "writer", prompt: llamer.prompt("writer.md", flags), schema: "joke.schema.json"}).result;
+  const checked = await llamer.agent({...s, name: "checker", prompt: "ANSWER: проверено " + JSON.stringify(joke) + "\n"` + checkerSpec + `}).result;
   return {joke, checked};
 };
 `
@@ -184,10 +184,10 @@ func TestWorkflowSandboxReachesDrivers(t *testing.T) {
 	write(t, root, "extra/notes.md", "заметки")
 	write(t, root, ".llamer/workflows/wf.js", `const llamer = require("llamer");
 exports.definition = {short: "wf", long: "Test workflow."};
-exports.command = () => {
+exports.command = async () => {
   const s = {model: "m", effort: "low", timeout: "1m", readable: ["../extra"]};
-  llamer.agent({...s, name: "writer", driver: "claude", prompt: "ANSWER: кот\n"});
-  llamer.agent({...s, name: "checker", driver: "codex", prompt: "ANSWER: проверено\n"});
+  await llamer.agent({...s, name: "writer", driver: "claude", prompt: "ANSWER: кот\n"}).result;
+  await llamer.agent({...s, name: "checker", driver: "codex", prompt: "ANSWER: проверено\n"}).result;
   return null;
 };
 `)

@@ -401,11 +401,11 @@ exports.definition = {
 
 const codex = { driver: "codex", model: "gpt-6.1-terra", effort: "low", timeout: "10m" };
 
-exports.command = (flags) => {
-  const notes = llamer.agent({ ...codex, name: "writer", schema: "schemas/notes.json",
-    prompt: llamer.prompt("prompts/writer.md", { issue: flags.issue }) });
-  const verdict = llamer.agent({ ...codex, name: "checker", driver: "claude", model: "claude-sonnet-5-5",
-    prompt: llamer.prompt("prompts/checker.md", { notes: JSON.stringify(notes) }) });
+exports.command = async (flags) => {
+  const notes = await llamer.agent({ ...codex, name: "writer", schema: "schemas/notes.json",
+    prompt: llamer.prompt("prompts/writer.md", { issue: flags.issue }) }).result;
+  const verdict = await llamer.agent({ ...codex, name: "checker", driver: "claude", model: "claude-sonnet-5-5",
+    prompt: llamer.prompt("prompts/checker.md", { notes: JSON.stringify(notes) }) }).result;
   return { notes, verdict };
 };
 ```
@@ -413,9 +413,19 @@ exports.command = (flags) => {
 Скрипт возвращает значение (хотя бы `null`): оно попадает в результат прогона как `value`.
 Повторы в спеках убираются переменными JS.
 
+Этапы идут параллельно через `Promise.all`. Чтобы этапы с общим началом задания читали его из
+кэша модели, первый этап волны запускают раньше, а остальные — когда он начал отвечать:
+
+```js
+const lead = llamer.agent({ ...codex, name: "logic", prompt: llamer.prompt("prompts/logic.md", data) });
+await lead.started;
+const [logic, tests] = await Promise.all([lead.result,
+  llamer.agent({ ...codex, name: "tests", prompt: llamer.prompt("prompts/tests.md", data) }).result]);
+```
+
 | Функция | Что делает |
 |---|---|
-| `agent(spec)` | Этап агента. Ответ — значение JSON у этапа со схемой, строка без неё. Ошибка в спеке или сорванный этап — исключение с причиной; прогон неуспешен, даже если скрипт его поймал, и следующие `agent` отказывают. |
+| `agent(spec)` | Запускает этап агента и сразу возвращает `{started, result}`: `result` — промис ответа (значение JSON у этапа со схемой, строка без неё), `started` — промис начала ответа модели (у этапа, который так и не ответил, — его конца). Ошибка в спеке — исключение при вызове, сорванный этап отклоняет `result`; прогон неуспешен, даже если скрипт ошибку поймал, и следующие `agent` отказывают. Этап, которого скрипт не дождался, прерывается с концом скрипта. |
 | `prompt(file, data)` | Текст файла как Go [`text/template`](https://pkg.go.dev/text/template) на `data`: `{{.issue}}`. Ключа нет в `data` — исключение. |
 | `records(name)` | Что записали команды агента этапа `name` через `record`, по порядку записи. |
 | `env(name)` | Переменная окружения `llamer` или `undefined`: так в workflow приходят токены, которых нет у агента и в argv. |
@@ -444,7 +454,8 @@ exports.command = (flags) => {
 пустая строка, а у этапа со схемой — наименьшее значение по ней (`const` или первое из `enum`,
 обязательные свойства объекта, `minItems` элементов массива). Окружение драйверов не проверяется,
 модели не вызываются, задания ложатся в артефакты прогона. Ошибка скрипта и спеков этапов срывает
-прогон так же, как настоящий, — до первого платного вызова. Схема с `pattern`, `format`, `$ref` или
+прогон так же, как настоящий, — до первого платного вызова. Заглушка не зовёт команды агента, поэтому
+их сокеты не открываются и `--dry-run` идёт и в песочнице агента. Схема с `pattern`, `format`, `$ref` или
 сочетаниями может не принять ответ заглушки: этап тогда срывается с `reason: schema`.
 
 ### Песочница

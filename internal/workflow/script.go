@@ -57,9 +57,11 @@ func (r *Run) module() *cliche.Object {
 	})
 }
 
-// agent(spec) → ответ этапа. Ошибка в спеке или срыв этапа — исключение, и прогон неуспешен, даже если скрипт его
-// поймает.
-func (r *Run) agent(_ context.Context, args ...any) (any, error) {
+// agent(spec) → {started, result}: этап идёт в своей горутине, started выполняется с началом ответа модели (или с концом
+// этапа, который так и не ответил), result — ответом этапа. Ошибка в спеке — исключение при вызове, срыв этапа
+// отклоняет result; то и другое делает прогон неуспешным, даже если скрипт ошибку поймает, и следующие agent()
+// отказывают. Отмена ctx — конец прогона — прерывает этап.
+func (r *Run) agent(ctx context.Context, args ...any) (any, error) {
 	if len(args) != 1 {
 		err := errors.New("agent(spec) — ровно один спек")
 		r.fail(&Failure{Reason: "spec", Detail: err.Error()})
@@ -70,11 +72,20 @@ func (r *Run) agent(_ context.Context, args ...any) (any, error) {
 		r.fail(&Failure{Stage: s.Name, Reason: "spec", Detail: err.Error()})
 		return nil, err
 	}
-	answer, err := r.launch(s)
-	if err != nil {
-		return nil, err
+	if f := r.failure(); f != nil {
+		return nil, fmt.Errorf("этап %s не запущен: прогон уже сорван (%s %s)", s.Name, f.Stage, f.Reason)
 	}
-	return bridged(answer), nil
+	started, result := new(cliche.Promise), new(cliche.Promise)
+	r.stages.Go(func() {
+		answer, err := r.launch(ctx, s, func() { started.Settle(cliche.Undefined{}, nil) })
+		started.Settle(cliche.Undefined{}, nil)
+		if err != nil {
+			result.Settle(nil, err)
+			return
+		}
+		result.Settle(bridged(answer), nil)
+	})
+	return cliche.NewObject([]string{"started", "result"}, []any{started, result}), nil
 }
 
 // spec — этап по спеку value; stage с именем — и при ошибке. Имя этапа занимается и неудачным спеком.

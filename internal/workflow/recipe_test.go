@@ -68,19 +68,13 @@ func (d *recorder) Run(ctx context.Context, a drivers.Args, t *agent.Telemetry) 
 func TestReviewRecipeStages(t *testing.T) {
 	p := project(t, recipe)
 	i := slices.IndexFunc(p.Workflows.Commands, func(c *cliche.Command) bool { return slices.Equal(c.Path, []string{"review"}) })
-	// Не t.TempDir(): имя теста в пути делает путь сокета длиннее лимита unix-сокета macOS (104 байта).
-	bin, err := os.MkdirTemp("", "wf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(bin) })
 	run, err := artifacts.Open(t.TempDir(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := &recorder{}
 	result, err := (&Run{Context: context.Background(), Project: p, Driver: func(string) (drivers.Driver, error) { return d, nil },
-		Artifacts: run, Cwd: changedTree(t), Out: io.Discard, Bin: bin, ClientDir: bin}).Execute(p.Workflows.Commands[i],
+		Artifacts: run, Cwd: changedTree(t), Out: io.Discard, Listen: unserved}).Execute(p.Workflows.Commands[i],
 		cliche.Input{Flags: cliche.NewObject([]string{"base"}, []any{"HEAD"})})
 	if err != nil {
 		t.Fatal(err)

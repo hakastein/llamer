@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/drivers"
 )
 
@@ -28,6 +29,12 @@ func (stub) Run(_ context.Context, a drivers.Args, _ *agent.Telemetry) (*agent.O
 		text = string(answer)
 	}
 	return &agent.Outcome{Model: a.Model, Effort: a.Effort, OK: true, Result: &agent.Result{Text: text}, Cost: new(float64)}, nil
+}
+
+// unserved — сокет команд этапа на заглушке: она команд не зовёт, и сокет не открывается — в песочнице агента, где
+// идёт --dry-run, его и не открыть.
+func unserved(string, func(context.Context, broker.Call) broker.Reply) (func(), error) {
+	return func() {}, nil
 }
 
 // sample — наименьшее значение по JSON Schema: const или первое из enum, у объекта — обязательные свойства, у массива —

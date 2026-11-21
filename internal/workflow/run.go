@@ -33,11 +33,14 @@ type Run struct {
 	Out       io.Writer // события и результат строками JSON
 	// Bin — каталог команд этапа: обёртки клиента команд и сокеты этапов; ClientDir — каталог бинаря llamer.
 	Bin, ClientDir string
+	// Listen обслуживает вызовы команд этапа на сокете, пока не вызван stop.
+	Listen func(socket string, handle func(context.Context, broker.Call) broker.Reply) (stop func(), err error)
 
 	out      *out
 	commands *commands
 	mu       sync.Mutex
 	names    map[string]bool // имена этапов, уже вызванных скриптом
+	stages   sync.WaitGroup  // запущенные этапы
 	result   *Result
 	records  []*cost.Stage
 	fatal    error // ошибка, после которой прогон не выдаёт результата
@@ -122,6 +125,8 @@ func (r *Run) Execute(workflow *cliche.Command, in cliche.Input) (*Result, error
 	r.names = map[string]bool{}
 	r.result = &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}, Value: json.RawMessage("null")}
 	value, err := cliche.Run(r.Context, workflow, in, cliche.Env{Modules: map[string]any{"llamer": r.module()}})
+	// Этапы, которых скрипт не дождался, прерывает конец cliche.Run; их итог — тоже итог прогона.
+	r.stages.Wait()
 	if r.fatal != nil {
 		return nil, r.fatal
 	}
@@ -171,13 +176,10 @@ func (r *Run) failure() *Failure {
 	return r.result.Failure
 }
 
-// launch — этап s на его драйвере: ответ — значение JSON при схеме, иначе строка. Ошибка — этап сорван, и прогон
-// неуспешен.
-func (r *Run) launch(s *stage) (any, error) {
-	if f := r.failure(); f != nil {
-		return nil, fmt.Errorf("этап %s не запущен: прогон уже сорван (%s %s)", s.Name, f.Stage, f.Reason)
-	}
-	record, detail, err := r.stage(s)
+// launch — этап s на его драйвере: ответ — значение JSON при схеме, иначе строка; responding — начало ответа модели.
+// Ошибка — этап сорван, и прогон неуспешен.
+func (r *Run) launch(ctx context.Context, s *stage, responding func()) (any, error) {
+	record, detail, err := r.stage(ctx, s, responding)
 	if err != nil {
 		r.mu.Lock()
 		r.fatal = err
@@ -209,7 +211,7 @@ func (r *Run) launch(s *stage) (any, error) {
 }
 
 // stage — этап агента на своём драйвере; detail — подробность срыва.
-func (r *Run) stage(s *stage) (*cost.Stage, string, error) {
+func (r *Run) stage(ctx context.Context, s *stage, responding func()) (*cost.Stage, string, error) {
 	d, err := r.Driver(s.Driver)
 	if err != nil {
 		return nil, "", err
@@ -227,13 +229,13 @@ func (r *Run) stage(s *stage) (*cost.Stage, string, error) {
 		// Клиенту в песочнице нужны его обёртка с сокетом и сам бинарь llamer.
 		sandbox.Readable = append(append([]string{}, s.Readable...), r.Bin, r.ClientDir)
 		env = []string{broker.SocketEnv + "=" + socket}
-		if stop, err = broker.Listen(socket, r.commands.handler(s, failed)); err != nil {
+		if stop, err = r.Listen(socket, r.commands.handler(s, failed)); err != nil {
 			return nil, "", err
 		}
 	}
 	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Model, s.Effort, promptPath)
-	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), r.out, s.Name}, func() {})
-	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: s.Prompt, Skills: s.Skills,
+	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), r.out, s.Name}, responding)
+	outcome, err := d.Run(ctx, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: s.Prompt, Skills: s.Skills,
 		Allow: s.Allow, Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()
 	if err != nil {

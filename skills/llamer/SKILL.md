@@ -45,18 +45,21 @@ exports.definition = {
 
 const codex = {driver: "codex", model: "gpt-6.1-terra", effort: "low", timeout: "10m"};
 
-exports.command = (flags) => {
-  const joke = llamer.agent({...codex, name: "writer", schema: "schemas/joke.json",
-    prompt: llamer.prompt("prompts/writer.md", {topic: flags.topic})});
-  const verdict = llamer.agent({...codex, name: "critic", driver: "claude", model: "claude-sonnet-5-5",
+exports.command = async (flags) => {
+  const joke = await llamer.agent({...codex, name: "writer", schema: "schemas/joke.json",
+    prompt: llamer.prompt("prompts/writer.md", {topic: flags.topic})}).result;
+  const verdict = await llamer.agent({...codex, name: "critic", driver: "claude", model: "claude-sonnet-5-5",
     prompt: llamer.prompt("prompts/critic.md", {joke: JSON.stringify(joke)}), allow: ["notes post"],
-    data: {topic: flags.topic}});
+    data: {topic: flags.topic}}).result;
   return {joke, verdict};                          // the result's `value`; return null when there is nothing
 };
 ```
 
-- `llamer.agent(spec)` runs one stage and returns its answer: the JSON value for a stage with `schema`, the text
-  otherwise. A bad spec or a failed stage throws, and the run fails even if the script catches it.
+- `llamer.agent(spec)` starts one stage and returns `{started, result}` at once: `result` is a promise of its
+  answer — the JSON value for a stage with `schema`, the text otherwise; `started` is a promise of the model's first
+  response (or of the stage's end, if it never responded). A bad spec throws at the call, a failed stage rejects
+  `result`; either fails the run even if the script catches it. A stage the script did not await is stopped when the
+  script ends.
 - Spec keys: `name` (`[a-z][a-z0-9_]*`, unique), `driver`, `model`, `effort`, `prompt` (the text), `timeout`
   (`10m`); optional `schema` — a JSON Schema the answer must match (codex wants every object strict:
   `additionalProperties: false`, every property in `required`); `skills` from `skills/`; `allow` — the commands the
@@ -69,7 +72,16 @@ exports.command = (flags) => {
 - `llamer.env(name)` — an environment variable of `llamer`: tokens reach the workflow this way, never the agent.
 - `llamer.fetch` and `llamer.exec` — as in commands, without the host and program lists: the workflow is the
   project's code.
-- Stages run one after another. The agent reads only the context directory, its stage's skills and `readable`; it
+- Stages run in parallel with `Promise.all`. Stages sharing the start of their prompts read it from the model's
+  cache when the first one is started earlier and the rest once it responds:
+
+  ```js
+  const lead = llamer.agent({...codex, name: "logic", prompt: llamer.prompt("prompts/logic.md", data)});
+  await lead.started;
+  const [logic, tests] = await Promise.all([lead.result,
+    llamer.agent({...codex, name: "tests", prompt: llamer.prompt("prompts/tests.md", data)}).result]);
+  ```
+- The agent reads only the context directory, its stage's skills and `readable`; it
   has no network.
 
 ## Commands
@@ -112,7 +124,8 @@ tail -n 1 run.jsonl | jq '{ok, failure, cost, value}'
   by default the current one, `--config <file>` — instead of `.llamer.json` at the repository root, `--dry-run`.
   Everything after the name belongs to the script: `llamer run <name> --help` lists its flags.
 - `--dry-run` runs the script with a stub agent: an empty answer, or the smallest value of the stage's schema. Run
-  it after every change of the workflow: a script error or a bad spec fails it before any paid call.
+  it after every change of the workflow: a script error or a bad spec fails it before any paid call. The stub calls
+  no commands, so it opens no sockets and runs inside an agent's sandbox too.
 - The result: `ok`, `failure` (`stage`, `reason`, `detail`), `stages[]` with `answer`, `cost`, tokens, `value` —
   what the script returned, and `run` — the run directory `.llamer/runs/<date>_<time>/` next to the config:
   prompts, stage streams, `journal.jsonl` of command calls, `result.json`.

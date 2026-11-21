@@ -12,6 +12,19 @@ and returns a YAML report; with a merge request it also reads its threads and pu
 | `dedupe` | marks duplicates: `review dupe` |
 | `skeptic` | a verdict on every finding: `review verdict` |
 
+The stages run in waves: `assess` with `threads`, then `logic`, `quality`, `tests` and `comments` together, then
+`dedupe`, then `skeptic`. The first stage of a wave starts alone, the rest once it responds, so they read the shared
+start of the prompt from the model's cache; the next wave starts when the whole wave has ended:
+
+```js
+const wave = async (lead, ...rest) => {
+  const first = start(lead);
+  await first.started;
+  await Promise.all([first.result, ...rest.map((stage) => start(stage).result)]);
+  // …the records of the wave's stages join the list
+};
+```
+
 The materials — the diff, the file list, the merge request threads and the task — are built by the workflow
 (`lib/materials.js`) and start every prompt (`{{.materials}}`): the stages share it as the cached prompt prefix.
 The state of the review — findings, duplicates, verdicts — is the list of records the workflow keeps: its own
@@ -32,8 +45,8 @@ list in `data`, and the `review` commands fold it (`lib/state.js`). The report, 
    prompts and commands do not depend on it. The same stage on two drivers is two calls with their own names
    (`logic`, `logic_codex`) and the same prompt file.
 4. Project knowledge goes into the prompts and into `skills/`: a skill named in a stage's `skills` is offered to it.
-   Project stages (`docs`, `migrations`) are copies of `prompts/quality.md` with their own task, called after
-   `comments` with the same `allow`.
+   Project stages (`docs`, `migrations`) are copies of `prompts/quality.md` with their own task, added to the wave of
+   `logic` with the same `allow`.
 5. Check it without a model: `llamer run --dry-run review --base HEAD`. It must end with `"ok":true`.
 
 ## Run it

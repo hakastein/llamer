@@ -27,7 +27,7 @@ exports.definition = {
 const tools = {exec: ["git", "cat"]};
 const claude = {driver: "claude", ...tools};
 
-exports.command = (flags) => {
+exports.command = async (flags) => {
   if (!flags.base) {
     throw new Error("нужен --base");
   }
@@ -43,34 +43,40 @@ exports.command = (flags) => {
     log.push({stage: "threads", value: {type: "threads", threads: threads.summarise(mr.discussions())}});
   }
   const shared = materials(r, state(log).materials.base, state(log).threads, flags.task ?? "");
-  const run = (spec, data = {}) => {
-    llamer.agent({...spec, data: log, prompt: llamer.prompt(`prompts/${spec.name}.md`, {materials: shared, ...data})});
-    log.push(...llamer.records(spec.name).map((value) => ({stage: spec.name, value})));
+  // Этап — спек llamer.agent и vars: данные его задания сверх общих материалов.
+  const start = ({vars = {}, ...spec}) =>
+    llamer.agent({...spec, data: log, prompt: llamer.prompt(`prompts/${spec.name}.md`, {materials: shared, ...vars})});
+  // Волна — этапы, которые идут параллельно: первый ведёт, остальные стартуют с началом его ответа и читают общее
+  // начало задания из кэша. Записанное этапами попадает в журнал после всей волны.
+  const wave = async (lead, ...rest) => {
+    const first = start(lead);
+    await first.started;
+    await Promise.all([first.result, ...rest.map((stage) => start(stage).result)]);
+    for (const {name} of [lead, ...rest]) {
+      log.push(...llamer.records(name).map((value) => ({stage: name, value})));
+    }
   };
 
-  // shortcut: последовательно до промисов cliche (DEV-15367); волна — assess и threads, затем logic, quality,
-  // tests и comments: первый этап волны ведёт, остальные стартуют с началом его ответа и читают общее начало
-  // задания из кэша.
-  run({...claude, name: "assess", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
-    skills: ["assessing-review-scope"], allow: ["review assess", "review diff", "review stop"]});
-  if (mr) {
-    run({...claude, name: "threads", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m",
-      allow: ["review resolve", "review list", "review diff", "review stop"]},
-    {open_threads: threads.openList(state(log).threads)});
-  }
-  const finder = ["review finding", "review list", "review diff", "review stop"];
-  run({...claude, name: "logic", model: "claude-opus-5-5", effort: "low", timeout: "30m",
-    skills: ["reviewing-business-logic"], allow: ["review finding", "review list", "review summary", "review diff", "review stop"]});
-  run({...claude, name: "quality", model: "claude-sonnet-5-5", effort: "high", timeout: "30m",
-    skills: ["reviewing-code-quality"], allow: finder});
-  run({...claude, name: "tests", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m", allow: finder});
-  run({...claude, name: "comments", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m", allow: finder});
+  const assess = {...claude, name: "assess", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
+    skills: ["assessing-review-scope"], allow: ["review assess", "review diff", "review stop"]};
+  const replies = {...claude, name: "threads", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m",
+    allow: ["review resolve", "review list", "review diff", "review stop"]};
+  await wave(assess, ...(mr ? [{...replies, vars: {open_threads: threads.openList(state(log).threads)}}] : []));
 
-  run({...claude, name: "dedupe", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
-    allow: ["review dupe", "review list", "review diff", "review stop"]}, {found: listing(state(log), r, false)});
-  run({...claude, name: "skeptic", model: "claude-opus-5-5", effort: "low", timeout: "30m",
-    skills: ["refuting-review-findings"], allow: ["review verdict", "review list", "review diff", "review stop"]},
-  {deduped: listing(state(log), r, true)});
+  const finder = ["review finding", "review list", "review diff", "review stop"];
+  await wave(
+    {...claude, name: "logic", model: "claude-opus-5-5", effort: "low", timeout: "30m",
+      skills: ["reviewing-business-logic"], allow: ["review finding", "review list", "review summary", "review diff", "review stop"]},
+    {...claude, name: "quality", model: "claude-sonnet-5-5", effort: "high", timeout: "30m",
+      skills: ["reviewing-code-quality"], allow: finder},
+    {...claude, name: "tests", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m", allow: finder},
+    {...claude, name: "comments", model: "claude-sonnet-5-5", effort: "medium", timeout: "20m", allow: finder});
+
+  await wave({...claude, name: "dedupe", model: "claude-sonnet-5-5", effort: "medium", timeout: "10m",
+    allow: ["review dupe", "review list", "review diff", "review stop"], vars: {found: listing(state(log), r, false)}});
+  await wave({...claude, name: "skeptic", model: "claude-opus-5-5", effort: "low", timeout: "30m",
+    skills: ["refuting-review-findings"], allow: ["review verdict", "review list", "review diff", "review stop"],
+    vars: {deduped: listing(state(log), r, true)}});
 
   const s = state(log);
   if (!mr) {

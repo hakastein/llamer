@@ -119,10 +119,11 @@ func start(ctx context.Context, o *Options, p *Project, cwd string, command *cli
 	if err != nil {
 		return false, err
 	}
-	driver := func(string) (drivers.Driver, error) { return stub{}, nil }
+	driver, listen := func(string) (drivers.Driver, error) { return stub{}, nil }, unserved
 	if o.DryRun {
 		logx.Log("--dry-run: этапы идут на заглушке агента, без модели")
 	} else {
+		listen = broker.Listen
 		setup := drivers.Setup{Env: env.Vars, EnvOrder: env.Order, StageBin: env.Bin, Tmp: env.Tmp}
 		if names := p.Library.Names(); len(names) > 0 {
 			if setup.RunSkills, err = p.Library.Materialize(filepath.Join(run.Path, "stage-plugin"), names); err != nil {
@@ -132,7 +133,7 @@ func start(ctx context.Context, o *Options, p *Project, cwd string, command *cli
 		driver = prepared(ctx, cfg.Drivers, setup)
 	}
 	result, err := (&Run{Context: ctx, Project: p, Driver: driver, Artifacts: run, Cwd: contextDir, Out: stdout,
-		Bin: env.Bin, ClientDir: filepath.Dir(exe)}).Execute(command, in)
+		Bin: env.Bin, ClientDir: filepath.Dir(exe), Listen: listen}).Execute(command, in)
 	if err != nil {
 		return false, err
 	}
