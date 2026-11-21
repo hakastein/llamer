@@ -40,28 +40,35 @@ type commands struct {
 	journal  *journal
 }
 
-// handler исполняет команду агента и пишет вызов в журнал прогона; агент получает выдачу, вымаранную записью.
-// Первый отказ в разрешении или незаписанный результат уходит в failed: агент о нём узнаёт сразу, а этап
+// handler — вызовы этапа s с его сокета: агент получает выдачу сразу, а первый срыв уходит в failed, и этап
 // срывается после агента.
-func (c *commands) handler(stage string, failed chan<- error) func(context.Context, broker.Call) broker.Reply {
-	fail := func(err error) {
-		select {
-		case failed <- err:
-		default:
-		}
-	}
+func (c *commands) handler(s *config.WorkflowStage, failed chan<- error) func(context.Context, broker.Call) broker.Reply {
 	return func(ctx context.Context, call broker.Call) broker.Reply {
-		ctx, cancel := context.WithTimeout(ctx, callTimeout)
-		defer cancel()
-		r, results, rejected := c.execute(ctx, call, fail)
-		r, err := c.journal.call(stage, call.Argv, r, rejected, results)
+		r, err := c.call(ctx, s, call)
 		if err != nil {
-			logx.Logf("[%s] вызов агента не записан в журнал: %v", stage, err)
-			fail(fmt.Errorf("вызов %s не записан в журнал: %w", call.Argv[0], err))
-			return broker.Reply{Stderr: "llamer не записал вызов в журнал, команда не засчитана; этап завершится сбоем\n", Exit: 1}
+			select {
+			case failed <- err:
+			default:
+			}
 		}
 		return r
 	}
+}
+
+// call исполняет вызов команды этапом s и пишет его в журнал прогона; выдача вымарана, как запись. Ошибка —
+// срыв этапа: отказ в разрешении или незаписанный результат; выдача при этом говорит о нём вызывающему.
+func (c *commands) call(ctx context.Context, s *config.WorkflowStage, call broker.Call) (broker.Reply, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	a := &api{workflow: c.workflow, journal: c.journal, cwd: call.Cwd}
+	r, results, rejected := c.execute(ctx, s.Allow, call, a)
+	r, err := c.journal.call(s.Name, call.Argv, r, rejected, results)
+	if err != nil {
+		logx.Logf("[%s] вызов агента не записан в журнал: %v", s.Name, err)
+		a.fail(fmt.Errorf("вызов %s не записан в журнал: %w", call.Argv[0], err))
+		return broker.Reply{Stderr: "llamer не записал вызов в журнал, команда не засчитана; этап завершится сбоем\n", Exit: 1}, a.failure
+	}
+	return r, a.failure
 }
 
 // refusal — отказ в разрешении: хост или программа не названы в workflow.
@@ -69,10 +76,16 @@ type refusal struct{ message string }
 
 func (r *refusal) Error() string { return r.message }
 
-// execute исполняет скрипт команды call; results — записанное им, у неудачного вызова не засчитывается.
-func (c *commands) execute(ctx context.Context, call broker.Call, fail func(error)) (broker.Reply, []any, bool) {
+// execute исполняет скрипт команды call модулем a; results — записанное им, у неудачного вызова не засчитывается.
+// Команда не из allow отклоняется, как неизвестная.
+func (c *commands) execute(ctx context.Context, allow []string, call broker.Call, a *api) (broker.Reply, []any, bool) {
+	if !slices.ContainsFunc(allow, func(command string) bool {
+		words := strings.Fields(command)
+		return len(words) <= len(call.Argv) && slices.Equal(words, call.Argv[:len(words)])
+	}) {
+		return refuse("команда %q этапу не доступна, его команды: %q", call.Argv[0], allow)
+	}
 	root := &cobra.Command{Use: "llamer"}
-	a := &api{workflow: c.workflow, journal: c.journal, cwd: call.Cwd, fail: fail}
 	c.workflow.Commands.AddTo(root, func(cmd *cobra.Command, command *cliche.Command, in cliche.Input) error {
 		value, err := cliche.Run(cmd.Context(), command, in, cliche.Env{Modules: map[string]any{"llamer": a.module()}})
 		if err != nil {
@@ -92,12 +105,12 @@ func (c *commands) execute(ctx context.Context, call broker.Call, fail func(erro
 	cmd.SetErr(&stderr)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.CompletionOptions.DisableDefaultCmd = true
-	err := cmd.ExecuteContext(ctx)
+	called, err := cmd.ExecuteContextC(ctx)
 	r := broker.Reply{Stdout: stdout.String(), Stderr: stderr.String()}
 	var usage *cliche.UsageError
 	switch {
 	case errors.As(err, &usage):
-		r.Stderr += usage.Error() + " — справка: " + call.Argv[0] + " --help\n"
+		r.Stderr += usage.Error() + " — справка: " + called.CommandPath() + " --help\n"
 		r.Exit = 2
 		return r, nil, true
 	case a.denied != nil:
@@ -177,14 +190,21 @@ type api struct {
 	workflow *config.Workflow
 	journal  *journal
 	cwd      string
-	fail     func(error)
 	written  []any // записанное этим вызовом
 	denied   *refusal
+	failure  error // первый срыв этапа этим вызовом
 }
 
 func (a *api) module() *cliche.Object {
 	return cliche.NewObject([]string{"record", "results", "fetch", "exec"},
 		[]any{cliche.Func(a.record), cliche.Func(a.results), cliche.Func(a.fetch), cliche.Func(a.exec)})
+}
+
+// fail — срыв этапа; запоминается первый.
+func (a *api) fail(err error) {
+	if a.failure == nil {
+		a.failure = err
+	}
 }
 
 // deny — отказ в разрешении: этап сорван, даже если скрипт поймал ошибку.

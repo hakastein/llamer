@@ -139,6 +139,14 @@
         },
         "schema": {
           "$ref": "#/$defs/text"
+        },
+        "allow": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[\\w./:@=+-]+( [\\w./:@=+-]+)*$"
+          }
         }
       }
     }

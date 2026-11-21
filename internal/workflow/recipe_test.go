@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,14 +20,31 @@ import (
 // recipe — рецепт ревью из скилла llamer.
 var recipe = filepath.Join("..", "..", "skills", "llamer", "references", "review")
 
-// Рецепт загружается как есть: шаблоны ссылаются только на прошлые волны, скиллы и команды на месте.
+// Рецепт загружается как есть: шаблоны ссылаются только на прошлые волны, скиллы и команды на месте; allow этапа —
+// команды из раздела «Your Commands» его промпта.
 func TestReviewRecipeLoads(t *testing.T) {
 	dir, err := filepath.Abs(recipe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.LoadWorkflow(dir, map[string]string{"REVIEW_BASE": "HEAD", "REVIEW_TASK": ""}); err != nil {
+	w, err := config.LoadWorkflow(dir, map[string]string{"REVIEW_BASE": "HEAD", "REVIEW_TASK": ""})
+	if err != nil {
 		t.Fatal(err)
+	}
+	listed := regexp.MustCompile("(?m)^Your commands are (.*)$")
+	quoted := regexp.MustCompile("`([^`]+)`")
+	for _, s := range slices.Concat(w.Waves...) {
+		if s.Command != nil {
+			continue
+		}
+		line := listed.FindStringSubmatch(readFile(t, filepath.Join(dir, s.Template.Name())))
+		var commands []string
+		for _, m := range quoted.FindAllStringSubmatch(line[1], -1) {
+			commands = append(commands, m[1])
+		}
+		if !slices.Equal(commands, s.Allow) {
+			t.Errorf("%s: allow %q, в промпте %q", s.Name, s.Allow, commands)
+		}
 	}
 }
 
@@ -54,7 +73,7 @@ func TestReviewRecipeAnchorsFindings(t *testing.T) {
 	catalog := cliche.Merge(cliche.Config{Sources: []cliche.Source{cliche.Dir(commandsDir)}}.Scan())
 	c := &commands{workflow: &config.Workflow{Commands: catalog, Programs: []string{"git", "cat"}}, journal: newJournal(t.TempDir())}
 	call := func(argv ...string) (string, int) {
-		r := c.handler("logic", make(chan error, 1))(context.Background(), broker.Call{Argv: argv, Cwd: tree})
+		r, _ := c.call(context.Background(), &config.WorkflowStage{Name: "logic", Allow: []string{"review"}}, broker.Call{Argv: argv, Cwd: tree})
 		return r.Stdout + r.Stderr, r.Exit
 	}
 	if out, code := call("review", "materials", "--base", "HEAD", "--task", ""); code != 0 || !strings.Contains(out, "+TWO") {
@@ -123,7 +142,8 @@ func TestReviewRecipeMarkup(t *testing.T) {
 		{"para\n    $not code", "para\n    \\$not code"},
 		{"~~~php\n$a\n~~~~\n$b", "~~~php\n$a\n~~~~\n\\$b"},
 	} {
-		r := c.handler("publish", make(chan error, 1))(context.Background(), broker.Call{Argv: []string{"probe", tc[0], path}, Cwd: source})
+		r, _ := c.call(context.Background(), &config.WorkflowStage{Name: "publish", Allow: []string{"probe"}},
+			broker.Call{Argv: []string{"probe", tc[0], path}, Cwd: source})
 		want := tc[1] + "\n" + hex.EncodeToString(sum[:]) + "_2_1\n"
 		if r.Exit != 0 || r.Stdout != want {
 			t.Errorf("%q: %d %q %s, ожидалось %q", tc[0], r.Exit, r.Stdout, r.Stderr, want)

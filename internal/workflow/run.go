@@ -214,17 +214,14 @@ func (r *Run) run(s *config.WorkflowStage, answers map[string]string, o *out, on
 func (r *Run) command(s *config.WorkflowStage) finished {
 	logx.Logf("этап «%s» пошёл: команда %s", s.Name, s.Command[0])
 	started := time.Now()
-	failed := make(chan error, 1)
-	reply := r.commands.handler(s.Name, failed)(r.Context, broker.Call{Argv: s.Command, Cwd: r.Cwd})
+	reply, err := r.commands.call(r.Context, s, broker.Call{Argv: s.Command, Cwd: r.Cwd})
 	f := finished{stage: Stage{Name: s.Name, OK: true, Answer: json.RawMessage("null"), Cost: new(float64),
 		DurationMs: time.Since(started).Milliseconds()}}
-	select {
-	case err := <-failed:
+	switch {
+	case err != nil:
 		f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: err.Error()}
-	default:
-		if reply.Exit != 0 {
-			f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: strings.TrimSpace(reply.Stderr)}
-		}
+	case reply.Exit != 0:
+		f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: strings.TrimSpace(reply.Stderr)}
 	}
 	if f.failure != nil {
 		logx.Logf("этап «%s» сорван: %s", s.Name, f.failure.Detail)
@@ -259,14 +256,14 @@ func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out, 
 	stop := func() {}
 	if r.Workflow.Commands != nil {
 		var err error
-		if stop, err = broker.Listen(socket, r.commands.handler(s.Name, failed)); err != nil {
+		if stop, err = broker.Listen(socket, r.commands.handler(s, failed)); err != nil {
 			return nil, "", err
 		}
 	}
 	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Model, s.Effort, promptPath)
 	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, onResponse)
 	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: prompt.String(), Skills: s.Skills,
-		Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
+		Allow: s.Allow, Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()
 	if err != nil {
 		telemetry.Close()

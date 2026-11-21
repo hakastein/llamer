@@ -46,8 +46,8 @@ type journalLine struct {
 	Results  []map[string]any
 }
 
-// serve — брокер команд workflow с хостами hosts и программами programs на сокете во временном каталоге.
-func serve(t *testing.T, hosts, programs []string) (socket string, failed chan error, journalOf func() []journalLine) {
+// serve — брокер команд этапа с командами allow, хостами hosts и программами programs на сокете во временном каталоге.
+func serve(t *testing.T, allow, hosts, programs []string) (socket string, failed chan error, journalOf func() []journalLine) {
 	t.Helper()
 	// Не t.TempDir(): имя теста в пути делает путь сокета длиннее лимита unix-сокета macOS (104 байта).
 	dir, err := os.MkdirTemp("", "wf")
@@ -66,7 +66,7 @@ func serve(t *testing.T, hosts, programs []string) (socket string, failed chan e
 	catalog := cliche.Merge(cliche.Config{Sources: []cliche.Source{cliche.Dir(filepath.Join(dir, "commands"))}}.Scan())
 	c := &commands{workflow: &config.Workflow{Commands: catalog, Hosts: hosts, Programs: programs}, journal: newJournal(dir)}
 	socket, failed = filepath.Join(dir, "s.sock"), make(chan error, 1)
-	stop, err := broker.Listen(socket, c.handler("writer", failed))
+	stop, err := broker.Listen(socket, c.handler(&config.WorkflowStage{Name: "writer", Allow: allow}, failed))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func call(t *testing.T, socket string, argv ...string) broker.Reply {
 }
 
 func TestCommandResultReachesJournal(t *testing.T) {
-	socket, failed, journalOf := serve(t, nil, nil)
+	socket, failed, journalOf := serve(t, []string{"note"}, nil, nil)
 	text := "строка «один»\nстрока 'два' и \"три\"\n\tконец $HOME `x`"
 	r := call(t, socket, "note", "--text", text)
 	if r.Exit != 0 || r.Stdout != "записано\n" {
@@ -119,11 +119,20 @@ func TestCommandResultReachesJournal(t *testing.T) {
 }
 
 func TestCommandReadsEarlierResults(t *testing.T) {
-	socket, _, _ := serve(t, nil, nil)
+	socket, _, _ := serve(t, []string{"note", "seen"}, nil, nil)
 	call(t, socket, "note", "--text", "первая")
 	call(t, socket, "note", "--text", "вторая")
 	if r := call(t, socket, "seen"); r.Stdout != "writer:первая,writer:вторая\n" {
 		t.Fatalf("вызов: %+v", r)
+	}
+}
+
+// Команда workflow не из allow этапа отклоняется, но этап не срывает.
+func TestCommandOutsideStageAllowRefused(t *testing.T) {
+	socket, failed, journalOf := serve(t, []string{"note"}, nil, nil)
+	r := call(t, socket, "seen")
+	if line := journalOf()[0]; r.Exit != 2 || !line.Rejected || len(failed) != 0 {
+		t.Fatalf("вызов: %+v, журнал: %+v", r, line)
 	}
 }
 
@@ -157,7 +166,7 @@ func TestCommandPermissions(t *testing.T) {
 		{"чужая программа", []string{"probe", "exec", "sh"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			socket, failed, journalOf := serve(t, []string{host}, []string{"cat"})
+			socket, failed, journalOf := serve(t, []string{"probe"}, []string{host}, []string{"cat"})
 			r := call(t, socket, c.argv...)
 			line := journalOf()[0]
 			if !c.denied {

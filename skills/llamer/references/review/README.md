@@ -61,7 +61,8 @@ In CI the tree is the merge request head, and the review publishes to it. Three 
     { "name": "materials", "command": ["review", "materials", "--base", "${REVIEW_BASE}", "--task", "${REVIEW_TASK}"] },
     [ { "name": "assess", … },
       { "name": "threads", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "medium",
-        "prompt": "prompts/threads.md", "timeout": "20m" } ],
+        "prompt": "prompts/threads.md", "timeout": "20m",
+        "allow": ["review resolve", "review list", "review diff", "review stop"] } ],
     …,
     { "name": "report", "command": ["review", "report"] },
     { "name": "publish", "command": ["gitlab", "publish", "--mr", "${REVIEW_MR}", "--token", "${GITLAB_TOKEN}"] } ] }
@@ -76,7 +77,8 @@ In CI the tree is the merge request head, and the review publishes to it. Three 
 
 ## Commands
 
-The agent sees them in `review --help`; every one checks its input and refuses with the reason.
+A stage calls only the commands in its `allow`; the agent sees their flags in `review <command> --help`. Every
+command checks its input and refuses with the reason.
 
 | Command | Writes | What it does |
 |---|---|---|

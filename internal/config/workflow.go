@@ -43,6 +43,9 @@ type WorkflowStage struct {
 	Schema        *jsonschema.Schema // nil — ответ свободным текстом
 	// Command — argv команды из `commands/` с раскрытыми `${VAR}`; nil — этап агента.
 	Command []string
+	// Allow — команды из `commands/`, которые этап может звать: у этапа агента — из workflow, у этапа-команды —
+	// его команда.
+	Allow []string
 }
 
 // Workflow — проверенный конфиг workflow: волны этапов в порядке файла и скиллы из `skills/` его каталога.
@@ -63,14 +66,28 @@ type (
 	rawWorkflow struct {
 		Readable []string
 		Commands struct{ Hosts, Programs []string }
-		// Stages — этап или волна: массив этапов.
-		Stages []json.RawMessage
+		Stages   []rawWave
 	}
 	rawWorkflowStage struct {
 		Name, Driver, Model, Effort, Prompt, Timeout, Schema string
-		Skills, Command                                      []string
+		Skills, Command, Allow                               []string
+	}
+	// rawWave — элемент stages: массив этапов или один этап — волна из него.
+	rawWave struct {
+		stages []rawWorkflowStage
+		single bool
 	}
 )
+
+func (w *rawWave) UnmarshalJSON(data []byte) error {
+	var stage rawWorkflowStage
+	// Схема уже проверена: что не разбирается этапом, — массив этапов.
+	if json.Unmarshal(data, &stage) == nil {
+		w.stages, w.single = []rawWorkflowStage{stage}, true
+		return nil
+	}
+	return json.Unmarshal(data, &w.stages)
+}
 
 // LoadWorkflow — workflow из каталога dir (путь абсолютный); `${VAR}` в argv этапов-команд раскрываются из env.
 // Шаблон этапа собирается на ответах прошлых волн: ссылка на этап своей или следующей волны или опечатка в
@@ -112,22 +129,13 @@ func LoadWorkflow(dir string, env map[string]string) (w *Workflow, err error) {
 		w.Readable = append(w.Readable, path)
 	}
 	answers := map[string]string{}
-	for i, item := range raw.Stages {
-		wave, path := []rawWorkflowStage{{}}, fmt.Sprintf("stages[%d]", i)
-		single := !bytes.HasPrefix(item, []byte("["))
-		if single {
-			err = json.Unmarshal(item, &wave[0])
-		} else {
-			err = json.Unmarshal(item, &wave)
-		}
-		if err != nil {
-			return nil, err
-		}
-		stages := make([]*WorkflowStage, len(wave))
+	for i, wave := range raw.Stages {
+		path := fmt.Sprintf("stages[%d]", i)
+		stages := make([]*WorkflowStage, len(wave.stages))
 		names := map[string]bool{}
-		for j, s := range wave {
+		for j, s := range wave.stages {
 			at := path
-			if !single {
+			if !wave.single {
 				at = fmt.Sprintf("%s[%d]", path, j)
 			}
 			if _, ok := answers[s.Name]; ok || names[s.Name] {
@@ -148,17 +156,15 @@ func LoadWorkflow(dir string, env map[string]string) (w *Workflow, err error) {
 // workflowStage — этап s по пути path в файле; answers — этапы прошлых волн.
 func (r reader) workflowStage(w *Workflow, s rawWorkflowStage, path string, answers, env map[string]string) *WorkflowStage {
 	if s.Command != nil {
-		known := w.Commands != nil && slices.ContainsFunc(w.Commands.Commands, func(c *cliche.Command) bool {
-			return len(c.Path) <= len(s.Command) && slices.Equal(c.Path, s.Command[:len(c.Path)])
-		})
-		if !known {
-			r.fail(path+".command", "в "+CommandsDir+"/ каталога workflow нет команды "+strings.Join(s.Command, " "))
-		}
+		allow := []string{r.command(w, s.Command, path+".command")}
 		argv := make([]string, len(s.Command))
 		for i, arg := range s.Command {
 			argv[i] = r.expandVars(arg, env, fmt.Sprintf("%s.command[%d]", path, i))
 		}
-		return &WorkflowStage{Name: s.Name, Command: argv}
+		return &WorkflowStage{Name: s.Name, Command: argv, Allow: allow}
+	}
+	for i, c := range s.Allow {
+		r.command(w, strings.Fields(c), fmt.Sprintf("%s.allow[%d]", path, i))
 	}
 	text, err := os.ReadFile(filepath.Join(w.Dir, s.Prompt))
 	if err != nil {
@@ -182,7 +188,7 @@ func (r reader) workflowStage(w *Workflow, s rawWorkflowStage, path string, answ
 		r.fail(path+".skills", fmt.Sprintf("в %s нет скиллов %v", filepath.Join(w.Dir, "skills"), missing))
 	}
 	stage := &WorkflowStage{Name: s.Name, Driver: s.Driver, Model: s.Model, Effort: s.Effort, Template: tmpl,
-		Skills: s.Skills, Timeout: timeout}
+		Skills: s.Skills, Timeout: timeout, Allow: s.Allow}
 	if s.Schema != "" {
 		stage.SchemaPath = filepath.Join(w.Dir, s.Schema)
 		if stage.Schema, err = jsonschema.NewCompiler().Compile(stage.SchemaPath); err != nil {
@@ -190,6 +196,20 @@ func (r reader) workflowStage(w *Workflow, s rawWorkflowStage, path string, answ
 		}
 	}
 	return stage
+}
+
+// command — команда из `commands/` каталога workflow, которой начинается argv; нет такой — ошибка по пути path.
+func (r reader) command(w *Workflow, argv []string, path string) string {
+	i := -1
+	if w.Commands != nil {
+		i = slices.IndexFunc(w.Commands.Commands, func(c *cliche.Command) bool {
+			return len(c.Path) <= len(argv) && slices.Equal(c.Path, argv[:len(c.Path)])
+		})
+	}
+	if i < 0 {
+		r.fail(path, "в "+CommandsDir+"/ каталога workflow нет команды "+strings.Join(argv, " "))
+	}
+	return strings.Join(w.Commands.Commands[i].Path, " ")
 }
 
 // CommandsDir — каталог cliche-скриптов команд агента в каталоге workflow.

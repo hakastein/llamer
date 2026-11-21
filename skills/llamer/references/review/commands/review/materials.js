@@ -86,6 +86,6 @@ inside the text is closed as \`values['\\''severity'\\'']\`. Write each call as 
 Writing to disk is forbidden — no editor tool, no \`>\` redirect, no temporary file for a long value: the value goes into
 the call itself.
 
-A REFUSAL DOES NOT CANCEL A FINDING, and a refusal says what to fix. The commands and their flags are in
-\`review --help\` and \`review <command> --help\`.`;
+A REFUSAL DOES NOT CANCEL A FINDING, and a refusal says what to fix. The flags of a command are in
+\`review <command> --help\`.`;
 }

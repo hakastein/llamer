@@ -35,13 +35,15 @@ Stdout is JSON lines: stage events, and the result as the last line; the log goe
     [ { "name": "writer", "driver": "codex", "model": "gpt-6.1-terra", "effort": "low", "prompt": "prompts/writer.md",
         "skills": ["style"], "schema": "answer.schema.json", "timeout": "10m" },
       { "name": "critic", "driver": "claude", "model": "claude-sonnet-5-5", "effort": "low",
-        "prompt": "prompts/critic.md", "timeout": "10m" } ],
+        "prompt": "prompts/critic.md", "timeout": "10m", "allow": ["notes facts"] } ],
     { "name": "post", "command": ["notes", "post"] } ] }
 ```
 
 - An agent stage: `name` (`[a-z][a-z0-9_]*`), `driver`, `model`, `effort`, `prompt`, `timeout`; optional `skills`
-  from `skills/` and `schema` — a JSON Schema the answer must match (codex wants every object strict:
-  `additionalProperties: false`, every property in `required`).
+  from `skills/`, `schema` — a JSON Schema the answer must match (codex wants every object strict:
+  `additionalProperties: false`, every property in `required`), and `allow` — the commands from `commands/` the
+  stage may call, as word prefixes (`"notes facts"`). A stage without `allow` calls no command; a call outside it is
+  refused, so name every command the prompt tells the agent to call.
 - A command stage: `name` and `command` — the argv of a command from `commands/`. `${VAR}` in it comes from the
   environment of `llamer`: this is how run inputs and tokens reach a workflow — the agent never sees them. Its stdout
   is the stage's answer; a non-zero exit fails the run.
