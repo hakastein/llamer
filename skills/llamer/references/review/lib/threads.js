@@ -44,3 +44,7 @@ exports.format = (threads) => threads.length === 0 ? "" : rules + "\n\n" + threa
 
 // open — наши открытые треды: их сверяет этап тредов.
 exports.open = (threads) => threads.filter((t) => t.ours && !t.resolved);
+
+// openList — наши открытые треды для задания этапа тредов.
+exports.openList = (threads) => exports.open(threads).map((t) => `- id ${t.id} — ${t.file}:${t.line}\n  ${t.text}` +
+  (t.reply ? "\n  author's reply: " + t.reply : "")).join("\n") || "- there are no open threads of ours";

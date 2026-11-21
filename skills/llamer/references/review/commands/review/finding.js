@@ -1,7 +1,7 @@
 const llamer = require("llamer");
-const repo = require("../lib/repo.js");
-const {taskDiff} = require("../lib/task.js");
-const {state, at} = require("../lib/state.js");
+const repo = require("../../lib/repo.js");
+const {taskDiff} = require("../../lib/task.js");
+const {state, at} = require("../../lib/state.js");
 
 exports.definition = {
   short: "Record a remark on the change, anchored to diff lines",
@@ -56,7 +56,7 @@ exports.command = (flags) => {
       "Если находка очевидна по одной строке, назови эту строку.");
   }
   const r = repo.open();
-  assertAnchored(f, taskDiff(r, state().materials.base).parsed);
+  assertAnchored(f, taskDiff(r, state(llamer.data).materials.base).parsed);
   if (f.suggestion !== null) {
     assertSuggestionApplies(f, r.lines(f.file) ?? []);
   }

@@ -14,7 +14,7 @@ exports.open = (url, token, dryRun) => {
       "\nожидается https://gitlab.example.com/group/project/-/merge_requests/123");
   }
   if (!token) {
-    throw new Error("нужен --token: токен GitLab с правом api");
+    throw new Error("нужен токен GitLab с правом api");
   }
   const base = m[1] + "/api/v4/projects/" + encodeURIComponent(m[2]) + "/merge_requests/" + m[3];
   const planned = [];
@@ -31,6 +31,7 @@ exports.open = (url, token, dryRun) => {
     return r.body ? JSON.parse(r.body) : null;
   };
   return {
+    dryRun,
     planned,
     info: () => request("GET", ""),
     // version — последняя версия диффа: позиции тредов строятся от неё.

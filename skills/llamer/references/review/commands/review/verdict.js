@@ -1,5 +1,5 @@
 const llamer = require("llamer");
-const {state} = require("../lib/state.js");
+const {state} = require("../../lib/state.js");
 
 exports.definition = {
   short: "Pass a verdict on a recorded finding: stands or refuted",
@@ -18,7 +18,7 @@ exports.command = (flags) => {
   if (!flags.refuted || !flags.reason) {
     throw new Error("нужны --id, --refuted и --reason");
   }
-  const f = state().byId(flags.id);
+  const f = state(llamer.data).byId(flags.id);
   if (!f) {
     throw new Error(`находки с номером ${flags.id} нет; список — review list`);
   }

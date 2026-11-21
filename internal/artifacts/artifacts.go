@@ -31,14 +31,13 @@ type Run struct {
 	Path string
 }
 
-// Open — каталог прогона `<дата>_<время>`, занятое имя — с суффиксом `-2`,
+// Open — каталог прогона `<дата>_<время>` в base, занятое имя — с суффиксом `-2`,
 // `-3`…: каталог создаётся атомарно, и два прогона в одну секунду не делят
-// журналы. `.gitignore` со звёздочкой внутри каталога артефактов: снимок
+// журналы. `.gitignore` со звёздочкой внутри base: снимок
 // рабочего дерева (`--head worktree`) и поиск по коду иначе захватили бы
 // артефакты прошлых прогонов.
-func Open(root string, startedAt time.Time) (*Run, error) {
+func Open(base string, startedAt time.Time) (*Run, error) {
 	stamp := startedAt.UTC().Format("2006-01-02_15-04-05")
-	base := filepath.Join(root, Dir)
 	if err := os.MkdirAll(base, 0o777); err != nil {
 		return nil, err
 	}

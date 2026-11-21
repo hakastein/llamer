@@ -1,15 +1,15 @@
-// Состояние ревью — свёртка записей журнала прогона по порядку записи. Номер находки — её место среди
-// находок журнала: он выдаётся этапам и не меняется.
+// Состояние ревью — свёртка записей [{stage, value}] по порядку: их ведёт workflow — свои и записанное командами
+// этапов, — а командам этапа отдаёт в llamer.data. Номер находки — её место среди находок записей: он выдаётся
+// этапам и не меняется.
 "use strict";
-const llamer = require("llamer");
 
 // at — место находки: «путь:строка-строка».
 exports.at = (f) => f.file + ":" + f.line + "-" + f.lineEnd;
 
-exports.state = () => {
+exports.state = (records) => {
   const s = {materials: null, threads: [], assessment: null, findings: [], summaries: [], resolved: [], stops: []};
   const byId = (id) => s.findings[id - 1];
-  for (const {stage, value} of llamer.results()) {
+  for (const {stage, value} of records) {
     switch (value.type) {
       case "materials":
         s.materials = value;
@@ -56,7 +56,7 @@ exports.state = () => {
     }
   }
   if (!s.materials) {
-    throw new Error("в журнале прогона нет материалов: до этапов ревью должен пройти этап-команда `review materials`");
+    throw new Error("в записях ревью нет материалов: их первой записью кладёт workflow");
   }
   s.byId = byId;
   s.surviving = () => s.findings.filter((f) => !f.refuted && !f.duplicateOf);

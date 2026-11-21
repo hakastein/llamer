@@ -39,7 +39,7 @@ const Help = `llamer — агентное ревью изменений: оце�
   --dry-run                   ничего не публиковать: отчёт вместо --publish (только с --mr)
   --since-last                только изменения после прошлого прогона LLaMer в MR (только с --mr)
 
-Workflow агента: llamer run <каталог workflow> — справка: llamer run --help
+Workflow агента: llamer run <workflow> — справка: llamer run --help
 
 Прочее:
   --config <файл>             конфиг вместо .llamer.json в корне репозитория; .llamer.local.json рядом с ним накладывается

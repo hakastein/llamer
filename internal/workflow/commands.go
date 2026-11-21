@@ -22,7 +22,6 @@ import (
 	"github.com/hakastein/cliche"
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/broker"
-	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/redact"
 	"github.com/spf13/cobra"
@@ -34,15 +33,22 @@ const callTimeout = 10 * time.Minute
 // JournalFile — журнал вызовов команд в каталоге прогона: строка JSON на вызов.
 const JournalFile = "journal.jsonl"
 
-// commands — команды агента прогона: cliche-скрипты workflow, исполняемые на стороне llamer.
+// commands — команды агента прогона: cliche-скрипты `commands/`, исполняемые на стороне llamer.
 type commands struct {
-	workflow *config.Workflow
-	journal  *journal
+	catalog *cliche.Catalog
+	journal *journal
+}
+
+// has — команда, которой начинаются слова words.
+func (c *commands) has(words []string) bool {
+	return slices.ContainsFunc(c.catalog.Commands, func(cmd *cliche.Command) bool {
+		return len(cmd.Path) <= len(words) && slices.Equal(cmd.Path, words[:len(cmd.Path)])
+	})
 }
 
 // handler — вызовы этапа s с его сокета: агент получает выдачу сразу, а первый срыв уходит в failed, и этап
 // срывается после агента.
-func (c *commands) handler(s *config.WorkflowStage, failed chan<- error) func(context.Context, broker.Call) broker.Reply {
+func (c *commands) handler(s *stage, failed chan<- error) func(context.Context, broker.Call) broker.Reply {
 	return func(ctx context.Context, call broker.Call) broker.Reply {
 		r, err := c.call(ctx, s, call)
 		if err != nil {
@@ -57,10 +63,10 @@ func (c *commands) handler(s *config.WorkflowStage, failed chan<- error) func(co
 
 // call исполняет вызов команды этапом s и пишет его в журнал прогона; выдача вымарана, как запись. Ошибка —
 // срыв этапа: отказ в разрешении или незаписанный результат; выдача при этом говорит о нём вызывающему.
-func (c *commands) call(ctx context.Context, s *config.WorkflowStage, call broker.Call) (broker.Reply, error) {
+func (c *commands) call(ctx context.Context, s *stage, call broker.Call) (broker.Reply, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	a := &api{workflow: c.workflow, journal: c.journal, cwd: call.Cwd}
+	a := &api{stage: s, cwd: call.Cwd}
 	r, results, rejected := c.execute(ctx, s.Allow, call, a)
 	r, err := c.journal.call(s.Name, call.Argv, r, rejected, results)
 	if err != nil {
@@ -71,7 +77,7 @@ func (c *commands) call(ctx context.Context, s *config.WorkflowStage, call broke
 	return r, a.failure
 }
 
-// refusal — отказ в разрешении: хост или программа не названы в workflow.
+// refusal — отказ в разрешении: хост или программа не названы в спеке этапа.
 type refusal struct{ message string }
 
 func (r *refusal) Error() string { return r.message }
@@ -86,7 +92,7 @@ func (c *commands) execute(ctx context.Context, allow []string, call broker.Call
 		return refuse("команда %q этапу не доступна, его команды: %q", call.Argv[0], allow)
 	}
 	root := &cobra.Command{Use: "llamer"}
-	c.workflow.Commands.AddTo(root, func(cmd *cobra.Command, command *cliche.Command, in cliche.Input) error {
+	c.catalog.AddTo(root, func(cmd *cobra.Command, command *cliche.Command, in cliche.Input) error {
 		value, err := cliche.Run(cmd.Context(), command, in, cliche.Env{Modules: map[string]any{"llamer": a.module()}})
 		if err != nil {
 			return err
@@ -185,19 +191,19 @@ func plainOf(value any) (any, error) {
 	return nil, fmt.Errorf("значение %T в JSON не записывается", value)
 }
 
-// api — модуль `llamer` скриптов команд: журнал результатов, HTTP к разрешённым хостам, разрешённые программы.
+// api — модуль `llamer` скриптов команд: данные этапа, журнал результатов, HTTP к хостам и программы из спека этапа.
 type api struct {
-	workflow *config.Workflow
-	journal  *journal
-	cwd      string
-	written  []any // записанное этим вызовом
-	denied   *refusal
-	failure  error // первый срыв этапа этим вызовом
+	stage   *stage
+	cwd     string
+	written []any // записанное этим вызовом
+	denied  *refusal
+	failure error // первый срыв этапа этим вызовом
 }
 
 func (a *api) module() *cliche.Object {
-	return cliche.NewObject([]string{"record", "results", "fetch", "exec"},
-		[]any{cliche.Func(a.record), cliche.Func(a.results), cliche.Func(a.fetch), cliche.Func(a.exec)})
+	return cliche.NewObject([]string{"data", "record", "fetch", "exec"}, []any{bridged(a.stage.Data), cliche.Func(a.record),
+		cliche.Func(func(ctx context.Context, args ...any) (any, error) { return fetch(ctx, args, a.allowed) }),
+		cliche.Func(func(ctx context.Context, args ...any) (any, error) { return run(ctx, a.cwd, args, a.program) })})
 }
 
 // fail — срыв этапа; запоминается первый.
@@ -229,17 +235,7 @@ func (a *api) record(_ context.Context, args ...any) (any, error) {
 	return cliche.Undefined{}, nil
 }
 
-// results() → [{stage, value}]: записанное в журнал прогона до этого вызова, по порядку записи.
-func (a *api) results(context.Context, ...any) (any, error) {
-	recorded := a.journal.recorded()
-	out := make([]any, len(recorded))
-	for i, r := range recorded {
-		out[i] = cliche.NewObject([]string{"stage", "value"}, []any{r.stage, bridged(r.value)})
-	}
-	return out, nil
-}
-
-// bridged — значение журнала в значении моста cliche: объект — с ключами по алфавиту, как в JSON журнала.
+// bridged — значение JSON в значении моста cliche: объект — с ключами по алфавиту, как в JSON журнала.
 func bridged(value any) any {
 	switch v := value.(type) {
 	case []any:
@@ -289,17 +285,26 @@ func optionsOf(args []any, at int) (cliche.Map, error) {
 	return options, nil
 }
 
-// allowed — адрес на разрешённом хосте: http или https, без учётных данных, хост или хост:порт назван в workflow.
+// allowed — адрес на разрешённом хосте: http или https, без учётных данных, хост или хост:порт назван в fetch этапа.
 func (a *api) allowed(u *url.URL) error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.User != nil ||
-		!(slices.Contains(a.workflow.Hosts, u.Host) || slices.Contains(a.workflow.Hosts, u.Hostname())) {
-		return a.deny("хост %s не разрешён командам workflow (commands.hosts)", u.Redacted())
+		!(slices.Contains(a.stage.Hosts, u.Host) || slices.Contains(a.stage.Hosts, u.Hostname())) {
+		return a.deny("хост %s не разрешён командам этапа (fetch)", u.Redacted())
 	}
 	return nil
 }
 
-// fetch(url, {method, headers, body}) → {status, body}: HTTP только к хостам commands.hosts, переадресация — тоже.
-func (a *api) fetch(ctx context.Context, args ...any) (any, error) {
+// program — программа названа в exec этапа.
+func (a *api) program(name string) error {
+	if !slices.Contains(a.stage.Programs, name) {
+		return a.deny("программа %s не разрешена командам этапа (exec)", name)
+	}
+	return nil
+}
+
+// fetch(url, {method, headers, body}) → {status, body}: HTTP к адресам, которые пропускает allowed, переадресация —
+// тоже.
+func fetch(ctx context.Context, args []any, allowed func(*url.URL) error) (any, error) {
 	address, ok := firstString(args)
 	if !ok {
 		return nil, errors.New("fetch(url, options) — адрес строкой")
@@ -308,7 +313,7 @@ func (a *api) fetch(ctx context.Context, args ...any) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("адрес не разобран: %w", err)
 	}
-	if err := a.allowed(u); err != nil {
+	if err := allowed(u); err != nil {
 		return nil, err
 	}
 	options, err := optionsOf(args, 1)
@@ -348,7 +353,7 @@ func (a *api) fetch(ctx context.Context, args ...any) (any, error) {
 		if len(via) >= 10 {
 			return errors.New("больше 10 переадресаций")
 		}
-		return a.allowed(next.URL)
+		return allowed(next.URL)
 	}}
 	resp, err := client.Do(req)
 	if denied := (*refusal)(nil); errors.As(err, &denied) {
@@ -376,14 +381,14 @@ func firstString(args []any) (string, bool) {
 // programEnv — окружение программы по белому списку: в окружении llamer лежат токены.
 var programEnv = []string{"PATH", "HOME", "LANG"}
 
-// exec(program, [args], {stdin}) → {stdout, stderr, exit}: только программы commands.programs, в каталоге вызова агента.
-func (a *api) exec(ctx context.Context, args ...any) (any, error) {
+// run — exec(program, [args], {stdin}) → {stdout, stderr, exit}: программа, которую пропускает allowed, в каталоге cwd.
+func run(ctx context.Context, cwd string, args []any, allowed func(string) error) (any, error) {
 	program, ok := firstString(args)
 	if !ok {
 		return nil, errors.New("exec(program, args, options) — программа строкой")
 	}
-	if !slices.Contains(a.workflow.Programs, program) {
-		return nil, a.deny("программа %s не разрешена командам workflow (commands.programs)", program)
+	if err := allowed(program); err != nil {
+		return nil, err
 	}
 	var argv []string
 	if len(args) > 1 {
@@ -411,7 +416,7 @@ func (a *api) exec(ctx context.Context, args ...any) (any, error) {
 	}
 	cmd := exec.CommandContext(ctx, program, argv...)
 	agent.Group(cmd)
-	cmd.Dir = a.cwd
+	cmd.Dir = cwd
 	for _, k := range programEnv {
 		if v, ok := os.LookupEnv(k); ok {
 			cmd.Env = append(cmd.Env, k+"="+v)
@@ -442,11 +447,17 @@ type recorded struct {
 	value any
 }
 
-// recorded — записанные результаты по порядку записи.
-func (j *journal) recorded() []recorded {
+// recorded — записанное этапом stage по порядку записи.
+func (j *journal) recorded(stage string) []any {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return slices.Clone(j.results)
+	var out []any
+	for _, r := range j.results {
+		if r.stage == stage {
+			out = append(out, r.value)
+		}
+	}
+	return out
 }
 
 func newJournal(runPath string) *journal { return &journal{path: filepath.Join(runPath, JournalFile)} }

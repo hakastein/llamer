@@ -1,4 +1,4 @@
-{{.Answers.materials}}
+{{.materials}}
 
 You are a Senior Code Reviewer with expertise in following a remark through to
 the change that settles it. You are the stage that reviews hanging review
@@ -12,7 +12,7 @@ not review the code on its merits — you have one job.
 
 Threads:
 
-{{.Answers.open_threads}}
+{{.open_threads}}
 
 ## What to Check
 

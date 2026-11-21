@@ -1,22 +1,20 @@
-// Package workflow — прогон workflow: этапы по порядку конфига, ответ этапа
-// доступен шаблонам следующих, события и результат — строками JSON в вывод.
+// Package workflow — прогон workflow: cliche-скрипт из `workflows/` каталога llamer зовёт этапы агента через модуль
+// `llamer` и получает их ответы значениями; события и результат — строками JSON в вывод.
 package workflow
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/hakastein/cliche"
 	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/broker"
-	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/logx"
@@ -26,20 +24,28 @@ import (
 
 // Run — прогон workflow.
 type Run struct {
-	Context   context.Context
-	Workflow  *config.Workflow
-	Drivers   map[string]drivers.Driver
+	Context context.Context
+	Project *Project
+	// Driver — драйвер по имени; готовит его к первому этапу на нём.
+	Driver    func(name string) (drivers.Driver, error)
 	Artifacts *artifacts.Run
-	Cwd       string    // каталог контекста: рабочий каталог агента
+	Cwd       string    // каталог контекста: рабочий каталог агента и программ workflow
 	Out       io.Writer // события и результат строками JSON
 	// Bin — каталог команд этапа: обёртки клиента команд и сокеты этапов; ClientDir — каталог бинаря llamer.
 	Bin, ClientDir string
-	commands       *commands
+
+	out      *out
+	commands *commands
+	mu       sync.Mutex
+	names    map[string]bool // имена этапов, уже вызванных скриптом
+	result   *Result
+	records  []*cost.Stage
+	fatal    error // ошибка, после которой прогон не выдаёт результата
 }
 
-// Failure — этап, сорвавший прогон.
+// Failure — то, что сорвало прогон: этап или скрипт.
 type Failure struct {
-	Stage  string `json:"stage"`
+	Stage  string `json:"stage"` // пусто — ошибка скрипта вне этапа
 	Reason string `json:"reason"`
 	Detail string `json:"detail,omitempty"`
 }
@@ -47,12 +53,12 @@ type Failure struct {
 // Stage — итог этапа: ответ и расход.
 type Stage struct {
 	Name          string          `json:"name"`
-	Driver        string          `json:"driver,omitempty"` // у этапа-команды драйвера, модели и усилия нет
-	Model         string          `json:"model,omitempty"`
-	Effort        string          `json:"effort,omitempty"`
+	Driver        string          `json:"driver"`
+	Model         string          `json:"model"`
+	Effort        string          `json:"effort"`
 	OK            bool            `json:"ok"`
 	Answer        json.RawMessage `json:"answer"` // JSON по схеме этапа, строка без схемы, null у сорванного
-	Cost          *float64        `json:"cost"`   // null — драйвер цены не назвал, у этапа-команды — 0
+	Cost          *float64        `json:"cost"`   // null — драйвер цены не назвал
 	Tokens        int64           `json:"tokens"`
 	ContextTokens int64           `json:"contextTokens"`
 	Turns         int             `json:"turns"`
@@ -67,6 +73,8 @@ type Result struct {
 	Failure *Failure     `json:"failure"`
 	Stages  []Stage      `json:"stages"`
 	Cost    cost.Summary `json:"cost"`
+	// Value — что вернул скрипт; null — у сорванного прогона.
+	Value json.RawMessage `json:"value"`
 }
 
 // out — вывод прогона. Вымарывание здесь, в одной точке: в строку попадают
@@ -106,163 +114,126 @@ func (s *stream) Write(e *agent.Event) {
 	s.out.emit(map[string]any{"type": "event", "stage": s.stage, "event": e})
 }
 
-// Execute — волны по порядку до первой с сорванным этапом. Прерванный прогон
-// результата не выдаёт: возвращается ошибка контекста.
-func (r *Run) Execute() (*Result, error) {
-	o := &out{w: r.Out}
-	r.commands = &commands{workflow: r.Workflow, journal: newJournal(r.Artifacts.Path)}
-	result := &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}}
-	answers := map[string]string{}
-	var records []*cost.Stage
-	for _, wave := range r.Workflow.Waves {
-		done, err := r.wave(wave, answers, o)
-		if err != nil {
-			return nil, err
-		}
-		if err := r.Context.Err(); err != nil {
-			return nil, err
-		}
-		for _, f := range done {
-			if f.record != nil {
-				records = append(records, f.record)
-			}
-			result.Stages = append(result.Stages, f.stage)
-			if f.failure != nil && result.Failure == nil {
-				result.OK, result.Failure = false, f.failure
-			}
-		}
-		if !result.OK {
-			break
-		}
-		for i, s := range wave {
-			answers[s.Name] = done[i].answer
-		}
+// Execute — скрипт workflow с разобранным вызовом in. Прерванный прогон результата не выдаёт: возвращается
+// ошибка контекста.
+func (r *Run) Execute(workflow *cliche.Command, in cliche.Input) (*Result, error) {
+	r.out = &out{w: r.Out}
+	r.commands = &commands{catalog: r.Project.Commands, journal: newJournal(r.Artifacts.Path)}
+	r.names = map[string]bool{}
+	r.result = &Result{Type: "result", OK: true, Run: r.Artifacts.Path, Stages: []Stage{}, Value: json.RawMessage("null")}
+	value, err := cliche.Run(r.Context, workflow, in, cliche.Env{Modules: map[string]any{"llamer": r.module()}})
+	if r.fatal != nil {
+		return nil, r.fatal
 	}
-	result.Cost = cost.Summarize(records)
-	cost.Report(r.Artifacts.Path, records, logx.SinceStart())
+	if err := r.Context.Err(); err != nil {
+		return nil, err
+	}
+	if err == nil && r.result.OK {
+		r.result.Value, err = valueJSON(value)
+	}
+	if err != nil {
+		logx.Logf("скрипт workflow сорван: %v", err)
+		r.fail(&Failure{Reason: "script", Detail: err.Error()})
+	}
+	r.result.Cost = cost.Summarize(r.records)
+	cost.Report(r.Artifacts.Path, r.records, logx.SinceStart())
 	// Результат в выводе — только записанный: незаписанный срывает прогон.
-	text := line(result)
+	text := line(r.result)
 	if _, err := r.Artifacts.SaveText("result.json", text); err != nil {
 		return nil, err
 	}
-	o.write(text)
-	return result, nil
+	r.out.write(text)
+	return r.result, nil
 }
 
-// finished — итог этапа: строка результата, ответ для заданий следующих волн, запись расхода агента
-// (nil у этапа-команды) и срыв (nil у прошедшего).
-type finished struct {
-	stage   Stage
-	answer  string
-	record  *cost.Stage
-	failure *Failure
-}
-
-// wave — этапы волны одновременно. Первый ведёт, остальные стартуют с началом его ответа: общую часть
-// заданий он к этому времени записал в кэш промпта, и они читают её оттуда, а не пишут каждый сам.
-// Ждать приходится секунды.
-func (r *Run) wave(stages []*config.WorkflowStage, answers map[string]string, o *out) ([]finished, error) {
-	done := make([]finished, len(stages))
-	errs := make([]error, len(stages))
-	responding := make(chan struct{})
-	lead := sync.OnceFunc(func() { close(responding) })
-	var wg sync.WaitGroup
-	for i, s := range stages {
-		onResponse := func() {}
-		if i == 0 {
-			onResponse = lead
-		} else if i == 1 {
-			<-responding
-		}
-		wg.Go(func() {
-			// Ведущий, так и не услышавший модель (сорвался, этап-команда), волну не держит.
-			defer onResponse()
-			done[i], errs[i] = r.run(s, answers, o, onResponse)
-		})
-	}
-	wg.Wait()
-	return done, errors.Join(errs...)
-}
-
-// run — этап агента или этап-команда.
-func (r *Run) run(s *config.WorkflowStage, answers map[string]string, o *out, onResponse func()) (finished, error) {
-	if s.Command != nil {
-		return r.command(s), nil
-	}
-	record, detail, err := r.stage(s, answers, o, onResponse)
+// valueJSON — значение, которое вернул скрипт, в JSON.
+func valueJSON(value any) (json.RawMessage, error) {
+	plain, err := plainOf(value)
 	if err != nil {
-		return finished{}, err
+		return nil, fmt.Errorf("скрипт вернул значение, которое не записать в JSON: %w", err)
 	}
-	out := record.Outcome
-	f := finished{record: record, stage: Stage{Name: s.Name, Driver: s.Driver, Model: out.Model, Effort: out.Effort, OK: record.OK,
-		Answer: json.RawMessage("null"), Cost: out.Cost, Tokens: out.Tokens(), ContextTokens: out.ContextTokens, Turns: out.Turns,
-		DurationMs: out.DurationMs}}
+	return json.Marshal(plain)
+}
+
+// fail — срыв прогона; запоминается первый.
+func (r *Run) fail(f *Failure) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.result.OK {
+		r.result.OK, r.result.Failure = false, f
+	}
+}
+
+// failure — срыв прогона; nil — прогон идёт.
+func (r *Run) failure() *Failure {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.result.Failure
+}
+
+// launch — этап s на его драйвере: ответ — значение JSON при схеме, иначе строка. Ошибка — этап сорван, и прогон
+// неуспешен.
+func (r *Run) launch(s *stage) (any, error) {
+	if f := r.failure(); f != nil {
+		return nil, fmt.Errorf("этап %s не запущен: прогон уже сорван (%s %s)", s.Name, f.Stage, f.Reason)
+	}
+	record, detail, err := r.stage(s)
+	if err != nil {
+		r.mu.Lock()
+		r.fatal = err
+		r.mu.Unlock()
+		return nil, err
+	}
+	o := record.Outcome
+	summary := Stage{Name: s.Name, Driver: s.Driver, Model: o.Model, Effort: o.Effort, OK: record.OK,
+		Answer: json.RawMessage("null"), Cost: o.Cost, Tokens: o.Tokens(), ContextTokens: o.ContextTokens, Turns: o.Turns,
+		DurationMs: o.DurationMs}
+	var answer any
+	if record.OK {
+		answer = o.Result.Text
+		summary.Answer, _ = json.Marshal(o.Result.Text) // строка кодируется всегда
+		if s.Schema != nil {
+			summary.Answer = json.RawMessage(o.Result.Text)
+			json.Unmarshal(summary.Answer, &answer) // ответ уже сверен со схемой
+		}
+	}
+	r.mu.Lock()
+	r.records = append(r.records, record)
+	r.result.Stages = append(r.result.Stages, summary)
+	r.mu.Unlock()
 	if !record.OK {
-		f.failure = &Failure{Stage: s.Name, Reason: record.Reason, Detail: detail}
-		return f, nil
+		r.fail(&Failure{Stage: s.Name, Reason: record.Reason, Detail: detail})
+		return nil, fmt.Errorf("этап %s сорван (%s): %s", s.Name, record.Reason, detail)
 	}
-	f.answer = out.Result.Text
-	f.stage.Answer = json.RawMessage(out.Result.Text)
-	if s.Schema == nil {
-		f.stage.Answer, _ = json.Marshal(out.Result.Text) // строка кодируется всегда
-	}
-	return f, nil
+	return answer, nil
 }
 
-// command — этап-команда: команда workflow на стороне llamer, без агента, с записью в журнал прогона.
-// Ответ — её stdout; отказ в разрешении, незаписанный результат или ненулевой код срывают этап.
-func (r *Run) command(s *config.WorkflowStage) finished {
-	logx.Logf("этап «%s» пошёл: команда %s", s.Name, s.Command[0])
-	started := time.Now()
-	reply, err := r.commands.call(r.Context, s, broker.Call{Argv: s.Command, Cwd: r.Cwd})
-	f := finished{stage: Stage{Name: s.Name, OK: true, Answer: json.RawMessage("null"), Cost: new(float64),
-		DurationMs: time.Since(started).Milliseconds()}}
-	switch {
-	case err != nil:
-		f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: err.Error()}
-	case reply.Exit != 0:
-		f.failure = &Failure{Stage: s.Name, Reason: "command", Detail: strings.TrimSpace(reply.Stderr)}
-	}
-	if f.failure != nil {
-		logx.Logf("этап «%s» сорван: %s", s.Name, f.failure.Detail)
-		f.stage.OK = false
-		return f
-	}
-	f.answer = reply.Stdout
-	f.stage.Answer, _ = json.Marshal(reply.Stdout) // строка кодируется всегда
-	return f
-}
-
-// stage — этап агента на своём драйвере; detail — подробность срыва; onResponse — начало ответа модели.
-func (r *Run) stage(s *config.WorkflowStage, answers map[string]string, o *out, onResponse func()) (*cost.Stage, string, error) {
-	var prompt strings.Builder
-	if err := s.Template.Execute(&prompt, config.PromptData{Answers: answers}); err != nil {
+// stage — этап агента на своём драйвере; detail — подробность срыва.
+func (r *Run) stage(s *stage) (*cost.Stage, string, error) {
+	d, err := r.Driver(s.Driver)
+	if err != nil {
 		return nil, "", err
 	}
-	promptPath := r.Artifacts.SavePrompt(s.Name, prompt.String())
-	d := r.Drivers[s.Driver]
-	sandbox := &drivers.Sandbox{Readable: r.Workflow.Readable}
+	promptPath := r.Artifacts.SavePrompt(s.Name, s.Prompt)
+	sandbox := &drivers.Sandbox{Readable: s.Readable}
 	var env []string
-	// shortcut: сокет в каталоге команд этапа — путь до него не длиннее 107 байт только при коротком TMPDIR;
-	// переносить, если упрётся.
-	socket := filepath.Join(r.Bin, s.Name+".sock")
-	if r.Workflow.Commands != nil {
-		// Клиенту в песочнице нужны его обёртка с сокетом и сам бинарь llamer.
-		sandbox.Readable = slices.Concat(r.Workflow.Readable, []string{r.Bin, r.ClientDir})
-		env = []string{broker.SocketEnv + "=" + socket}
-	}
 	// Первый отказ команды; этап срывается им после агента.
 	failed := make(chan error, 1)
 	stop := func() {}
-	if r.Workflow.Commands != nil {
-		var err error
+	if len(s.Allow) > 0 {
+		// shortcut: сокет в каталоге команд этапа — путь до него не длиннее 107 байт только при коротком TMPDIR;
+		// переносить, если упрётся.
+		socket := filepath.Join(r.Bin, s.Name+".sock")
+		// Клиенту в песочнице нужны его обёртка с сокетом и сам бинарь llamer.
+		sandbox.Readable = append(append([]string{}, s.Readable...), r.Bin, r.ClientDir)
+		env = []string{broker.SocketEnv + "=" + socket}
 		if stop, err = broker.Listen(socket, r.commands.handler(s, failed)); err != nil {
 			return nil, "", err
 		}
 	}
 	logx.Logf("этап «%s» пошёл: %s (%s/%s) → %s", s.Name, s.Driver, s.Model, s.Effort, promptPath)
-	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), o, s.Name}, onResponse)
-	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: prompt.String(), Skills: s.Skills,
+	telemetry := agent.NewTelemetry(s.Name, nil, s.Skills, r.Cwd, &stream{r.Artifacts.OpenStream(s.Name), r.out, s.Name}, func() {})
+	outcome, err := d.Run(r.Context, drivers.Args{Name: s.Name, Model: s.Model, Effort: s.Effort, Prompt: s.Prompt, Skills: s.Skills,
 		Allow: s.Allow, Cwd: r.Cwd, Schema: s.SchemaPath, Env: env, Sandbox: sandbox, Timeout: s.Timeout}, telemetry)
 	stop()
 	if err != nil {

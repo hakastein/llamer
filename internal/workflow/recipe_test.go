@@ -4,46 +4,102 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hakastein/cliche"
+	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/broker"
-	"github.com/hakastein/llamer/internal/config"
+	"github.com/hakastein/llamer/internal/drivers"
+	_ "github.com/hakastein/llamer/internal/drivers/claude" // драйвер этапов рецепта
 )
 
 // recipe — рецепт ревью из скилла llamer.
 var recipe = filepath.Join("..", "..", "skills", "llamer", "references", "review")
 
-// Рецепт загружается как есть: шаблоны ссылаются только на прошлые волны, скиллы и команды на месте; allow этапа —
-// команды из раздела «Your Commands» его промпта.
-func TestReviewRecipeLoads(t *testing.T) {
-	dir, err := filepath.Abs(recipe)
+func project(t *testing.T, dir string) *Project {
+	t.Helper()
+	dir, err := filepath.Abs(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := config.LoadWorkflow(dir, map[string]string{"REVIEW_BASE": "HEAD", "REVIEW_TASK": ""})
+	p, err := LoadProject(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return p
+}
+
+// changedTree — репозиторий с коммитом и изменениями поверх него: правкой строки и неотслеживаемым файлом.
+func changedTree(t *testing.T) string {
+	t.Helper()
+	tree := t.TempDir()
+	gitIn(t, tree, "init", "-q")
+	writeFiles(t, tree, map[string]string{"a.txt": "one\ntwo\nthree\n"})
+	gitIn(t, tree, "add", ".")
+	gitIn(t, tree, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+	writeFiles(t, tree, map[string]string{"a.txt": "one\nTWO\nthree\n", "new.txt": "fresh\n"})
+	return tree
+}
+
+// recorder — заглушка --dry-run, которая запоминает запуски.
+type recorder struct {
+	mu   sync.Mutex
+	runs []drivers.Args
+}
+
+func (d *recorder) Run(ctx context.Context, a drivers.Args, t *agent.Telemetry) (*agent.Outcome, error) {
+	d.mu.Lock()
+	d.runs = append(d.runs, a)
+	d.mu.Unlock()
+	return stub{}.Run(ctx, a, t)
+}
+
+// Workflow рецепта проходит на заглушке агента; allow каждого этапа — команды из раздела «Your Commands» его задания.
+func TestReviewRecipeStages(t *testing.T) {
+	p := project(t, recipe)
+	i := slices.IndexFunc(p.Workflows.Commands, func(c *cliche.Command) bool { return slices.Equal(c.Path, []string{"review"}) })
+	// Не t.TempDir(): имя теста в пути делает путь сокета длиннее лимита unix-сокета macOS (104 байта).
+	bin, err := os.MkdirTemp("", "wf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(bin) })
+	run, err := artifacts.Open(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &recorder{}
+	result, err := (&Run{Context: context.Background(), Project: p, Driver: func(string) (drivers.Driver, error) { return d, nil },
+		Artifacts: run, Cwd: changedTree(t), Out: io.Discard, Bin: bin, ClientDir: bin}).Execute(p.Workflows.Commands[i],
+		cliche.Input{Flags: cliche.NewObject([]string{"base"}, []any{"HEAD"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(d.runs) != 7 {
+		t.Fatalf("результат: %+v", result)
 	}
 	listed := regexp.MustCompile("(?m)^Your commands are (.*)$")
 	quoted := regexp.MustCompile("`([^`]+)`")
-	for _, s := range slices.Concat(w.Waves...) {
-		if s.Command != nil {
-			continue
-		}
-		line := listed.FindStringSubmatch(readFile(t, filepath.Join(dir, s.Template.Name())))
+	for _, a := range d.runs {
 		var commands []string
-		for _, m := range quoted.FindAllStringSubmatch(line[1], -1) {
+		for _, m := range quoted.FindAllStringSubmatch(listed.FindStringSubmatch(a.Prompt)[1], -1) {
 			commands = append(commands, m[1])
 		}
-		if !slices.Equal(commands, s.Allow) {
-			t.Errorf("%s: allow %q, в промпте %q", s.Name, s.Allow, commands)
+		if !slices.Equal(commands, a.Allow) {
+			t.Errorf("%s: allow %q, в задании %q", a.Name, a.Allow, commands)
+		}
+		if !strings.Contains(a.Prompt, "+TWO") {
+			t.Errorf("%s: в задании нет изменений", a.Name)
 		}
 	}
 }
@@ -57,27 +113,20 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// Находка встаёт только на строки изменений: добавленные — по новой стороне, удалённые — с --deleted по старой;
-// неотслеживаемый файл — тоже изменение.
+// Находка встаёт только на строки изменений от базы из записей workflow: добавленные — по новой стороне, удалённые —
+// с --deleted по старой; неотслеживаемый файл — тоже изменение.
 func TestReviewRecipeAnchorsFindings(t *testing.T) {
-	commandsDir, err := filepath.Abs(filepath.Join(recipe, config.CommandsDir))
+	tree := changedTree(t)
+	head, err := exec.Command("git", "-C", tree, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree := t.TempDir()
-	gitIn(t, tree, "init", "-q")
-	writeFiles(t, tree, map[string]string{"a.txt": "one\ntwo\nthree\n"})
-	gitIn(t, tree, "add", ".")
-	gitIn(t, tree, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
-	writeFiles(t, tree, map[string]string{"a.txt": "one\nTWO\nthree\n", "new.txt": "fresh\n"})
-	catalog := cliche.Merge(cliche.Config{Sources: []cliche.Source{cliche.Dir(commandsDir)}}.Scan())
-	c := &commands{workflow: &config.Workflow{Commands: catalog, Programs: []string{"git", "cat"}}, journal: newJournal(t.TempDir())}
+	c := &commands{catalog: project(t, recipe).Commands, journal: newJournal(t.TempDir())}
+	log := []any{map[string]any{"stage": "materials", "value": map[string]any{"type": "materials", "base": strings.TrimSpace(string(head))}}}
+	s := &stage{Name: "logic", Allow: []string{"review"}, Programs: []string{"git", "cat"}, Data: log}
 	call := func(argv ...string) (string, int) {
-		r, _ := c.call(context.Background(), &config.WorkflowStage{Name: "logic", Allow: []string{"review"}}, broker.Call{Argv: argv, Cwd: tree})
+		r, _ := c.call(context.Background(), s, broker.Call{Argv: argv, Cwd: tree})
 		return r.Stdout + r.Stderr, r.Exit
-	}
-	if out, code := call("review", "materials", "--base", "HEAD", "--task", ""); code != 0 || !strings.Contains(out, "+TWO") {
-		t.Fatalf("materials: %d %s", code, out)
 	}
 	finding := func(file, line string, extra ...string) int {
 		_, code := call(append([]string{"review", "finding", "--file", file, "--line", line, "--line-end", line, "--text", "t",
@@ -98,15 +147,15 @@ func TestReviewRecipeAnchorsFindings(t *testing.T) {
 			t.Errorf("%s: код %d", c.name, c.code)
 		}
 	}
-	if out, _ := call("review", "list"); strings.Count(out, "\n") != 3 {
-		t.Fatalf("list: %s", out)
+	if got := len(c.journal.recorded("logic")); got != 3 {
+		t.Fatalf("записано находок: %d", got)
 	}
 }
 
 // probeScript — команда над библиотеками рецепта: текст с экранированными `$` и код строки GitLab для пути.
-const probeMarkupScript = `const {escapeDollarsOutsideCode} = require("./lib/markdown.js");
-const {Diff} = require("./lib/diff.js");
-const gitlab = require("./lib/gitlab.js");
+const probeMarkupScript = `const {escapeDollarsOutsideCode} = require("../lib/markdown.js");
+const {Diff} = require("../lib/diff.js");
+const gitlab = require("../lib/gitlab.js");
 exports.definition = {short: "probe", long: "Probe.", args: [{name: "text", type: "string", usage: "t"}, {name: "path", type: "string", usage: "p"}]};
 exports.command = (text, path) => {
   const diff = new Diff("diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n@@ -1 +1 @@\n-a\n+b\n");
@@ -119,18 +168,17 @@ exports.command = (text, path) => {
 // экранируется, в спанах и блоках — нет; код строки — SHA-1 пути в UTF-8.
 func TestReviewRecipeMarkup(t *testing.T) {
 	source := t.TempDir()
-	lib := filepath.Join(recipe, config.CommandsDir, "lib")
+	lib := filepath.Join(recipe, "lib")
 	entries, err := os.ReadDir(lib)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := map[string]string{"probe.js": probeMarkupScript}
+	files := map[string]string{"commands/probe.js": probeMarkupScript}
 	for _, e := range entries {
 		files["lib/"+e.Name()] = readFile(t, filepath.Join(lib, e.Name()))
 	}
 	writeFiles(t, source, files)
-	catalog := cliche.Merge(cliche.Config{Sources: []cliche.Source{cliche.Dir(source)}}.Scan())
-	c := &commands{workflow: &config.Workflow{Commands: catalog}, journal: newJournal(t.TempDir())}
+	c := &commands{catalog: project(t, source).Commands, journal: newJournal(t.TempDir())}
 	const path = "src/Заказ.php"
 	sum := sha1.Sum([]byte(path))
 	for _, tc := range [][2]string{
@@ -142,11 +190,33 @@ func TestReviewRecipeMarkup(t *testing.T) {
 		{"para\n    $not code", "para\n    \\$not code"},
 		{"~~~php\n$a\n~~~~\n$b", "~~~php\n$a\n~~~~\n\\$b"},
 	} {
-		r, _ := c.call(context.Background(), &config.WorkflowStage{Name: "publish", Allow: []string{"probe"}},
+		r, _ := c.call(context.Background(), &stage{Name: "publish", Allow: []string{"probe"}},
 			broker.Call{Argv: []string{"probe", tc[0], path}, Cwd: source})
 		want := tc[1] + "\n" + hex.EncodeToString(sum[:]) + "_2_1\n"
 		if r.Exit != 0 || r.Stdout != want {
 			t.Errorf("%q: %d %q %s, ожидалось %q", tc[0], r.Exit, r.Stdout, r.Stderr, want)
 		}
 	}
+}
+
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, text := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

@@ -1,4 +1,4 @@
-{{.Answers.materials}}
+{{.materials}}
 
 You are a Senior Code Reviewer with expertise in triaging a pile of findings
 down to the ones an author can act on. You are the finding-deduplication stage.
@@ -14,7 +14,7 @@ not settle whether they are about the same place.
 ## What You Review
 
 Findings:
-{{.Answers.found}}
+{{.found}}
 
 ## What to Check
 

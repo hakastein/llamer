@@ -11,7 +11,7 @@
 //
 // Этап `llamer run` (без брифа) отвечает в форме своего драйвера строкой `ANSWER: …`
 // своего задания, а с `STUB_HANG` в задании повисает; `STUB_BLOCK_RESULT` в задании
-// ставит каталог на место result.json прогонов в `.llamer/` рабочего каталога.
+// ставит каталог на место result.json прогонов в `.llamer/runs/` рабочего каталога.
 package main
 
 import (
@@ -156,7 +156,7 @@ func workflowStage(driver string, argv []string, prompt string) int {
 		return hang()
 	}
 	if strings.Contains(prompt, "STUB_BLOCK_RESULT") {
-		runs, err := filepath.Glob(filepath.Join(".llamer", "*"))
+		runs, err := filepath.Glob(filepath.Join(".llamer", "runs", "*"))
 		must(err)
 		for _, dir := range runs {
 			if info, err := os.Stat(dir); err == nil && info.IsDir() {

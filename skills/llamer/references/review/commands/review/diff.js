@@ -1,7 +1,8 @@
-const repo = require("../lib/repo.js");
-const {number, chunks} = require("../lib/diff.js");
-const {files, taskDiff} = require("../lib/task.js");
-const {state} = require("../lib/state.js");
+const llamer = require("llamer");
+const repo = require("../../lib/repo.js");
+const {number, chunks} = require("../../lib/diff.js");
+const {files, taskDiff} = require("../../lib/task.js");
+const {state} = require("../../lib/state.js");
 
 exports.definition = {
   short: "Print the numbered diff of the given files",
@@ -11,7 +12,7 @@ exports.definition = {
 };
 
 exports.command = (paths) => {
-  const diff = taskDiff(repo.open(), state().materials.base);
+  const diff = taskDiff(repo.open(), state(llamer.data).materials.base);
   if (!paths?.length) {
     return files(diff.parsed).join("\n") || "изменений нет";
   }

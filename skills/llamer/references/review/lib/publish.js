@@ -1,21 +1,10 @@
-const repo = require("../lib/repo.js");
-const gitlab = require("../lib/gitlab.js");
-const {taskDiff} = require("../lib/task.js");
-const {state, at} = require("../lib/state.js");
-const {findings} = require("../lib/report.js");
-const {escapeDollarsOutsideCode: escape, withRevisionMark, statusMarker} = require("../lib/markdown.js");
-
-exports.definition = {
-  short: "Publish the review to a merge request",
-  long: "Publish the review to a GitLab merge request: close the threads the threads stage settled, post every " +
-    "finding as a thread on its lines (a finding off the request's lines goes as a note), the stage summaries and " +
-    "the status note. With --dry-run prints the write requests as JSON lines instead of sending them.",
-  flags: [
-    {name: "mr", type: "string", usage: "the merge request URL"},
-    {name: "token", type: "string", usage: "a GitLab token with the api scope"},
-    {name: "dry-run", type: "bool", usage: "send nothing, print the write requests"},
-  ],
-};
+// Публикация ревью в merge request GitLab.
+"use strict";
+const gitlab = require("./gitlab.js");
+const {taskDiff} = require("./task.js");
+const {at} = require("./state.js");
+const {findings} = require("./report.js");
+const {escapeDollarsOutsideCode: escape, withRevisionMark, statusMarker} = require("./markdown.js");
 
 // plural — форма русского слова по числу: замечание, замечания, замечаний.
 function plural(n, one, few, many) {
@@ -50,10 +39,10 @@ function unanchoredBody(f, head) {
   return withRevisionMark(parts.join("\n\n"), head);
 }
 
-exports.command = (flags) => {
-  const s = state();
-  const dryRun = flags["dry-run"] === true;
-  const mr = gitlab.open(flags.mr, flags.token, dryRun);
+// publish — ревью s в merge request mr (gitlab.open) репозитория r: закрывает треды, которые этап тредов счёл
+// решёнными, ставит каждую находку тредом на её строки (не вставшую — заметкой), сводки этапов и заметку статуса.
+// Возвращает, что сделано; у mr без записи (dryRun) записи копятся в mr.planned. Неудачи — одной ошибкой в конце.
+exports.publish = (mr, s, r) => {
   const head = mr.info().diff_refs.head_sha;
   const log = [];
   const failed = [];
@@ -78,7 +67,7 @@ exports.command = (flags) => {
   const position = (f) => {
     version ??= mr.version();
     request ??= mr.diff();
-    task ??= taskDiff(repo.open(), s.materials.base).parsed;
+    task ??= taskDiff(r, s.materials.base).parsed;
     const inRequest = (line) => f.deleted ? gitlab.deletedLineInRequest(f.file, line, task, request) : line;
     return gitlab.position(f.file, inRequest(f.line), inRequest(f.lineEnd), f.deleted, request, version);
   };
@@ -101,7 +90,7 @@ exports.command = (flags) => {
     })) {
       return false;
     }
-    if (!dryRun && !gitlab.anchored(thread)) {
+    if (!mr.dryRun && !gitlab.anchored(thread)) {
       // Нота уже висит в merge request без места и с неприменимой правкой: её сносим и повторяем заметкой.
       log.push(at(f) + ": GitLab не принял позицию — заменяем заметкой");
       attempt("непривязанную ноту " + at(f) + " убрать не удалось", () => mr.deleteNote(thread.notes[0].id));
@@ -129,5 +118,5 @@ exports.command = (flags) => {
   if (failed.length > 0) {
     throw new Error(failed.join("\n"));
   }
-  return dryRun ? mr.planned.map((r) => JSON.stringify(r)).join("\n") : log.join("\n");
+  return log;
 };

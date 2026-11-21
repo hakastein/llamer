@@ -12,8 +12,21 @@ import (
 	"time"
 )
 
-// workflowProject — проект с workflow из двух этапов: writer отвечает по схеме
-// writerAnswer (заглушка отдаёт строку `ANSWER:` задания), checker отвечает его ответом.
+// workflowScript — workflow из двух этапов: writer отвечает по схеме (заглушка отдаёт строку `ANSWER:` задания),
+// checker — его ответом; скрипт возвращает оба ответа. checkerSpec — ключи спека checker сверх общих.
+func workflowScript(checkerSpec string) string {
+	return `const llamer = require("llamer");
+exports.definition = {short: "wf", long: "Test workflow.", flags: [{name: "topic", type: "string", usage: "topic"}]};
+exports.command = (flags) => {
+  const s = {driver: "claude", model: "m", effort: "low", timeout: "1m"};
+  const joke = llamer.agent({...s, name: "writer", prompt: llamer.prompt("writer.md", flags), schema: "joke.schema.json"});
+  const checked = llamer.agent({...s, name: "checker", prompt: "ANSWER: проверено " + JSON.stringify(joke) + "\n"` + checkerSpec + `});
+  return {joke, checked};
+};
+`
+}
+
+// workflowProject — проект с workflowScript("") в .llamer/workflows/wf.js.
 func workflowProject(t *testing.T, writerPrompt string) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -21,17 +34,14 @@ func workflowProject(t *testing.T, writerPrompt string) string {
 		t.Fatal(err)
 	}
 	write(t, root, ".llamer.json", `{"version": 2, "drivers": {"claude": {}}}`)
-	write(t, root, "wf/workflow.json", `{"version": 1, "stages": [
-		{"name": "writer", "driver": "claude", "model": "m", "effort": "low", "prompt": "writer.md", "timeout": "1m", "schema": "joke.schema.json"},
-		{"name": "checker", "driver": "claude", "model": "m", "effort": "low", "prompt": "checker.md", "timeout": "1m"}]}`)
-	write(t, root, "wf/joke.schema.json", `{"type": "object", "additionalProperties": false, "required": ["joke"],
+	write(t, root, ".llamer/workflows/wf.js", workflowScript(""))
+	write(t, root, ".llamer/joke.schema.json", `{"type": "object", "additionalProperties": false, "required": ["joke"],
 		"properties": {"joke": {"type": "string"}}}`)
-	write(t, root, "wf/writer.md", writerPrompt)
-	write(t, root, "wf/checker.md", "ANSWER: проверено {{.Answers.writer}}\n")
+	write(t, root, ".llamer/writer.md", writerPrompt)
 	return root
 }
 
-var runWorkflowArgs = []string{"run", "wf", "--config", ".llamer.json"}
+var runWorkflowArgs = []string{"run", "--config", ".llamer.json", "wf", "--topic", "кот"}
 
 type workflowResult struct {
 	OK      bool `json:"ok"`
@@ -42,6 +52,7 @@ type workflowResult struct {
 		Name   string          `json:"name"`
 		Answer json.RawMessage `json:"answer"`
 	} `json:"stages"`
+	Value json.RawMessage `json:"value"`
 }
 
 // lines — строки JSON вывода llamer run по типу.
@@ -73,15 +84,17 @@ const workflowSecret = `wf-leak-value-1234`
 
 func TestWorkflowAnswerReachesNextStage(t *testing.T) {
 	t.Parallel()
-	root := workflowProject(t, "ANSWER: {\"joke\": \"кот шёл по коридору wf-leak-value-1234\"}\n")
+	root := workflowProject(t, "ANSWER: {\"joke\": \"{{.topic}} шёл по коридору wf-leak-value-1234\"}\n")
 	r := run(t, root, runWorkflowArgs, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
 	equal(t, r.status, 0, "код\n"+r.stderr)
 	res := lastResult(t, r.stdout)
 	equal(t, res.OK, true, "ok")
 	equal(t, string(res.Stages[0].Answer), `{"joke":"кот шёл по коридору ***REDACTED***"}`, "ответ writer — JSON по схеме")
-	equal(t, string(res.Stages[1].Answer), `"проверено {\"joke\": \"кот шёл по коридору ***REDACTED***\"}"`, "ответ checker без схемы — строка")
+	equal(t, string(res.Stages[1].Answer), `"проверено {\"joke\":\"кот шёл по коридору ***REDACTED***\"}"`, "ответ checker без схемы — строка")
+	equal(t, string(res.Value), `{"checked":"проверено {\"joke\":\"кот шёл по коридору ***REDACTED***\"}","joke":{"joke":"кот шёл по коридору ***REDACTED***"}}`,
+		"значение скрипта — в результате")
 	equal(t, len(r.launches), 2, "оба этапа запускались")
-	match(t, r.launches[1]["prompt"].(string), `проверено \{"joke": "кот шёл по коридору wf-leak-value-1234"\}`, "checker получил ответ writer как есть")
+	match(t, r.launches[1]["prompt"].(string), `проверено \{"joke":"кот шёл по коридору wf-leak-value-1234"\}`, "checker получил ответ writer значением")
 	equal(t, slices.Contains(argvOf(r.launches[0]), "--json-schema"), true, "схема ушла драйверу writer")
 	equal(t, slices.Contains(argvOf(r.launches[1]), "--json-schema"), false, "у checker схемы нет")
 	events := lines(t, r.stdout)["event"]
@@ -169,14 +182,18 @@ func TestWorkflowSandboxReachesDrivers(t *testing.T) {
 	}
 	write(t, root, ".llamer.json", `{"version": 2, "drivers": {"claude": {}, "codex": {}}}`)
 	write(t, root, "extra/notes.md", "заметки")
-	write(t, root, "wf/workflow.json", `{"version": 1, "readable": ["../extra"], "stages": [
-		{"name": "writer", "driver": "claude", "model": "m", "effort": "low", "prompt": "writer.md", "timeout": "1m"},
-		{"name": "checker", "driver": "codex", "model": "m", "effort": "low", "prompt": "checker.md", "timeout": "1m"}]}`)
-	write(t, root, "wf/writer.md", "ANSWER: кот\n")
-	write(t, root, "wf/checker.md", "ANSWER: проверено {{.Answers.writer}}\n")
+	write(t, root, ".llamer/workflows/wf.js", `const llamer = require("llamer");
+exports.definition = {short: "wf", long: "Test workflow."};
+exports.command = () => {
+  const s = {model: "m", effort: "low", timeout: "1m", readable: ["../extra"]};
+  llamer.agent({...s, name: "writer", driver: "claude", prompt: "ANSWER: кот\n"});
+  llamer.agent({...s, name: "checker", driver: "codex", prompt: "ANSWER: проверено\n"});
+  return null;
+};
+`)
 	extra := filepath.Join(root, "extra")
 
-	r := run(t, root, runWorkflowArgs, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
+	r := run(t, root, []string{"run", "--config", ".llamer.json", "wf"}, map[string]string{"WORKFLOW_TOKEN": workflowSecret})
 
 	equal(t, r.status, 0, "код\n"+r.stderr)
 	equal(t, len(r.launches), 2, "оба этапа запускались")
@@ -204,4 +221,18 @@ func TestWorkflowSandboxReachesDrivers(t *testing.T) {
 		env := strs(l["env"])
 		equal(t, slices.Contains(env, "WORKFLOW_TOKEN") || slices.Contains(env, "GITLAB_TOKEN"), false, "секрет в окружении агента")
 	}
+}
+
+// --dry-run проходит скрипт без модели: ответ writer — наименьший по схеме, ошибка в спеке следующего этапа срывает
+// прогон тем же отказом, что и настоящий прогон.
+func TestWorkflowDryRunCatchesSpecError(t *testing.T) {
+	t.Parallel()
+	root := workflowProject(t, "ANSWER: {\"joke\": \"кот\"}\n")
+	write(t, root, ".llamer/workflows/wf.js", workflowScript(`, modle: "m"`))
+	r := run(t, root, append([]string{"run", "--dry-run"}, runWorkflowArgs[1:]...), nil)
+	equal(t, r.status, 1, "код\n"+r.stderr)
+	equal(t, len(r.launches), 0, "агент не запускался")
+	res := lastResult(t, r.stdout)
+	equal(t, res.Failure.Stage+" "+res.Failure.Reason, "checker spec", "сорван спек checker")
+	equal(t, string(res.Stages[0].Answer), `{"joke":""}`, "ответ заглушки — по схеме")
 }

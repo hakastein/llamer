@@ -13,18 +13,11 @@ import (
 
 	"github.com/hakastein/cliche"
 	"github.com/hakastein/llamer/internal/broker"
-	"github.com/hakastein/llamer/internal/config"
 )
 
 const noteScript = `const llamer = require("llamer");
 exports.definition = {short: "note", long: "Note.", flags: [{name: "text", type: "string", usage: "text"}]};
 exports.command = (flags) => { llamer.record({text: flags.text}); return "записано"; };
-`
-
-// seenScript печатает записанное в журнал до вызова.
-const seenScript = `const llamer = require("llamer");
-exports.definition = {short: "seen", long: "Seen."};
-exports.command = () => llamer.results().map((r) => r.stage + ":" + r.value.text).join(",");
 `
 
 // Отказ пойман скриптом, а вызов всё равно отклонён и этап сорван.
@@ -55,7 +48,7 @@ func serve(t *testing.T, allow, hosts, programs []string) (socket string, failed
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	for name, text := range map[string]string{"note.js": noteScript, "probe.js": probeScript, "seen.js": seenScript} {
+	for name, text := range map[string]string{"note.js": noteScript, "probe.js": probeScript} {
 		if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o777); err != nil {
 			t.Fatal(err)
 		}
@@ -64,9 +57,9 @@ func serve(t *testing.T, allow, hosts, programs []string) (socket string, failed
 		}
 	}
 	catalog := cliche.Merge(cliche.Config{Sources: []cliche.Source{cliche.Dir(filepath.Join(dir, "commands"))}}.Scan())
-	c := &commands{workflow: &config.Workflow{Commands: catalog, Hosts: hosts, Programs: programs}, journal: newJournal(dir)}
+	c := &commands{catalog: catalog, journal: newJournal(dir)}
 	socket, failed = filepath.Join(dir, "s.sock"), make(chan error, 1)
-	stop, err := broker.Listen(socket, c.handler(&config.WorkflowStage{Name: "writer", Allow: allow}, failed))
+	stop, err := broker.Listen(socket, c.handler(&stage{Name: "writer", Allow: allow, Hosts: hosts, Programs: programs}, failed))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,19 +111,10 @@ func TestCommandResultReachesJournal(t *testing.T) {
 	}
 }
 
-func TestCommandReadsEarlierResults(t *testing.T) {
-	socket, _, _ := serve(t, []string{"note", "seen"}, nil, nil)
-	call(t, socket, "note", "--text", "первая")
-	call(t, socket, "note", "--text", "вторая")
-	if r := call(t, socket, "seen"); r.Stdout != "writer:первая,writer:вторая\n" {
-		t.Fatalf("вызов: %+v", r)
-	}
-}
-
 // Команда workflow не из allow этапа отклоняется, но этап не срывает.
 func TestCommandOutsideStageAllowRefused(t *testing.T) {
 	socket, failed, journalOf := serve(t, []string{"note"}, nil, nil)
-	r := call(t, socket, "seen")
+	r := call(t, socket, "probe", "exec", "cat")
 	if line := journalOf()[0]; r.Exit != 2 || !line.Rejected || len(failed) != 0 {
 		t.Fatalf("вызов: %+v, журнал: %+v", r, line)
 	}

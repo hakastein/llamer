@@ -1,5 +1,5 @@
 const llamer = require("llamer");
-const {state} = require("../lib/state.js");
+const {state} = require("../../lib/state.js");
 
 exports.definition = {
   short: "Close an open review thread the current code has settled",
@@ -15,7 +15,7 @@ exports.command = (flags) => {
   if (!flags.id || !flags.reason) {
     throw new Error("нужны --id и --reason");
   }
-  const open = state().threads.filter((t) => t.ours && !t.resolved);
+  const open = state(llamer.data).threads.filter((t) => t.ours && !t.resolved);
   const t = open.find((x) => x.id === flags.id);
   if (!t) {
     throw new Error(`треда «${flags.id}» среди открытых тредов прогона нет. Открытые:\n` +

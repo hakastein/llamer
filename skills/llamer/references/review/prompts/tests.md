@@ -1,4 +1,4 @@
-{{.Answers.materials}}
+{{.materials}}
 
 You are a Senior Test Engineer with expertise in unit test design and in the
 defects a case lets through. You review the test cases this change added or

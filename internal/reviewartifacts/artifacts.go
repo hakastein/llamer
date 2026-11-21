@@ -19,7 +19,7 @@ type Run struct {
 }
 
 func Open(root string, startedAt time.Time) (*Run, error) {
-	base, err := artifacts.Open(root, startedAt)
+	base, err := artifacts.Open(filepath.Join(root, artifacts.Dir), startedAt)
 	if err != nil {
 		return nil, err
 	}

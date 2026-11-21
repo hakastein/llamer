@@ -3,9 +3,11 @@ package skills
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -55,6 +57,9 @@ func LoadLibrary(builtinSkills fs.FS, paths []string) (*Library, error) {
 	}
 	return l, nil
 }
+
+// Names — имена всех скиллов библиотеки по алфавиту.
+func (l *Library) Names() []string { return slices.Sorted(maps.Keys(l.index)) }
 
 func (l *Library) Missing(names []string) []string {
 	var out []string
