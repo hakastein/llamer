@@ -26,6 +26,12 @@ with `--severity-reason`. `--id` is the `#N` from the list above, and only from
 there: `review list` prints the whole run journal, including findings already
 marked as duplicates.
 
+## Your Commands
+
+Your commands are `review verdict`, `review list`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

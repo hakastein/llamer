@@ -19,6 +19,12 @@ body does — carries no `--suggestion` at all and names the declaration line in
 `--related`: the comment stays until the code says the same by itself. The
 replacement keeps the language of the comment it replaces.
 
+## Your Commands
+
+Your commands are `review finding`, `review list`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

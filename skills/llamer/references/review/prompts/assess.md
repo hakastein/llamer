@@ -18,6 +18,12 @@ its help and invent no number beyond it.
 Do not read into the code: the decision is made from the diff and the file list
 above.
 
+## Your Commands
+
+Your commands are `review assess`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

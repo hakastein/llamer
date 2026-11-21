@@ -27,6 +27,12 @@ neighbouring file, not because it is generated.
 
 The review is closed by exactly one `review summary`.
 
+## Your Commands
+
+Your commands are `review finding`, `review list`, `review summary`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## Your Plan
 
 Present a plan before your first search: the questions this stage has to answer, and where each answer comes from — the diff in front of you, a file to open, or a text search.

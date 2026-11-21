@@ -43,6 +43,12 @@ naming in --reason what exactly settled it — an edit, a deletion, the author's
 reply. Write nothing about the ones that stay open: their absence from your
 calls is the decision.
 
+## Your Commands
+
+Your commands are `review resolve`, `review list`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

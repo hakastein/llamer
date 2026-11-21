@@ -46,6 +46,12 @@ If you are unsure whether it is the same place and the same cause, keep both:
 an extra thread is cheaper than a lost remark, and both still have the
 sceptic ahead of them. No duplicates is a normal outcome — mark nothing.
 
+## Your Commands
+
+Your commands are `review dupe`, `review list`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

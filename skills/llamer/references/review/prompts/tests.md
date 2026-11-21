@@ -12,6 +12,12 @@ In a finding, `--file` and `--line`/`--line-end` are the lines of the case
 itself, `--text` says what the case fails to catch and what to do with it,
 and `--related` is the production line the case is about.
 
+## Your Commands
+
+Your commands are `review finding`, `review list`, `review diff` and `review stop`.
+Their flags are in `review <command> --help`; the other `review` commands belong
+to other stages: do not call them.
+
 ## How Your Stage Runs
 
 ```dot

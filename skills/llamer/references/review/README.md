@@ -21,8 +21,9 @@ back with `llamer.results()`.
 
 ## Build it in a project
 
-1. Copy this directory without `README.md` into the project, e.g. to `workflows/review/`, and commit it: the review
-   takes uncommitted and untracked files as part of the change.
+1. Copy this directory without `README.md` into the project, e.g. to `workflows/review/`, and commit it alone: the
+   review takes uncommitted and untracked files as part of the change, and the change itself must stay out of that
+   commit — `git add workflows/review .llamer.json && git commit -m "Review workflow" -- workflows/review .llamer.json`.
 2. Make sure `.llamer.json` exists at the repository root: `{"version": 2}` is enough for `claude`. A `codex` stage
    also needs `drivers.codex.readable` — see the `llamer` skill.
 3. Pick `driver`, `model` and `effort` per stage in `workflow.json`. A stage may run on another driver: the prompts
