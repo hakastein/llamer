@@ -7,7 +7,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/bmatcuk/doublestar/v4 v4.10.4
 	github.com/evanphx/json-patch/v5 v5.9.11
-	github.com/hakastein/smith v0.0.0-20261122161329-68c91eed0139
+	github.com/hakastein/smith v0.1.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9

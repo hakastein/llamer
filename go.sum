@@ -19,8 +19,8 @@ github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaU
 github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510/go.mod h1:pupxD2MaaD3pAXIBCelhxNneeOaAeabZDe5s4K6zSpQ=
 github.com/graph-gophers/graphql-go v1.9.0 h1:yu0ucKHLc5qGpRwLYKIWtr9bOoxovkWasuBrPQwlHls=
 github.com/graph-gophers/graphql-go v1.9.0/go.mod h1:23olKZ7duEvHlF/2ELEoSZaY1aNPfShjP782SOoNTyM=
-github.com/hakastein/smith v0.0.0-20261122161329-68c91eed0139 h1:UCgY+ejHMzq0zMyMqK3ytZRSjhJIxJlqvi34K7YxzGE=
-github.com/hakastein/smith v0.0.0-20261122161329-68c91eed0139/go.mod h1:Tuw5KfURcbHmdIC1AUMCGCI6ov5p96f3Q7Gjz9WUOgc=
+github.com/hakastein/smith v0.1.0 h1:Dz8yvuTSOSbdSYgYsvxxcswevDEJujSHrqvpURaV7xU=
+github.com/hakastein/smith v0.1.0/go.mod h1:Tuw5KfURcbHmdIC1AUMCGCI6ov5p96f3Q7Gjz9WUOgc=
 github.com/hashicorp/go-cleanhttp v0.5.2 h1:035FKYIWjmULyFRBKPs8TBQoi0x6d9G4xc9neXJWAZQ=
 github.com/hashicorp/go-cleanhttp v0.5.2/go.mod h1:kO/YDlP8L1346E6Sodw+PrpBSV4/SoxCXGY6BqNFT48=
 github.com/hashicorp/go-hclog v1.6.3 h1:Qr2kF+eVWjTiYmU7Y31tYlP1h0q/X3Nl3tPGdaB11/k=
