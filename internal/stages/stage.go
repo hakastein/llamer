@@ -12,12 +12,12 @@ import (
 	"github.com/hakastein/llamer/internal/config"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/harness"
+	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
 	"github.com/hakastein/smith/agent"
 	"github.com/hakastein/smith/cost"
 	"github.com/hakastein/smith/drivers"
-	"github.com/hakastein/smith/logx"
 	"github.com/hakastein/smith/skills"
 )
 
@@ -234,7 +234,7 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 		shared = s.tk.Shared
 	}
 	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, settings.Model, settings.Effort, utf8.RuneCountInString(prompt), promptPath)
-	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()))
+	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), logx.Logger)
 	go func() {
 		<-telemetry.Responding()
 		s.markResponding()
@@ -244,6 +244,8 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 		SystemPromptFile: shared, Prompt: prompt,
 		Env: []string{harness.BriefEnv + "=" + briefPath}, Skills: append(slices.Clone(s.settings.Skills.Always), s.settings.Skills.OnDemand...),
 		Cwd: m.Cwd, Timeout: 20 * time.Minute, SessionDir: s.tk.Artifacts.SessionDir(s.ID()),
+		// Ревью читает дерево целиком и зовёт команды проекта из allow: строгая песочница его этапам тесна.
+		Sandbox: drivers.Sandbox{ReadOnlyCLI: true},
 	}, telemetry)
 	if err != nil {
 		telemetry.Close()

@@ -315,11 +315,11 @@ func runStats(stages []*cost.Stage, elapsedMs int64) string {
 		if s.Outcome.UsageApprox {
 			approx = "≈"
 		}
-		r := cost.RowOf(s)
+		r := rowOf(s)
 		rows = append(rows, fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |", r.Name, r.Model, r.Effort, formatDuration(s.Outcome.DurationMs), r.Turns, r.Tokens, r.Context))
 	}
 	lines := []string{
-		fmt.Sprintf("Разбор занял %s, потрачено %s%s токенов.", formatDuration(elapsedMs), approx, cost.Number(tokens)),
+		fmt.Sprintf("Разбор занял %s, потрачено %s%s токенов.", formatDuration(elapsedMs), approx, number(tokens)),
 		"", "<details><summary>По этапам</summary>", "",
 		"| Этап | Модель | Усилие | Время | Ходы | Токены | Размер контекста |",
 		"|---|---|---|---|---|---|---|",

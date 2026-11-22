@@ -13,9 +13,9 @@ import (
 	"syscall"
 
 	"github.com/hakastein/llamer/internal/harness"
+	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/review"
 	"github.com/hakastein/llamer/internal/runenv"
-	"github.com/hakastein/smith/logx"
 	"github.com/spf13/cobra"
 )
 

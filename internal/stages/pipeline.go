@@ -4,8 +4,8 @@ import (
 	"sync"
 
 	"github.com/hakastein/llamer/internal/domain"
+	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/smith/cost"
-	"github.com/hakastein/smith/logx"
 )
 
 // Outcome — итог прогона этапов: единственное, что пересекает границу pipeline → cli.

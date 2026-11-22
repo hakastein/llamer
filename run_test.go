@@ -461,7 +461,7 @@ func TestLostHarnessWrites(t *testing.T) {
 	equal(t, r.status, 1, "код")
 	equal(t, slices.Contains(strs(r.answer["gaps"]), "этап «оценщик» сорвался: вызовов харнесса не дошло до журнала: 2") ||
 		strings.Contains(r.stderr, "вызовов харнесса не дошло до журнала: 2"), true, "claude: потеряно две записи")
-	match(t, r.stderr, `\[оценщик\] отказов: 6`, "claude: отказов")
+	match(t, r.stderr, `\[оценщик\] статистика этапа .* errors=6 `, "claude: отказов")
 
 	codex := `{"type":"item.started","item":{"id":"x1","type":"command_execution","command":"/bin/bash -lc 'review batch --json []'"}}` + "\n" +
 		`{"type":"item.completed","item":{"id":"x1","type":"command_execution","exit_code":2,"aggregated_output":"сбой харнесса: EROFS: read-only file system"}}`

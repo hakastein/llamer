@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/smith/agent"
-	"github.com/hakastein/smith/logx"
 	"github.com/hakastein/smith/redact"
 )
 

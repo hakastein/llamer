@@ -380,7 +380,7 @@ func TestReadFilesThroughRegularFileParent(t *testing.T) {
 	r := run(t, makeRepoWith(t, root, event), worktree, nil)
 
 	ok(t, r)
-	match(t, r.stderr, `\[оценщик\] прочитано файлов: 2`, "файлы в аргументах Bash — без пути сквозь обычный файл")
+	match(t, r.stderr, `\[оценщик\] статистика этапа .* files=\[build/i18n-chunks\.js build/i18n-routing\.js\]`, "файлы в аргументах Bash — без пути сквозь обычный файл")
 }
 
 // makeRepoWith — тот же репозиторий с событием потока у заглушки claude.
