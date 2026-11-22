@@ -10,7 +10,7 @@ import (
 	"github.com/hakastein/llamer/internal/artifacts"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/harness"
-	"github.com/hakastein/llamer/internal/redact"
+	"github.com/hakastein/smith/redact"
 )
 
 type Run struct {

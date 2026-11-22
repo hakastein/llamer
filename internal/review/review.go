@@ -12,8 +12,6 @@ import (
 	"sync"
 
 	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/cost"
-	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/harness"
@@ -22,8 +20,9 @@ import (
 	"github.com/hakastein/llamer/internal/report"
 	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
 	"github.com/hakastein/llamer/internal/runenv"
-	"github.com/hakastein/llamer/internal/skills"
 	"github.com/hakastein/llamer/internal/stages"
+	"github.com/hakastein/smith/drivers"
+	"github.com/hakastein/smith/skills"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -208,7 +207,7 @@ func (r *run) review() (bool, error) {
 			f.Reason, f.ResetsAt = outcome.Failure.Reason, outcome.Failure.Outcome.ResetsAt
 		}
 		delivery.DeliverFailure(f, outcome.Records)
-		cost.Report(r.artifacts.Path, outcome.Records, logx.SinceStart())
+		report.LogCost(r.artifacts.Path, outcome.Records, logx.SinceStart())
 		return false, nil
 	}
 
@@ -227,7 +226,7 @@ func (r *run) review() (bool, error) {
 	for _, g := range shortfall.Gaps {
 		logx.Log("недостача: " + g)
 	}
-	cost.Report(r.artifacts.Path, outcome.Records, logx.SinceStart())
+	report.LogCost(r.artifacts.Path, outcome.Records, logx.SinceStart())
 	// Сорванный этап — неполное ревью, даже если отчёт доставлен.
 	return len(failures) == 0 && shortfall.Failed == 0, nil
 }

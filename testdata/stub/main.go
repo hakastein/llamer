@@ -8,10 +8,6 @@
 // STUB_DENY_STAGE, STUB_HANG_STAGE, STUB_SKEPTIC_REFUTES — значение — этап;
 // STUB_EVENTS — строки потока, которые заглушка отдаёт этапу до своих;
 // STUB_SESSION — строки журнала сессии codex вместо обычных.
-//
-// Этап `llamer run` (без брифа) отвечает в форме своего драйвера строкой `ANSWER: …`
-// своего задания, а с `STUB_HANG` в задании повисает; `STUB_BLOCK_RESULT` в задании
-// ставит каталог на место result.json прогонов в `.llamer/` рабочего каталога.
 package main
 
 import (
@@ -47,9 +43,6 @@ func main() {
 		return
 	}
 	input, _ := io.ReadAll(os.Stdin)
-	if os.Getenv("LLAMER_BRIEF") == "" {
-		os.Exit(workflowStage(driver, args, string(input)))
-	}
 	var b brief
 	data, err := os.ReadFile(os.Getenv("LLAMER_BRIEF"))
 	must(err)
@@ -150,36 +143,6 @@ func hang() int {
 	return 1
 }
 
-func workflowStage(driver string, argv []string, prompt string) int {
-	record(m{"driver": driver, "argv": argv, "prompt": prompt, "env": envNames(), "codexHome": os.Getenv("CODEX_HOME")})
-	if strings.Contains(prompt, "STUB_HANG") {
-		return hang()
-	}
-	if strings.Contains(prompt, "STUB_BLOCK_RESULT") {
-		runs, err := filepath.Glob(filepath.Join(".llamer", "*"))
-		must(err)
-		for _, dir := range runs {
-			if info, err := os.Stat(dir); err == nil && info.IsDir() {
-				must(os.MkdirAll(filepath.Join(dir, "result.json"), 0o777))
-			}
-		}
-	}
-	answer := ""
-	for _, line := range strings.Split(prompt, "\n") {
-		if text, ok := strings.CutPrefix(line, "ANSWER: "); ok {
-			answer = text
-		}
-	}
-	if driver == "codex" {
-		emit(m{"type": "thread.started", "thread_id": "stub-thread"})
-		emit(m{"type": "item.completed", "item": m{"id": "m0", "type": "agent_message", "text": answer}})
-		emit(m{"type": "turn.completed", "usage": m{"input_tokens": 100, "output_tokens": 10}})
-		return 0
-	}
-	emit(m{"type": "result", "subtype": "success", "is_error": false, "result": answer, "total_cost_usd": 0.25})
-	return 0
-}
-
 func claude(b brief, argv []string, prompt string) int {
 	after := func(flag string) string {
 		if i := slices.Index(argv, flag); i >= 0 && i+1 < len(argv) {
@@ -247,7 +210,7 @@ func codex(b brief, argv []string, prompt string) int {
 	home, codexHome := os.Getenv("HOME"), os.Getenv("CODEX_HOME")
 	_, authErr := os.Stat(filepath.Join(codexHome, "auth.json"))
 	record(m{"driver": "codex", "stage": b.Stage, "argv": argv, "env": envNames(), "prompt": prompt, "home": home,
-		"codexHome": codexHome, "auth": authErr == nil, "rules": readOr(filepath.Join(codexHome, "rules", "llamer.rules")),
+		"codexHome": codexHome, "auth": authErr == nil, "rules": readOr(filepath.Join(codexHome, "rules", "smith.rules")),
 		"skills": listDir(filepath.Join(home, ".agents", "skills")), "config": readOr(filepath.Join(codexHome, "config.toml"))})
 
 	// Журнал сессии, как у codex: по записи на запрос; между ними вывод команды с токеном.

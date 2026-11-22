@@ -1,4 +1,4 @@
-// Package cli — команда llamer: разбор аргументов, вызов прогонов ревью и workflow, скрытые подкоманды этапа.
+// Package cli — команда llamer: разбор аргументов, вызов прогона ревью, скрытая подкоманда этапа.
 package cli
 
 import (
@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/hakastein/llamer/internal/broker"
 	"github.com/hakastein/llamer/internal/harness"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/review"
@@ -38,8 +37,6 @@ const Help = `llamer — агентное ревью изменений: оце�
   --publish gitlab            треды, заметка о рисках, сводка и статус в MR (только с --mr)
   --dry-run                   ничего не публиковать: отчёт вместо --publish (только с --mr)
   --since-last                только изменения после прошлого прогона LLaMer в MR (только с --mr)
-
-Workflow агента: llamer run <каталог workflow> — справка: llamer run --help
 
 Прочее:
   --config <файл>             конфиг вместо .llamer.json в корне репозитория; .llamer.local.json рядом с ним накладывается
@@ -121,8 +118,8 @@ func fail(message string) int {
 	return 1
 }
 
-// Execute — команда llamer со скрытыми подкомандами харнесса, брокера и
-// драйверов: этап зовёт ровно ту версию, что ведёт прогон. Возвращает код выхода.
+// Execute — команда llamer со скрытой подкомандой харнесса: этап зовёт ровно
+// ту версию, что ведёт прогон. Возвращает код выхода.
 func Execute(argv []string, stdout io.Writer) int {
 	code := 0
 	o := &review.Options{}
@@ -150,13 +147,8 @@ func Execute(argv []string, stdout io.Writer) int {
 	f.BoolVar(&o.SinceLast, "since-last", false, "")
 	f.StringVar(&o.Config, "config", "", "")
 	f.BoolVar(&o.Preflight, "preflight", false, "")
-	root.AddCommand(
-		runCommand(stdout, &code),
-		&cobra.Command{Use: harness.Subcommand, Hidden: true, DisableFlagParsing: true,
-			Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }},
-		&cobra.Command{Use: broker.Subcommand, Hidden: true, DisableFlagParsing: true, Args: cobra.MinimumNArgs(1),
-			Run: func(_ *cobra.Command, args []string) { code = broker.Main(args[0], args[1:], os.Stdout, os.Stderr) }},
-	)
+	root.AddCommand(&cobra.Command{Use: harness.Subcommand, Hidden: true, DisableFlagParsing: true,
+		Run: func(_ *cobra.Command, args []string) { code = harness.Main(args, os.Stdout, os.Stderr) }})
 	root.SetArgs(argv)
 	root.SetOut(os.Stderr)
 	root.SetErr(os.Stderr)

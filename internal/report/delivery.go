@@ -10,15 +10,15 @@ import (
 	gl "gitlab.com/gitlab-org/api/client-go"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/hakastein/llamer/internal/agent"
-	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
-	"github.com/hakastein/llamer/internal/redact"
 	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
+	"github.com/hakastein/smith/agent"
+	"github.com/hakastein/smith/cost"
+	"github.com/hakastein/smith/redact"
 )
 
 const (
@@ -50,7 +50,7 @@ var failureTexts = map[string]string{
 func FailureComment(f Failure) string {
 	var text string
 	if f.Reason == "rate_limit" && f.ResetsAt != nil && *f.ResetsAt != 0 {
-		text = rateLimitHead + " Окно откроется " + cost.FormatResetTime(*f.ResetsAt) + " — после этого прогон нужно перезапустить."
+		text = rateLimitHead + " Окно откроется " + formatResetTime(*f.ResetsAt) + " — после этого прогон нужно перезапустить."
 	} else {
 		key := f.Reason
 		if strings.HasPrefix(key, "killed:") {
@@ -291,7 +291,7 @@ func (d *ReportDelivery) Deliver(r *Review) ([]*domain.Finding, []string) {
 		parts = append(parts, "## Сессии этапов\n\nПродолжить сессию этапа вопросом к агенту:\n\n"+strings.Join(sessions, "\n"))
 	}
 	if len(r.Stages) > 0 {
-		parts = append(parts, "## Цена\n\n```\n"+cost.Table(r.Stages, r.ElapsedMs)+"\n```")
+		parts = append(parts, "## Цена\n\n```\n"+table(r.Stages, r.ElapsedMs)+"\n```")
 	}
 	result := reviewResult{OK: true, Base: r.BaseSha(), Findings: []findingResult{}, Summaries: []summaryResult{}, ResolvedThreads: []resolvedResult{},
 		Gaps: shortfall.Gaps, Notices: shortfall.Notices, Cost: cost.Summarize(r.Stages), Limits: cost.DriverLimits(r.Stages), Stages: stageResults(r.Stages)}

@@ -1,5 +1,4 @@
-// Package runenv — то, что прогонам ревью и workflow нужно одинаково:
-// окружение процесса, проверка входа, временный каталог с каталогом команд
+// Package runenv — окружение прогона: окружение процесса, проверка входа, временный каталог с каталогом команд
 // этапа и драйверы этапов.
 package runenv
 
@@ -11,9 +10,9 @@ import (
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
-	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/logx"
-	"github.com/hakastein/llamer/internal/skills"
+	"github.com/hakastein/smith/drivers"
+	"github.com/hakastein/smith/skills"
 )
 
 // InputError — вход прогона не годится для разбора: причину читает человек, а не стек.
@@ -110,7 +109,7 @@ func (e *Env) Wrapper(name string, args ...string) error {
 // library копируются в <runPath>/stage-plugin.
 func (e *Env) Drivers(names []string, settings map[string]drivers.Settings, library *skills.Library, skillNames []string,
 	runPath string) (map[string]drivers.Driver, error) {
-	setup := drivers.Setup{Env: e.Vars, EnvOrder: e.Order, StageBin: e.Bin, Tmp: e.Tmp}
+	setup := drivers.Setup{Env: e.Vars, EnvOrder: e.Order, StageBin: e.Bin, Tmp: e.Tmp, Logger: logx.Logger}
 	if len(skillNames) > 0 {
 		var err error
 		if setup.RunSkills, err = library.Materialize(filepath.Join(runPath, "stage-plugin"), skillNames); err != nil {

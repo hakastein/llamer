@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/logx"
-	"github.com/hakastein/llamer/internal/redact"
+	"github.com/hakastein/smith/agent"
+	"github.com/hakastein/smith/redact"
 )
 
 const Dir = ".llamer"

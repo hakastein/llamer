@@ -11,7 +11,7 @@ import (
 
 	gl "gitlab.com/gitlab-org/api/client-go"
 
-	"github.com/hakastein/llamer/internal/redact"
+	"github.com/hakastein/smith/redact"
 )
 
 const PerPage = 100

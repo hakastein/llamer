@@ -3,8 +3,8 @@ package stages
 import (
 	"testing"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/harness"
+	"github.com/hakastein/smith/agent"
 )
 
 func TestLostWriteWithoutRefusalPrefix(t *testing.T) {
