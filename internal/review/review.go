@@ -12,18 +12,18 @@ import (
 	"sync"
 
 	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/cost"
-	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/harness"
-	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	"github.com/hakastein/llamer/internal/report"
 	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
 	"github.com/hakastein/llamer/internal/runenv"
-	"github.com/hakastein/llamer/internal/skills"
 	"github.com/hakastein/llamer/internal/stages"
+	"github.com/hakastein/smith/cost"
+	"github.com/hakastein/smith/drivers"
+	"github.com/hakastein/smith/logx"
+	"github.com/hakastein/smith/skills"
 	"go.yaml.in/yaml/v3"
 )
 

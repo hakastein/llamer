@@ -12,7 +12,7 @@ import (
 
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
-	"github.com/hakastein/llamer/internal/logx"
+	"github.com/hakastein/smith/logx"
 	gl "gitlab.com/gitlab-org/api/client-go"
 )
 

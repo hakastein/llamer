@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/hakastein/llamer/internal/skills"
+	"github.com/hakastein/smith/skills"
 )
 
 //go:embed all:skills

@@ -9,16 +9,16 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
-	"github.com/hakastein/llamer/internal/drivers"
 	"github.com/hakastein/llamer/internal/harness"
-	"github.com/hakastein/llamer/internal/logx"
 	"github.com/hakastein/llamer/internal/materials"
 	artifacts "github.com/hakastein/llamer/internal/reviewartifacts"
-	"github.com/hakastein/llamer/internal/skills"
+	"github.com/hakastein/smith/agent"
+	"github.com/hakastein/smith/cost"
+	"github.com/hakastein/smith/drivers"
+	"github.com/hakastein/smith/logx"
+	"github.com/hakastein/smith/skills"
 )
 
 // Toolkit — то, чем этапы прогона пользуются сообща.
@@ -234,7 +234,11 @@ func (s *Stage) Run(assessed int, journal *domain.State) (err error) {
 		shared = s.tk.Shared
 	}
 	logx.Logf("этап «%s» пошёл: %s, уровень %d (%s/%s), промпт %d символов → %s", s.Name(), s.driver, level, settings.Model, settings.Effort, utf8.RuneCountInString(prompt), promptPath)
-	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()), s.markResponding)
+	telemetry := agent.NewTelemetry(s.Name(), s.commands, s.settings.Skills.Always, m.Cwd, s.tk.Artifacts.OpenStream(s.Name()))
+	go func() {
+		<-telemetry.Responding()
+		s.markResponding()
+	}()
 	outcome, err := s.tk.Drivers[s.driver].Run(s.tk.Context, drivers.Args{
 		Name: s.ID(), Model: settings.Model, Effort: settings.Effort, ProjectInstructions: s.projectMemory, Allow: s.allow(),
 		SystemPromptFile: shared, Prompt: prompt,

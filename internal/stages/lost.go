@@ -4,8 +4,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/hakastein/llamer/internal/agent"
 	"github.com/hakastein/llamer/internal/harness"
+	"github.com/hakastein/smith/agent"
 )
 
 var (

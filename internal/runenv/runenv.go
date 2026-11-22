@@ -1,5 +1,4 @@
-// Package runenv — то, что прогонам ревью и workflow нужно одинаково:
-// окружение процесса, проверка входа, временный каталог с каталогом команд
+// Package runenv — окружение прогона: окружение процесса, проверка входа, временный каталог с каталогом команд
 // этапа и драйверы этапов.
 package runenv
 
@@ -11,9 +10,9 @@ import (
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
-	"github.com/hakastein/llamer/internal/drivers"
-	"github.com/hakastein/llamer/internal/logx"
-	"github.com/hakastein/llamer/internal/skills"
+	"github.com/hakastein/smith/drivers"
+	"github.com/hakastein/smith/logx"
+	"github.com/hakastein/smith/skills"
 )
 
 // InputError — вход прогона не годится для разбора: причину читает человек, а не стек.

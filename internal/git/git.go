@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hakastein/llamer/internal/agent"
+	"github.com/hakastein/smith/agent"
 )
 
 // Error — git завершился с ошибкой.

@@ -7,11 +7,11 @@ import (
 	"strings"
 
 	"github.com/hakastein/llamer/internal/config"
-	"github.com/hakastein/llamer/internal/cost"
 	"github.com/hakastein/llamer/internal/domain"
 	"github.com/hakastein/llamer/internal/git"
 	"github.com/hakastein/llamer/internal/gitlab"
 	"github.com/hakastein/llamer/internal/materials"
+	"github.com/hakastein/smith/cost"
 )
 
 // PluralRu — форма русского слова по числу: файл, файла, файлов.
@@ -287,7 +287,7 @@ func (r *Review) Status(unpublished []*domain.Finding) string {
 	if n := len(unpublished); n > 0 {
 		status = fmt.Sprintf("_Ревью выполнено, %d %s опубликовать не удалось — см. сводку._", n, PluralRu(n, "замечание", "замечания", "замечаний"))
 	}
-	stats := cost.RunStats(r.Stages, r.ElapsedMs)
+	stats := runStats(r.Stages, r.ElapsedMs)
 	// Метка статуса — точка отсчёта `--since-last`: с сорванным или прекращённым
 	// этапом или неопубликованными находками она дала бы следующему прогону пропустить неразобранное.
 	mark := ""
@@ -295,4 +295,35 @@ func (r *Review) Status(unpublished []*domain.Finding) string {
 		mark = r.MarkSha
 	}
 	return gitlab.WithRevisionMark(gitlab.StatusMarker+"\n"+status+"\n\n"+stats, mark)
+}
+
+func formatDuration(ms int64) string {
+	s := (ms + 500) / 1000
+	if s < 60 {
+		return fmt.Sprintf("%d с", s)
+	}
+	return fmt.Sprintf("%d мин %d с", s/60, s%60)
+}
+
+// runStats — токены и время по этапам: по ним видно, что разбор не был пустым.
+func runStats(stages []*cost.Stage, elapsedMs int64) string {
+	var tokens int64
+	approx := ""
+	var rows []string
+	for _, s := range stages {
+		tokens += s.Outcome.Tokens()
+		if s.Outcome.UsageApprox {
+			approx = "≈"
+		}
+		r := cost.RowOf(s)
+		rows = append(rows, fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |", r.Name, r.Model, r.Effort, formatDuration(s.Outcome.DurationMs), r.Turns, r.Tokens, r.Context))
+	}
+	lines := []string{
+		fmt.Sprintf("Разбор занял %s, потрачено %s%s токенов.", formatDuration(elapsedMs), approx, cost.Number(tokens)),
+		"", "<details><summary>По этапам</summary>", "",
+		"| Этап | Модель | Усилие | Время | Ходы | Токены | Размер контекста |",
+		"|---|---|---|---|---|---|---|",
+	}
+	lines = append(append(lines, rows...), "", "</details>")
+	return strings.Join(lines, "\n")
 }
